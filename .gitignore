@@ -1,0 +1,11 @@
+node_modules
+.next
+dist
+coverage
+.turbo
+.env
+.env.local
+.env.*.local
+*.log
+uploads
+tmp

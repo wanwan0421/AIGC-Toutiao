@@ -1,0 +1,204 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ContentStatus {
+  draft
+  pending_review
+  approved
+  rejected
+  published
+  updated
+  offline
+}
+
+enum PromptScene {
+  generate
+  audit
+  score
+  rewrite
+}
+
+enum AuditRiskLevel {
+  low
+  medium
+  high
+}
+
+enum AssetAuditStatus {
+  pending
+  approved
+  rejected
+}
+
+model User {
+  id           String           @id @default(cuid())
+  email        String?          @unique
+  phone        String?          @unique
+  passwordHash String
+  nickname     String
+  avatarUrl    String?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  contents     Content[]
+  prompts      PromptTemplate[]
+  assets       Asset[]
+  preferences  UserPreference?
+  events       UserActionEvent[]
+}
+
+model UserPreference {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  defaultPlatform String?
+  writingStyles   String[] @default([])
+  domains         String[] @default([])
+  blockedWords    String[] @default([])
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  user            User     @relation(fields: [userId], references: [id])
+}
+
+model Content {
+  id            String            @id @default(cuid())
+  authorId      String
+  title         String
+  body          String
+  excerpt       String?
+  status        ContentStatus     @default(draft)
+  tags          String[]          @default([])
+  qualityScore  Int               @default(0)
+  heatScore     Int               @default(0)
+  viewCount     Int               @default(0)
+  likeCount     Int               @default(0)
+  collectCount  Int               @default(0)
+  clickCount    Int               @default(0)
+  publishedAt   DateTime?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  author        User              @relation(fields: [authorId], references: [id])
+  drafts        Draft[]
+  versions      ContentVersion[]
+  assets        ContentAsset[]
+  audits        AuditRecord[]
+  scores        QualityScore[]
+  events        UserActionEvent[]
+}
+
+model Draft {
+  id         String   @id @default(cuid())
+  contentId  String
+  authorId   String
+  title      String?
+  body       String?
+  payload    Json?
+  clientHash String?
+  savedAt    DateTime @default(now())
+  content    Content  @relation(fields: [contentId], references: [id])
+}
+
+model ContentVersion {
+  id        String   @id @default(cuid())
+  contentId String
+  version   Int
+  title     String
+  body      String
+  snapshot  Json?
+  createdAt DateTime @default(now())
+  content   Content  @relation(fields: [contentId], references: [id])
+
+  @@unique([contentId, version])
+}
+
+model PromptTemplate {
+  id           String      @id @default(cuid())
+  creatorId    String?
+  name         String
+  scene        PromptScene
+  template     String
+  variables    Json?
+  model        String?
+  modelOptions Json?
+  version      Int         @default(1)
+  status       String      @default("active")
+  usageCount   Int         @default(0)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  creator      User?       @relation(fields: [creatorId], references: [id])
+}
+
+model Asset {
+  id          String           @id @default(cuid())
+  uploaderId  String
+  fileName    String
+  mimeType    String
+  url         String
+  auditStatus AssetAuditStatus @default(pending)
+  auditReason String?
+  createdAt   DateTime         @default(now())
+  uploader    User             @relation(fields: [uploaderId], references: [id])
+  contents    ContentAsset[]
+}
+
+model ContentAsset {
+  contentId String
+  assetId   String
+  sortOrder Int     @default(0)
+  content   Content @relation(fields: [contentId], references: [id])
+  asset     Asset   @relation(fields: [assetId], references: [id])
+
+  @@id([contentId, assetId])
+}
+
+model AuditRecord {
+  id          String         @id @default(cuid())
+  contentId   String
+  passed      Boolean
+  riskLevel   AuditRiskLevel
+  riskTypes   String[]       @default([])
+  reasons     String[]       @default([])
+  rawResponse  Json?
+  createdAt    DateTime       @default(now())
+  content      Content        @relation(fields: [contentId], references: [id])
+}
+
+model QualityScore {
+  id         String   @id @default(cuid())
+  contentId  String
+  total      Int
+  dimensions Json
+  reason     String
+  rawResponse Json?
+  createdAt  DateTime @default(now())
+  content    Content  @relation(fields: [contentId], references: [id])
+}
+
+model AiCallLog {
+  id           String   @id @default(cuid())
+  scene        String
+  model        String?
+  inputSummary String?
+  output       Json?
+  latencyMs    Int?
+  success      Boolean
+  errorMessage String?
+  createdAt    DateTime @default(now())
+}
+
+model UserActionEvent {
+  id        String   @id @default(cuid())
+  userId    String?
+  contentId String
+  eventType String
+  metadata  Json?
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id])
+  content   Content  @relation(fields: [contentId], references: [id])
+
+  @@index([contentId, eventType, createdAt])
+}
