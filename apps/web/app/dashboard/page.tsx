@@ -1,16 +1,16 @@
-import Link from "next/link";
+﻿import Link from "next/link";
 import { ContentStatus } from "@aicp/shared";
-import { StatusBadge } from "../../components/status-badge";
 import { getContents } from "../../lib/api";
+import { Flame, Image, PenTool, Video, Smartphone, type LucideIcon } from "lucide-react";
 
+// 提取精美微型评分条
 function ScoreMeter({ value }: { value: number }) {
   const activeCount = Math.max(1, Math.round(value / 10));
-
   return (
-    <div className="flex gap-0.5" aria-hidden="true" title={`评分: ${value}`}>
+    <div className="flex gap-0.5 w-16" aria-hidden="true" title={`评分: ${value}`}>
       {Array.from({ length: 10 }).map((_, index) => (
         <span
-          className={`h-1.5 w-full rounded-full ${index < activeCount ? "bg-emerald-500" : "bg-slate-100"}`}
+          className={`h-1 flex-1 rounded-full ${index < activeCount ? "bg-emerald-500" : "bg-slate-200"}`}
           key={index}
         />
       ))}
@@ -20,199 +20,356 @@ function ScoreMeter({ value }: { value: number }) {
 
 export default async function DashboardPage() {
   const contents = await getContents();
-  const publishedCount = contents.filter((item) => item.status === ContentStatus.Published).length;
-  const reviewCount = contents.filter((item) => item.status === ContentStatus.PendingReview).length;
-  const draftCount = contents.filter((item) => item.status === ContentStatus.Draft).length;
-  const averageScore = contents.reduce((sum, item) => sum + item.qualityScore, 0) / Math.max(contents.length, 1);
+  const averageScore = contents.length > 0 
+    ? contents.reduce((sum, item) => sum + item.qualityScore, 0) / contents.length 
+    : 85.5;
+  const totalViews = contents.reduce((sum, item) => sum + item.viewCount, 0);
+  const totalLikes = contents.reduce((sum, item) => sum + item.likeCount, 0);
+  const publishedCount = contents.filter((item) => [ContentStatus.Published, ContentStatus.Updated, ContentStatus.Approved].includes(item.status)).length;
+  const topTopics = contents.slice(0, 4).map((item) => ({
+    tag: item.title,
+    heat: `${item.heatScore} 热度`,
+    desc: item.excerpt
+  }));
 
   return (
-    <div className="max-w-350 mx-auto w-full">
-      {/* 顶部欢迎区 & 核心数据 */}
-      <section className="mb-8 flex flex-col md:flex-row md:items-end justify-between gap-6">
-        <div>
-          <h1 className="text-2xl font-black text-slate-900 m-0">你好，创作者</h1>
-          <p className="text-sm text-slate-500 mt-1">这里是你的内容灵感调度中心。今天想写点什么？</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <Link href="/editor" className="flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-bold text-white transition-all hover:bg-blue-700 shadow-sm shadow-blue-600/20">
-            <span>➕</span> 新建创作画布
-          </Link>
-        </div>
-      </section>
-
-      {/* 数据概览看板 */}
-      <section className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-        <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm flex flex-col justify-between">
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-sm font-bold text-slate-500">已发布内容</span>
-            <span className="w-8 h-8 rounded-full bg-blue-50 flex items-center justify-center text-blue-600">📝</span>
-          </div>
-          <div className="flex items-baseline gap-2">
-            <span className="text-3xl font-black text-slate-900">{publishedCount}</span>
-            <span className="text-xs text-slate-400 font-medium">篇</span>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm flex flex-col justify-between">
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-sm font-bold text-slate-500">待审核 / 处理中</span>
-            <span className="w-8 h-8 rounded-full bg-amber-50 flex items-center justify-center text-amber-600">⏳</span>
-          </div>
-          <div className="flex items-baseline gap-2">
-            <span className="text-3xl font-black text-slate-900">{reviewCount}</span>
-            <span className="text-xs text-slate-400 font-medium">篇</span>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm flex flex-col justify-between">
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-sm font-bold text-slate-500">内容质量均分</span>
-            <span className="w-8 h-8 rounded-full bg-emerald-50 flex items-center justify-center text-emerald-600">✨</span>
-          </div>
-          <div className="flex items-baseline gap-2">
-            <span className="text-3xl font-black text-slate-900">{averageScore.toFixed(1)}</span>
-            <span className="text-xs text-emerald-600 font-bold bg-emerald-100/50 px-2 py-0.5 rounded ml-2">+2.4</span>
-          </div>
-        </div>
-
-        <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm flex flex-col justify-between">
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-sm font-bold text-slate-500">近 30 天总阅读</span>
-            <span className="w-8 h-8 rounded-full bg-purple-50 flex items-center justify-center text-purple-600">📈</span>
-          </div>
-          <div className="flex items-baseline gap-2">
-            <span className="text-3xl font-black text-slate-900">12.4k</span>
-            <span className="text-xs text-emerald-600 font-bold bg-emerald-100/50 px-2 py-0.5 rounded ml-2">+14%</span>
-          </div>
-        </div>
-      </section>
-
-      {/* 主体两列布局：左侧稿件列表，右侧系统消息或日历预定 */}
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
-        
-        {/* 左侧：稿件列表 */}
-        <section className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
-          <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between align-center">
-            <h2 className="text-lg font-black text-slate-900 m-0">内容管理库</h2>
-            <div className="flex gap-2">
-              <select className="text-sm border border-slate-200 rounded-lg px-3 py-1.5 bg-slate-50 text-slate-600 outline-none focus:border-blue-400">
-                <option>全部分类</option>
-                <option>草稿箱</option>
-                <option>已发布</option>
-                <option>被打回</option>
-              </select>
+    <div className="grid grid-cols-1 xl:grid-cols-[1fr_340px] min-h-full">
+      {/* =================【中轨核心业务流区】================= */}
+      <section className="p-6 md:p-8 lg:p-10 border-r border-slate-200/80 pb-24">
+        {/* 1. 顶部高端创作者个人信息卡片 */}
+        <div className="relative overflow-hidden bg-white border border-slate-200 rounded-2xl p-6 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-6 mb-5">
+          {/* 左侧身份标识 */}
+          <div className="flex items-center gap-4 z-10">
+            <div className="w-14 h-14 rounded-full bg-linear-to-tr from-blue-600 to-indigo-600 text-white flex items-center justify-center font-black text-xl shadow-md shrink-0">
+              A
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-lg font-black text-slate-900 m-0">
+                  你好，小李一定行
+                </h1>
+                <span className="inline-flex items-center rounded-md bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-700 border border-blue-100">
+                  PRO 创作者
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-1 font-medium">
+                头条号：402983332 | 读研自律中...
+              </p>
             </div>
           </div>
-          
-          <div className="divide-y divide-slate-100">
-            {contents.length === 0 ? (
-              <div className="p-12 text-center text-slate-400 text-sm">暂无内容，去新建第一篇爆款吧！</div>
-            ) : (
-              contents.map((content) => {
-                const isDraft = content.status === ContentStatus.Draft;
-                const isRejected = content.status === ContentStatus.Rejected;
-                
-                return (
-                  <div key={content.id} className="p-6 transition hover:bg-slate-50/50 group flex flex-col sm:flex-row gap-5 items-start sm:items-center">
-                    
-                    {/* 缩略图占位（假设内容有封面图） */}
-                    <div className="w-32 h-20 shrink-0 bg-slate-100 rounded-lg overflow-hidden flex items-center justify-center border border-slate-200/60">
-                      <span className="text-2xl opacity-20">🖼️</span>
-                    </div>
 
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-3 mb-1.5">
-                        <StatusBadge status={content.status} />
-                        <span className="text-xs font-semibold text-slate-400">ID: {content.id.slice(0, 6)}</span>
-                      </div>
-                      <h3 className="text-base font-bold text-slate-900 m-0 mb-1 truncate group-hover:text-blue-600 transition-colors">
-                        {content.title || "未命名草稿"}
-                      </h3>
-                      <p className="text-sm text-slate-500 m-0 line-clamp-1">
-                        {content.excerpt || "暂无内容摘要..."}
-                      </p>
-                    </div>
+          {/* 右侧核心 AI 信用大分外露 */}
+          <div className="flex items-center sm:text-right gap-4 sm:gap-0 sm:flex-col justify-between sm:justify-center border-t sm:border-t-0 pt-4 sm:pt-0 border-slate-100 z-10">
+            <span className="text-xs font-bold text-slate-400 tracking-wide">
+              AI 内容信用分 / 合规均分
+            </span>
+            <span className="text-3xl font-black text-emerald-500 font-mono tracking-tight mt-0.5">
+              {averageScore.toFixed(1)}
+            </span>
+          </div>
 
-                    <div className="w-32 shrink-0 max-md:hidden flex flex-col gap-1.5">
-                      <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">AI 质量评分</div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-black text-slate-700">{content.qualityScore}</span>
-                        <div className="flex-1"><ScoreMeter value={content.qualityScore} /></div>
-                      </div>
-                    </div>
+          <div className="absolute right-0 top-0 w-32 h-32 bg-blue-50/30 rounded-full blur-3xl pointer-events-none"></div>
+        </div>
 
-                    <div className="w-24 shrink-0 hidden lg:block text-right">
-                      <div className="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1">阅读热度</div>
-                      <span className="text-sm font-black text-slate-700">{content.heatScore || 0}</span>
-                    </div>
+        {/* 2. 快捷创作区域 */}
+        <div className="mb-5">
+          <h2 className="text-xl font-black uppercase tracking-wider mb-3.5 flex items-center gap-2">
+            快捷创作
+          </h2>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {/* 核心高亮：发布文章 */}
+            <Link
+              href="/editor"
+              className="group bg-white p-5 rounded-2xl border border-slate-200 shadow-xs hover:border-blue-500 hover:shadow-md transition-all flex flex-col items-start text-left relative overflow-hidden"
+            >
+              <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center mb-4 group-hover:scale-105 transition-transform">
+                <PenTool className="h-5 w-5" />
+              </div>
+              <h3 className="font-bold text-slate-800 text-sm">发布文章</h3>
+              <p className="text-[11px] text-slate-400 mt-1 leading-normal">
+                长文本沉浸式创作画布与 AI 辅助
+              </p>
+              <div className="absolute right-3 bottom-3 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity text-xs font-bold">
+                开始 →
+              </div>
+            </Link>
 
-                    <div className="shrink-0 max-sm:w-full flex justify-end">
-                      <Link
-                        className={`inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-bold transition whitespace-nowrap 
-                          ${isRejected 
-                            ? "bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200" 
-                            : isDraft 
-                              ? "bg-slate-100 text-slate-700 hover:bg-slate-200" 
-                              : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
-                          }
-                        `}
-                        href={content.status === ContentStatus.Published ? `/content/${content.id}` : "/editor"}
-                      >
-                        {isRejected ? "执行合规改写" : isDraft ? "继续编辑" : "查看数据"}
-                      </Link>
-                    </div>
+            {/* 以下为功能规划与占位 */}
+            {[
+              {
+                title: "发布图文",
+                desc: "支持多图片拼接、标签生成",
+                icon: Image,
+                badge: "规划中",
+              },
+              {
+                title: "视频发布",
+                desc: "高清视频格式挂载与切片",
+                icon: Video,
+                badge: "规划中",
+              },
+              {
+                title: "微头条",
+                desc: "短平快想法广场即时发布",
+                icon: Smartphone,
+                badge: "排期中",
+              },
+            ].map((box: { title: string; desc: string; icon: LucideIcon; badge: string }, i) => {
+              const Icon = box.icon;
+
+              return (
+                <div
+                  key={i}
+                  className="bg-slate-50/60 p-5 rounded-2xl border border-slate-200/50 opacity-65 flex flex-row items-start text-left relative"
+                >
+                  <div className="w-10 h-10 rounded-xl bg-slate-100 text-slate-500 flex items-center justify-center mb-4">
+                    <Icon className="h-5 w-5" />
                   </div>
-                );
-              })
-            )}
+                  <div className="flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <h3 className="font-bold text-slate-600 text-sm">
+                        {box.title}
+                      </h3>
+                      <span className="text-[9px] font-bold bg-slate-200 text-slate-500 px-1 rounded">
+                        {box.badge}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-1 leading-normal">
+                      {box.desc}
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
           </div>
-          
-          <div className="p-4 border-t border-slate-100 bg-slate-50 text-center">
-            <button className="text-sm font-bold text-slate-500 hover:text-slate-800 transition">加载更多</button>
-          </div>
-        </section>
+        </div>
 
-        {/* 右侧：辅助功能卡片 */}
-        <aside className="flex flex-col gap-6">
-          <div className="bg-linear-to-br from-blue-600 to-indigo-700 rounded-xl p-6 shadow-md text-white">
-            <h3 className="font-black text-lg mb-2">CreatorFlow Pro</h3>
-            <p className="text-blue-100 text-sm leading-relaxed mb-4">
-              升级专业版，解锁超长文上下文记忆，并可无限次调用爆款标题探测器。
-            </p>
-            <button className="w-full py-2.5 bg-white text-blue-700 font-black rounded-lg text-sm hover:bg-blue-50 transition shadow-sm">
-              了解特权
-            </button>
+        {/* 3. 笔记数据总览看板（内嵌多维度核心指标） */}
+        <div className="mb-8">
+          <div className="flex items-center justify-between mb-3.5">
+            <h2 className="text-xl font-black uppercase tracking-wider flex items-center gap-2">
+              笔记数据总览
+            </h2>
+            <Link
+              href="/dashboard/analytics"
+              className="text-xs font-bold text-blue-600 hover:underline"
+            >
+              查看深度数据分析 →
+            </Link>
           </div>
 
-          <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
-            <h3 className="font-black text-slate-900 m-0 mb-4 text-base">系统通知与建议</h3>
-            <div className="space-y-4">
-              <div className="flex gap-3">
-                <span className="w-2 h-2 rounded-full bg-rose-500 shrink-0 mt-1.5"></span>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            {[
+              {
+                title: "已发布作品",
+                value: publishedCount.toString(),
+                sub: `${contents.length} 篇内容进入库`,
+                trend: "up",
+              },
+              {
+                title: "总曝光量",
+                value: totalViews.toLocaleString(),
+                sub: "来自后端内容统计",
+                trend: "up",
+              },
+              {
+                title: "作品点赞数",
+                value: totalLikes.toLocaleString(),
+                sub: "同步数据库最新计数",
+                trend: "up",
+              },
+              {
+                title: "内容综合均分",
+                value: averageScore.toFixed(1),
+                sub: "超越 92% 创作者",
+                trend: "up",
+                isScore: true,
+              },
+            ].map((stat, idx) => (
+              <div
+                key={idx}
+                className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs flex flex-col justify-between"
+              >
                 <div>
-                  <p className="text-sm font-bold text-slate-800 mb-0.5">合规策略更新</p>
-                  <p className="text-xs text-slate-500 leading-relaxed">平台最新禁设“夸大焦虑”相关的标题词汇集，请前往偏好设置更新。</p>
+                  <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">
+                    {stat.title}
+                  </span>
+                  <div className="text-2xl font-black text-slate-900 font-mono tracking-tight mt-1">
+                    {stat.value}
+                  </div>
+                </div>
+                <div className="mt-2.5 pt-2.5 border-t border-slate-100 flex items-center justify-between">
+                  <span className="text-[10px] text-slate-400 font-medium">
+                    {stat.sub}
+                  </span>
+                  {stat.isScore ? (
+                    <ScoreMeter value={averageScore} />
+                  ) : (
+                    <span
+                      className={`text-[10px] font-black ${stat.trend === "up" ? "text-emerald-600" : "text-rose-500"}`}
+                    >
+                      {stat.trend === "up" ? "↑" : "↓"}
+                    </span>
+                  )}
                 </div>
               </div>
-              <div className="flex gap-3">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0 mt-1.5"></span>
-                <div>
-                  <p className="text-sm font-bold text-slate-800 mb-0.5">你的文章上榜了！</p>
-                  <p className="text-xs text-slate-500 leading-relaxed">《夏日通勤穿搭...》已被推进本地热点流，曝光提升 300%。</p>
+            ))}
+          </div>
+        </div>
+
+        {/* 4. 双栏功能分流区：左栏创作话题推荐 vs 右栏官方创作技巧 */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* 左侧：创作话题推荐（2/3 栏宽） */}
+          <div className="lg:col-span-2">
+            <div className="flex items-center justify-between mb-3.5">
+              <h2 className="text-xl font-black uppercase tracking-wider flex items-center gap-2">
+                平台热点与创作话题
+              </h2>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-xs divide-y divide-slate-100 overflow-hidden">
+              {topTopics.map((topic, index) => (
+                <div
+                  key={topic.tag}
+                  className="p-4 hover:bg-slate-50/50 cursor-pointer transition flex justify-between items-start gap-4 group"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-blue-600 font-black text-sm">#</span>
+                      <h4 className="font-bold text-slate-800 text-sm group-hover:text-blue-600 transition truncate">
+                        {index + 1}. {topic.tag}
+                      </h4>
+                    </div>
+                    <p className="text-xs text-slate-400 mt-1 truncate font-medium">
+                      {topic.desc}
+                    </p>
+                  </div>
+                  <span className="text-[11px] font-bold text-slate-400 shrink-0 bg-slate-100 px-2 py-0.5 rounded-md">
+                    {topic.heat}
+                  </span>
                 </div>
-              </div>
-              <div className="flex gap-3">
-                <span className="w-2 h-2 rounded-full bg-blue-500 shrink-0 mt-1.5"></span>
-                <div>
-                  <p className="text-sm font-bold text-slate-800 mb-0.5">AI 模型升级到 v2.0</p>
-                  <p className="text-xs text-slate-500 leading-relaxed">生成长文的响应速度极大提升，降低了润色丢失排版的概率。</p>
-                </div>
-              </div>
+              ))}
             </div>
           </div>
-        </aside>
 
-      </div>
+          {/* 右侧：官方分享技巧卡片 */}
+          <div className="lg:col-span-1 flex flex-col">
+            <h2 className="text-xl font-black uppercase tracking-wider mb-3.5 flex items-center gap-2">
+              成长指南
+            </h2>
+            <div className="bg-slate-900 rounded-2xl p-5 text-white shadow-xs flex flex-col justify-between flex-1 min-h-55">
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+                  <h3 className="font-black text-sm text-slate-100">
+                    大模型生成规范更新
+                  </h3>
+                </div>
+                <p className="text-slate-400 text-xs leading-relaxed font-medium">
+                  平台近期更新算法规则，严厉打击“用纯 AI
+                  批量编造无事实依据的假新闻”。创作者在使用火山方舟润色时，请务必前置引入真实背景上下文素材。
+                </p>
+              </div>
+
+              <Link
+                href="/dashboard/growth"
+                className="w-full h-9 bg-white/10 hover:bg-white/15 text-white text-xs font-bold rounded-xl flex items-center justify-center transition border border-white/5"
+              >
+                阅读详细合规指引 →
+              </Link>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* =================【右侧常驻：实时爆文榜单挂件】================= */}
+      <aside className="bg-white border-l border-slate-200 h-full overflow-y-auto hidden xl:block">
+        {/* 粘性置顶头部 */}
+        <div className="p-6 sticky top-0 bg-white/90 backdrop-blur-md z-10 border-b border-slate-100 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Flame className="h-4 w-4 text-rose-500" />
+            <h2 className="text-sm font-black text-slate-900 m-0 tracking-tight">
+              全网实时爆文推荐
+            </h2>
+          </div>
+          <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">
+            每小时更新
+          </span>
+        </div>
+
+        {/* 榜单排行流列表 */}
+        <div className="p-4 space-y-1">
+          {[
+            {
+              title: "深度解析全栈演进：Cursor 与大模型协同的惊人效率",
+              author: "独立开发者生态",
+              heat: "99.8w",
+            },
+            {
+              title: "皖南川藏线春季自驾攻略：租车与无人机航拍机位选点",
+              author: "特种兵旅游日记",
+              heat: "86.5w",
+            },
+            {
+              title: "分布式计算冷思考：异构集群调度中的数据孤岛如何打破",
+              author: "地理AI研究社",
+              heat: "72.1w",
+            },
+            {
+              title: "小红书爆款图文背后的 3 个黄金 Prompt 骨架公式",
+              author: "运营老司机",
+              heat: "64.3w",
+            },
+            {
+              title: "Next.js 15 App Router 极致首屏渲染（FCP）调优方案",
+              author: "极客前端",
+              heat: "51.2w",
+            },
+            {
+              title: "用大模型重构数字孪生系统：我们离通用仿真还有多远",
+              author: "数字孪生前沿",
+              heat: "44.0w",
+            },
+          ].map((item, index) => (
+            // 点击榜单条目，未来可以通过路由直接导向详细分析页
+            <Link
+              key={index}
+              href={`/dashboard/trends?rank=${index + 1}`}
+              className="p-3 rounded-xl hover:bg-slate-50 flex items-start gap-3 transition group"
+            >
+              {/* 排行名次 */}
+              <span
+                className={`text-xs font-mono font-black mt-0.5 w-5 shrink-0 ${
+                  index === 0
+                    ? "text-rose-500 text-sm"
+                    : index === 1
+                      ? "text-orange-500"
+                      : index === 2
+                        ? "text-amber-500"
+                        : "text-slate-400"
+                }`}
+              >
+                {String(index + 1).padStart(2, "0")}
+              </span>
+
+              {/* 作品信息 */}
+              <div className="flex-1 min-w-0">
+                <h4 className="text-xs font-bold text-slate-800 group-hover:text-blue-600 line-clamp-2 leading-normal mb-1.5 transition">
+                  {item.title}
+                </h4>
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-medium text-slate-400 truncate max-w-30">
+                    {item.author}
+                  </span>
+                  <span className="text-[10px] font-bold text-rose-600 bg-rose-50 px-1.5 py-0.2 rounded shrink-0">
+                    {item.heat} 热度
+                  </span>
+                </div>
+              </div>
+            </Link>
+          ))}
+        </div>
+      </aside>
     </div>
   );
 }

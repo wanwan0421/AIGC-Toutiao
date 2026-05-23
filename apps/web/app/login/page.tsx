@@ -1,6 +1,34 @@
-import Link from "next/link";
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useState, type FormEvent } from "react";
+import { login, storeAccessToken } from "../../lib/api";
+import { BarChart3, Code2, MessageCircle, Rocket, ShieldCheck } from "lucide-react";
 
 export default function LoginPage() {
+  const router = useRouter();
+  const [account, setAccount] = useState("creator@example.com");
+  const [password, setPassword] = useState("123456");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setLoading(true);
+    setError("");
+
+    try {
+      const response = await login({ account, password });
+      storeAccessToken(response.accessToken);
+      router.push("/dashboard");
+      router.refresh();
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "登录失败，请稍后重试");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <section className="flex min-h-[calc(100vh-64px)] items-center justify-center p-6 bg-slate-50">
       <div className="w-full max-w-4xl bg-white rounded-2xl shadow-xl flex overflow-hidden border border-slate-100">
@@ -12,21 +40,21 @@ export default function LoginPage() {
           <div className="absolute -bottom-24 -right-24 w-80 h-80 bg-blue-400/20 rounded-full blur-3xl"></div>
           
           <div className="relative z-10">
-            <h2 className="text-3xl font-black mb-4 tracking-tight">CreatorFlow Studio</h2>
+            <h2 className="text-3xl font-black mb-4 tracking-tight">创作服务平台</h2>
             <p className="text-blue-100 text-sm leading-relaxed mb-6 font-medium">
               基于大模型的下一代智能图文生产中心，让内容创作与分发从未如此高效。
             </p>
             <div className="space-y-4 mt-12">
               <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center text-sm backdrop-blur-sm">🚀</div>
+                <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center backdrop-blur-sm"><Rocket className="h-4 w-4" /></div>
                 <span className="text-sm font-medium text-blue-50">一键生成结构化高质量长文</span>
               </div>
               <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center text-sm backdrop-blur-sm">🛡️</div>
+                <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center backdrop-blur-sm"><ShieldCheck className="h-4 w-4" /></div>
                 <span className="text-sm font-medium text-blue-50">内置安全审核与智能合规改写</span>
               </div>
               <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center text-sm backdrop-blur-sm">📊</div>
+                <div className="w-8 h-8 rounded-full bg-white/20 flex items-center justify-center backdrop-blur-sm"><BarChart3 className="h-4 w-4" /></div>
                 <span className="text-sm font-medium text-blue-50">实时榜单数据反哺流量分发</span>
               </div>
             </div>
@@ -44,7 +72,7 @@ export default function LoginPage() {
             <p className="text-sm text-slate-500 font-medium">登录你的创作者账号，开始今天的灵感之旅</p>
           </div>
 
-          <form className="space-y-5">
+          <form className="space-y-5" onSubmit={handleSubmit}>
             <div>
               <label className="block text-sm font-bold text-slate-700 mb-1.5" htmlFor="account">
                 账号 / 邮箱
@@ -52,6 +80,8 @@ export default function LoginPage() {
               <input
                 className="w-full min-h-12 rounded-xl border border-slate-200 bg-slate-50 px-4 text-sm text-slate-900 outline-none transition focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 placeholder:text-slate-400"
                 id="account"
+                value={account}
+                onChange={(event) => setAccount(event.target.value)}
                 placeholder="输入你的邮箱或手机号"
               />
             </div>
@@ -67,14 +97,26 @@ export default function LoginPage() {
                 className="w-full min-h-12 rounded-xl border border-slate-200 bg-slate-50 px-4 text-sm text-slate-900 outline-none transition focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 placeholder:text-slate-400"
                 id="password"
                 type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
                 placeholder="••••••••"
               />
             </div>
 
+            {error ? (
+              <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                {error}
+              </div>
+            ) : null}
+
             <div className="pt-2">
-              <Link href="/dashboard" className="w-full block text-center rounded-xl bg-slate-900 px-5 py-3.5 text-sm font-bold text-white shadow-sm hover:bg-slate-800 transition-all hover:shadow-md">
-                安全登录
-              </Link>
+              <button
+                className="w-full rounded-xl bg-slate-900 px-5 py-3.5 text-sm font-bold text-white shadow-sm hover:bg-slate-800 transition-all hover:shadow-md disabled:cursor-not-allowed disabled:bg-slate-500"
+                disabled={loading}
+                type="submit"
+              >
+                {loading ? "正在登录..." : "安全登录"}
+              </button>
             </div>
             
             <div className="flex items-center justify-center gap-2 mt-4 text-sm text-slate-500">
@@ -87,9 +129,9 @@ export default function LoginPage() {
           <div className="mt-8 pt-6 border-t border-slate-100 text-center">
             <p className="text-xs font-medium text-slate-400 mb-4 uppercase tracking-wider">其他登录方式</p>
             <div className="flex justify-center gap-3">
-              <button className="w-12 h-12 rounded-full border border-slate-200 flex items-center justify-center text-slate-600 hover:bg-slate-50 transition" title="微信">💬</button>
-              <button className="w-12 h-12 rounded-full border border-slate-200 flex items-center justify-center text-slate-600 hover:bg-slate-50 transition" title="飞书">🕊️</button>
-              <button className="w-12 h-12 rounded-full border border-slate-200 flex items-center justify-center text-slate-600 hover:bg-slate-50 transition" title="Github">🐱</button>
+              <button className="w-12 h-12 rounded-full border border-slate-200 flex items-center justify-center text-slate-600 hover:bg-slate-50 transition" title="微信"><MessageCircle className="h-5 w-5" /></button>
+              <button className="w-12 h-12 rounded-full border border-slate-200 flex items-center justify-center text-slate-600 hover:bg-slate-50 transition" title="飞书"><MessageCircle className="h-5 w-5" /></button>
+              <button className="w-12 h-12 rounded-full border border-slate-200 flex items-center justify-center text-slate-600 hover:bg-slate-50 transition" title="Github"><Code2 className="h-5 w-5" /></button>
             </div>
           </div>
         </div>

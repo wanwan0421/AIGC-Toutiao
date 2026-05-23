@@ -1,4 +1,5 @@
 import { getContentDetail } from "../../../lib/api";
+import { ContentDetailActions } from "../../../components/content-detail-actions";
 
 const scoreRows = [
   ["结构完整度", 92],
@@ -36,14 +37,7 @@ export default async function ContentDetailPage({ params }: { params: { id: stri
             作者 {detail.author.nickname}，内容 ID {params.id}，阅读 {detail.viewCount}，点赞 {detail.likeCount}
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <button className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-black text-slate-700 transition hover:bg-slate-50" type="button">
-            收藏
-          </button>
-          <button className="rounded-lg bg-blue-700 px-4 py-2 text-sm font-black text-white transition hover:bg-blue-800" type="button">
-            点赞
-          </button>
-        </div>
+        <ContentDetailActions contentId={params.id} initialLikeCount={detail.likeCount} initialViewCount={detail.viewCount} title={detail.title} />
       </div>
 
       <div className="grid grid-cols-[minmax(0,1fr)_320px] items-start gap-5 max-lg:grid-cols-1">

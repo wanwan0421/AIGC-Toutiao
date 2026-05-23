@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { TopNav } from "../components/top-nav";
+import { Sidebar } from "../components/sidebar";
 
 export const metadata: Metadata = {
-  title: "AI Creator Platform",
+  title: "AIGC-Toutiao - AI Creator Platform",
   description: "AIGC creator production and distribution platform"
 };
 
@@ -14,9 +14,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN">
-      <body className="min-w-80 bg-app-bg text-app-text antialiased">
-        <TopNav />
-        <main className="w-full">{children}</main>
+      <body className="flex h-screen overflow-hidden bg-slate-50/50 text-app-text antialiased">
+        <Sidebar />
+        <main className="flex-1 h-screen overflow-y-auto relative">
+          {children}
+        </main>
       </body>
     </html>
   );

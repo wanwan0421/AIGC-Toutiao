@@ -1,12 +1,12 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:14-alpine
     container_name: aicp-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: aicp
       POSTGRES_PASSWORD: aicp
-      POSTGRES_DB: aicp
+      POSTGRES_DB: AIGC-Toutiao
     ports:
       - "5432:5432"
     volumes:

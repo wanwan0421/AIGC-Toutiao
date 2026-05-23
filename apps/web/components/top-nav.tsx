@@ -12,7 +12,7 @@ export function TopNav() {
     <header className="sticky top-0 z-20 flex min-h-16 items-center justify-between border-b border-slate-200/80 bg-white/95 px-7 backdrop-blur-md max-md:flex-col max-md:items-start max-md:gap-3 max-md:px-5 max-md:py-4">
       <Link className="flex items-center gap-2.5 font-extrabold text-app-ink" href="/dashboard">
         <span className="grid size-8 place-items-center rounded-lg bg-slate-800 text-xs text-white">AI</span>
-        <span>CreatorFlow</span>
+        <span>创作服务平台</span>
       </Link>
       <div className="flex items-center gap-4 max-md:flex-wrap">
         <nav className="flex items-center gap-1 text-sm text-app-muted max-md:flex-wrap" aria-label="primary">

@@ -1,364 +1,1278 @@
-﻿"use client";
+"use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { ContentStatus, type ContentDetail, type ContentSummary } from "@aicp/shared";
+import {
+  autosaveDraft,
+  createContent,
+  generateDraft,
+  getContentDetail,
+  getContents,
+  submitReview,
+  updateContent,
+} from "../../lib/api";
+import {
+  BadgeCheck,
+  Bold,
+  CalendarClock,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Code2,
+  Copy,
+  Eye,
+  FileText,
+  FolderOpen,
+  Hash,
+  Heading1,
+  ImagePlus,
+  Italic,
+  Link2,
+  List,
+  ListOrdered,
+  MapPin,
+  MessageCircle,
+  Quote,
+  Redo2,
+  Rocket,
+  ShieldCheck,
+  Smile,
+  Sparkles,
+  Strikethrough,
+  Table2,
+  Trash2,
+  Undo2,
+  Users,
+  Wand2,
+  X,
+} from "lucide-react";
 
-const titleCandidates = [
-  "通勤穿搭不用想太多：5 个公式清爽出门",
-  "夏天上班穿什么？这 5 套公式直接照搬",
-  "衣柜不够多，也能穿出清爽通勤感",
-  "20-30 岁女生的夏日通勤穿搭模板",
-  "一周通勤不重样，靠这 5 个轻量公式"
+const defaultIdeas = [
+  "把主题拆成 3 个可发布角度",
+  "补充一个更有冲突感的开头",
+  "给正文增加生活化案例",
+  "生成 5 个今日头条标题",
 ];
 
-const slashActions = ["续写", "润色", "改变语气", "插入配图建议"];
-const selectionActions = ["润色", "扩写", "改变风格", "续写"];
+const topicSuggestions = [
+  "#夏日通勤穿搭",
+  "#普通人变美思路",
+  "#生活方式观察",
+  "#职场新人指南",
+  "#轻量公式",
+];
 
-const directDraft = `夏天通勤最怕两件事：出门路上闷热，进办公室又被空调吹冷。与其每天重新搭配，不如准备一套可以复用的穿搭公式。
+const activityTopics = [
+  {
+    title: "# 城市生活灵感季",
+    meta: "热度 128",
+    cover: "https://images.unsplash.com/photo-1496747611176-843222e1e57c?auto=format&fit=crop&w=200&q=80",
+  },
+  {
+    title: "# 今日好内容计划",
+    meta: "热度 96",
+    cover: "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=200&q=80",
+  },
+];
 
-第一，选择透气但有型的上衣。棉麻、轻薄衬衫和有垂感的针织都适合通勤，不会显得太随意，也能保持清爽。
+type AiMode = "brainstorm" | "direct";
+type PrepTab = "brief" | "assets";
+type ImageTarget = "body" | "cover" | "asset";
 
-第二，用低饱和色做主色。白色、浅灰、雾蓝、燕麦色更容易互相搭配，拍成图文时也更干净。
+type SelectionMenu = {
+  visible: boolean;
+  top: number;
+  left: number;
+};
 
-第三，给空调房准备一件轻薄外套。防晒衬衫、薄针织或短款小外套都可以，让通勤造型更完整。
+const emptySelectionMenu: SelectionMenu = {
+  visible: false,
+  top: 0,
+  left: 0,
+};
 
-第四，鞋包尽量轻量。通勤不是走秀，舒适和容量会直接影响一整天的状态。
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
 
-第五，每套搭配保留一个亮点。可以是耳饰、丝巾、包包颜色或腰线处理，让封面图更容易被读者注意到。`;
+function textToEditorHtml(text: string) {
+  if (!text.trim()) {
+    return "";
+  }
 
-const initialBody = `如果你每天早上都在衣柜前犹豫，可以先从“可复用公式”开始搭配。
+  return text
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean)
+    .map((paragraph) => `<p>${escapeHtml(paragraph).replace(/\n/g, "<br />")}</p>`)
+    .join("");
+}
 
-1. 选择透气但有型的上衣，避免通勤路上闷热。
-2. 用低饱和色做主色，搭配更稳定，也更适合图片呈现。
-3. 准备一件轻薄外套，应对办公室空调.
-4. 鞋包尽量轻量，降低全天通勤负担。
-5. 每套搭配保留一个亮点，让封面图更容易被点击。`;
+function toDraftSummary(content: ContentDetail): ContentSummary {
+  return content;
+}
 
-const inputClass =
-  "mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50 disabled:text-slate-400";
+function formatDraftTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "刚刚更新";
+  }
+
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
 
 export default function EditorPage() {
-  // 1. 左侧：前置全局策略状态（由 AI 在后台提取后反显，或由创作者微调）
-  const [isLeftExpanded, setIsLeftExpanded] = useState(false);
-  const [leftTab, setLeftTab] = useState<"requirements" | "assets">("requirements");
-  const [globalTheme, setGlobalTheme] = useState("");
-  const [globalAudience, setGlobalAudience] = useState("");
-  const [globalStyle, setGlobalStyle] = useState("");
-  const [globalPoints, setGlobalPoints] = useState("");
-  const [globalKeywords, setGlobalKeywords] = useState("");
-
-  // 2. 中间：编辑器状态
-  const [title, setTitle] = useState("夏日通勤穿搭的 5 个轻量公式");
-  const [body, setBody] = useState(initialBody);
+  const router = useRouter();
+  const editorRef = useRef<HTMLDivElement | null>(null);
+  const selectionRangeRef = useRef<Range | null>(null);
+  const pendingEditorHtmlRef = useRef<string | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const [contentId, setContentId] = useState<string | null>(null);
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [topic, setTopic] = useState("夏日通勤穿搭");
+  const [audience, setAudience] = useState("20-30 岁女性");
+  const [style, setStyle] = useState("真实、轻松、有方法感");
+  const [viewpoint, setViewpoint] = useState("用轻量公式降低通勤穿搭决策成本");
+  const [assetNote, setAssetNote] = useState("可参考小红书/头条穿搭热点、通勤场景照片、用户评论关键词");
+  const [prepTab, setPrepTab] = useState<PrepTab>("brief");
+  const [aiMode, setAiMode] = useState<AiMode>("brainstorm");
+  const [chatInput, setChatInput] = useState("");
+  const [statusMessage, setStatusMessage] = useState("编辑器已准备好");
+  const [isLoadingInitial, setIsLoadingInitial] = useState(true);
+  const [isBusy, setIsBusy] = useState(false);
+  const [drafts, setDrafts] = useState<ContentSummary[]>([]);
+  const [showDraftList, setShowDraftList] = useState(false);
   const [showSlashMenu, setShowSlashMenu] = useState(false);
-  const [showSelectionMenu, setShowSelectionMenu] = useState(false);
-  const [showTitlePanel, setShowTitlePanel] = useState(false);
-  const [status, setStatus] = useState("✅ 草稿已自动保存");
-
-  // 3. 右侧：AI 交互中心状态
-  const [rightTab, setRightTab] = useState<"brainstorm" | "generate">("brainstorm");
-  const [chatInputValue, setChatInputValue] = useState("");
-  const [generateInputValue, setGenerateInputValue] = useState("");
-  const [chatMessages, setChatMessages] = useState([
-    { role: "ai", text: "💡 我是你的全能副驾。你可以在这里跟我【碰撞思路】，或者切换到【直接生成】一键输出结构化图文。" },
-    { role: "user", text: "我想写一篇夏日通勤穿搭，你觉得从什么角度切入比较新颖？" },
-    { role: "ai", text: "建议从“轻量公式”切入。你可以分享 5 个可以直接套用的公式，比如“防晒衣+吊带+阔腿裤”，这样读者实操性强。满意的话，可以直接点击下方的快捷成稿。" }
-  ]);
+  const [selectionMenu, setSelectionMenu] = useState<SelectionMenu>(emptySelectionMenu);
+  const [coverMode, setCoverMode] = useState<"single" | "triple" | "none">("single");
+  const [coverPreview, setCoverPreview] = useState("");
+  const [imageTarget, setImageTarget] = useState<ImageTarget>("body");
+  const [allowCopy, setAllowCopy] = useState(true);
+  const [allowCoCreate, setAllowCoCreate] = useState(false);
+  const [isOriginal, setIsOriginal] = useState(false);
+  const [visibility, setVisibility] = useState<"public" | "friends" | "private">("public");
+  const [schedulePublish, setSchedulePublish] = useState(false);
 
   const wordCount = useMemo(() => body.replace(/\s/g, "").length, [body]);
+  const hasSavedDrafts = drafts.length > 0;
 
-  // 全局唯一核心发动机：右侧调度大权
-  function handleSuperGenerate() {
-    setStatus("⚡ AI 正在深度构思并排版中...");
-    
-    // 模拟后端 Workflow 返回的结构化 JSON
-    setTimeout(() => {
-      // 流向 1：注入中央主编辑器
-      setTitle("通勤穿搭不用想太多：5 个公式清爽出门");
-      setBody(directDraft);
+  const assistantCards = useMemo(() => {
+    const cards = [];
 
-      // 流向 2：自动提取特征，反显并填充到左侧前置全局参数
-      setGlobalTheme("夏日通勤穿搭");
-      setGlobalAudience("20-30 岁通勤女性");
-      setGlobalStyle("短图文种草、清爽、实用");
+    if (wordCount < 120) {
+      cards.push({
+        title: "补齐正文骨架",
+        desc: "当前正文偏短，建议加入一个真实场景、一个方法清单和一个结尾行动点。",
+        action: "插入三段式结构",
+      });
+    }
 
-      // 流向 3：联动展开左侧，向用户视觉提示：“AI 已经为你打好了前置地基”
-      setIsLeftExpanded(true);
-      setStatus("🚀 AI 已一次性生成完整图文，并在左侧反显全局策略标签");
-    }, 600);
+    if (!coverPreview && coverMode !== "none") {
+      cards.push({
+        title: "封面还没准备",
+        desc: "头条信息流更依赖首图识别度，可以生成一组清爽、明亮的通勤穿搭配图提示词。",
+        action: "生成配图提示",
+      });
+    }
+
+    if (!title.trim() && body.trim()) {
+      cards.push({
+        title: "可以生成标题了",
+        desc: "AI 已读到正文方向，适合生成 5 个不同力度的标题供你选择。",
+        action: "推荐标题",
+      });
+    }
+
+    return cards.slice(0, 3);
+  }, [body, coverMode, coverPreview, title, wordCount]);
+
+  useEffect(() => {
+    void loadInitialDrafts();
+  }, []);
+
+  useEffect(() => {
+    if (!editorRef.current || pendingEditorHtmlRef.current === null) {
+      return;
+    }
+
+    editorRef.current.innerHTML = pendingEditorHtmlRef.current;
+    pendingEditorHtmlRef.current = null;
+  }, [isLoadingInitial]);
+
+  useEffect(() => {
+    function handleSelectionChange() {
+      const selection = window.getSelection();
+      const editor = editorRef.current;
+
+      if (!selection || !editor || selection.rangeCount === 0 || !selection.anchorNode) {
+        return;
+      }
+
+      if (!editor.contains(selection.anchorNode)) {
+        return;
+      }
+
+      selectionRangeRef.current = selection.getRangeAt(0).cloneRange();
+    }
+
+    document.addEventListener("selectionchange", handleSelectionChange);
+    return () => {
+      document.removeEventListener("selectionchange", handleSelectionChange);
+    };
+  }, []);
+
+  function writeEditorHtml(nextBody: string) {
+    const nextHtml = textToEditorHtml(nextBody);
+    setBody(nextBody);
+    if (editorRef.current) {
+      editorRef.current.innerHTML = nextHtml;
+      return;
+    }
+
+    pendingEditorHtmlRef.current = nextHtml;
   }
 
-  // 快捷桥接：把聊天里碰撞好的灵感一键送去生成
-  function bridgeChatToGeneration() {
-    setGenerateInputValue("就按刚才讨论的“轻量公式”，写一篇 20-30 岁女性的夏日通勤穿搭。");
-    setRightTab("generate");
+  function syncBodyFromEditor(nextStatus?: string) {
+    const text = editorRef.current?.textContent ?? "";
+    setBody(text);
+    if (nextStatus) {
+      setStatusMessage(nextStatus);
+    }
   }
 
-  function updateBody(value: string) {
-    setBody(value);
-    setShowSlashMenu(value.endsWith("/"));
-    setStatus("📝 正在编辑，30 秒后自动保存");
+  function cacheSelectionRange() {
+    const selection = window.getSelection();
+    const editor = editorRef.current;
+
+    if (!selection || !editor || selection.rangeCount === 0) {
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    if (!editor.contains(range.commonAncestorContainer)) {
+      return;
+    }
+
+    selectionRangeRef.current = range.cloneRange();
   }
 
-  function applySlashAction(action: string) {
+  function restoreSelectionRange() {
+    const selection = window.getSelection();
+    const editor = editorRef.current;
+
+    if (!selection || !editor) {
+      return;
+    }
+
+    editor.focus();
+    selection.removeAllRanges();
+
+    const cached = selectionRangeRef.current;
+    if (cached && editor.contains(cached.commonAncestorContainer)) {
+      selection.addRange(cached);
+      return;
+    }
+
+    const fallbackRange = document.createRange();
+    fallbackRange.selectNodeContents(editor);
+    fallbackRange.collapse(false);
+    selection.addRange(fallbackRange);
+  }
+
+  async function loadInitialDrafts() {
+    setIsLoadingInitial(true);
+    setContentId(null);
+    setTitle("");
+    writeEditorHtml("");
+    try {
+      const contents = await getContents();
+      const draftItems = contents
+        .filter((item) => item.status === ContentStatus.Draft)
+        .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+      setDrafts(draftItems);
+
+      if (draftItems[0]) {
+        setStatusMessage(`检测到 ${draftItems.length} 篇草稿，可按需恢复`);
+      } else {
+        setStatusMessage("暂无已保存草稿，可以直接开始创作");
+      }
+    } catch {
+      setStatusMessage("草稿加载失败，当前可继续本地编辑");
+    } finally {
+      setIsLoadingInitial(false);
+    }
+  }
+
+  async function restoreDraft(id: string, message = "已恢复草稿内容") {
+    try {
+      const detail = await getContentDetail(id);
+      setContentId(detail.id);
+      setTitle(detail.title ?? "");
+      writeEditorHtml(detail.body ?? "");
+      setTopic(detail.tags?.[0] ?? topic);
+      setCoverPreview(detail.coverUrl ?? "");
+      setStatusMessage(message);
+    } catch {
+      setStatusMessage("草稿恢复失败，请稍后再试");
+    }
+  }
+
+  async function persistDraft() {
+    setIsBusy(true);
+    try {
+      const nextBody = editorRef.current?.textContent?.trim() || body;
+      const payload = {
+        title: title.trim() || "未命名图文草稿",
+        body: nextBody || "这里开始记录你的创作正文。",
+        tags: topic ? [topic] : [],
+      };
+
+      const saved = contentId
+        ? await updateContent(contentId, payload)
+        : await createContent(payload);
+
+      setContentId(saved.id);
+      setTitle(saved.title);
+      writeEditorHtml(saved.body);
+      setDrafts((items) => {
+        const next = [toDraftSummary(saved), ...items.filter((item) => item.id !== saved.id)];
+        return next.filter((item) => item.status === ContentStatus.Draft);
+      });
+      setStatusMessage("草稿已保存");
+    } catch {
+      setStatusMessage("保存失败，请检查后端服务是否已启动");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function autoSave() {
+    if (!contentId) {
+      await persistDraft();
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      const saved = await autosaveDraft(contentId, {
+        title: title.trim() || "未命名图文草稿",
+        body: editorRef.current?.textContent?.trim() || body || "这里开始记录你的创作正文。",
+        payload: {
+          tags: topic ? [topic] : [],
+          coverPreview,
+        },
+      });
+      void saved;
+      setStatusMessage("已同步到草稿箱");
+    } catch {
+      setStatusMessage("自动保存失败");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function createAiDraft(source = "brief") {
+    setIsBusy(true);
+    setStatusMessage("AI 正在生成结构化初稿...");
+    try {
+      const result = await generateDraft({
+        topic,
+        style,
+        platform: "今日头条",
+        tags: topic ? [topic] : [],
+        materialNotes: [
+          `目标人群：${audience}`,
+          `核心观点：${viewpoint}`,
+          `素材参考：${assetNote}`,
+          source === "direct" ? `最终指令：${chatInput}` : "从基础需求生成完整图文",
+        ].join("\n"),
+      });
+      setTitle(result.title);
+      writeEditorHtml(result.body);
+      setStatusMessage("AI 初稿已写入中央编辑区，可继续人工修改");
+      setChatInput("");
+    } catch {
+      const fallbackTitle = `${topic}：一套更轻松的实用方法`;
+      const fallbackBody = `开头：很多人不是不会搭配，而是每天早上缺少一个稳定、低成本的选择框架。\n\n核心观点：${viewpoint}。\n\n第一部分：先确定今天的场景。通勤、见客户、下班约会，对衣服的要求其实不一样。\n\n第二部分：用一个主色、一个基础款、一个亮点单品完成组合，让整体看起来有重点但不费力。\n\n第三部分：配图建议可以围绕“清爽街拍、通勤包、浅色上衣、自然光”展开。\n\n结尾：把穿搭变成可复用公式，真正节省的是每天出门前的犹豫时间。`;
+      setTitle(fallbackTitle);
+      writeEditorHtml(fallbackBody);
+      setStatusMessage("后端 AI 暂不可用，已写入本地示例初稿");
+      setChatInput("");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function submitForReview() {
+    setIsBusy(true);
+    try {
+      const saved = contentId
+        ? await updateContent(contentId, {
+            title: title.trim() || "未命名图文草稿",
+            body: editorRef.current?.textContent?.trim() || body,
+            tags: topic ? [topic] : [],
+          })
+        : await createContent({
+            title: title.trim() || "未命名图文草稿",
+            body: editorRef.current?.textContent?.trim() || body,
+            tags: topic ? [topic] : [],
+          });
+
+      setContentId(saved.id);
+      const reviewed = await submitReview(saved.id);
+      setStatusMessage(reviewed.content.status === ContentStatus.Published ? "已通过审核并发布" : "已提交审核");
+      router.push(`/content/${reviewed.content.id}`);
+    } catch {
+      setStatusMessage("提交失败，请稍后再试");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  function runCommand(command: string, value?: string) {
+    restoreSelectionRange();
+    const applied = document.execCommand(command, false, value);
+    if (!applied && (command === "bold" || command === "italic" || command === "strikeThrough")) {
+      const fallbackText = command === "bold" ? "加粗文本" : command === "italic" ? "斜体文本" : "删除线文本";
+      const wrapper = command === "bold" ? "strong" : command === "italic" ? "em" : "s";
+      document.execCommand("insertHTML", false, `<${wrapper}>${fallbackText}</${wrapper}>`);
+    }
+    cacheSelectionRange();
+    syncBodyFromEditor("已应用编辑格式");
+  }
+
+  function insertHtml(html: string, message: string) {
+    restoreSelectionRange();
+    const inserted = document.execCommand("insertHTML", false, html);
+
+    if (!inserted) {
+      const selection = window.getSelection();
+      if (selection && selection.rangeCount > 0) {
+        const range = selection.getRangeAt(0);
+        range.deleteContents();
+
+        const template = document.createElement("template");
+        template.innerHTML = html;
+        const fragment = template.content;
+        range.insertNode(fragment);
+        range.collapse(false);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+    }
+
+    cacheSelectionRange();
+    syncBodyFromEditor(message);
     setShowSlashMenu(false);
-    if (action === "续写") {
-      setBody((current) => `${current.replace(/\/$/, "")}\n\nAI 续写建议：可以在结尾补充一份“明日通勤快速选择清单”，帮助读者直接行动。`);
-      return;
-    }
-    if (action === "插入配图建议") {
-      setBody((current) => `${current.replace(/\/$/, "")}\n\n配图建议：此处适合插入一张浅色背景的夏日通勤街拍图，突出轻薄外套和低饱和配色。`);
-      return;
-    }
-    setBody((current) => current.replace(/\/$/, ""));
-    setStatus(`已执行 AI 动作：${action}`);
   }
 
-  function handleSendChatMessage() {
-    if (!chatInputValue.trim()) return;
-    setChatMessages((prev) => [...prev, { role: "user", text: chatInputValue }]);
-    setChatInputValue("");
-    // 模拟 AI 实时回复
-    setTimeout(() => {
-      setChatMessages((prev) => [...prev, { role: "ai", text: "收到你的新想法！这个角度很棒，建议可以在大纲中专门留出一节来体现这个思路。" }]);
-    }, 400);
+  function handleEditorInput() {
+    const text = editorRef.current?.textContent ?? "";
+    setBody(text);
+    setShowSlashMenu(text.endsWith("/"));
+    setStatusMessage("正在编辑正文");
+  }
+
+  function updateSelectionMenu() {
+    const selection = window.getSelection();
+    const editor = editorRef.current;
+
+    if (!selection || selection.isCollapsed || !editor || !selection.anchorNode || !editor.contains(selection.anchorNode)) {
+      setSelectionMenu(emptySelectionMenu);
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    cacheSelectionRange();
+    const rect = range.getBoundingClientRect();
+    const editorRect = editor.getBoundingClientRect();
+    setSelectionMenu({
+      visible: true,
+      top: Math.max(8, rect.top - editorRect.top - 44),
+      left: Math.max(8, rect.left - editorRect.left),
+    });
+  }
+
+  function transformSelection(kind: "polish" | "expand" | "tone") {
+    restoreSelectionRange();
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) {
+      return;
+    }
+
+    const selectedText = selection.toString();
+    const replacement =
+      kind === "polish"
+        ? `${selectedText}（表达更清晰、节奏更顺）`
+        : kind === "expand"
+          ? `${selectedText}。这里可以补充一个具体场景、用户痛点和可执行建议，让读者更容易代入。`
+          : `${selectedText}（换成更轻松、有陪伴感的语气）`;
+
+    document.execCommand("insertText", false, replacement);
+    cacheSelectionRange();
+    syncBodyFromEditor("AI 已处理选中内容");
+    setSelectionMenu(emptySelectionMenu);
+  }
+
+  function handleImagePick(file: File | undefined) {
+    if (!file) {
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result);
+      if (imageTarget === "body") {
+        insertHtml(
+          `<figure><img src="${dataUrl}" alt="正文配图" /><figcaption>点击图片可继续补充说明</figcaption></figure>`,
+          "图片已插入正文"
+        );
+        if (!coverPreview) {
+          setCoverPreview(dataUrl);
+        }
+        return;
+      }
+
+      if (imageTarget === "cover") {
+        setCoverPreview(dataUrl);
+        setStatusMessage("封面已更新");
+        return;
+      }
+
+      setCoverPreview((current) => current || dataUrl);
+      setStatusMessage("图片素材已加入素材管理");
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function insertLink() {
+    const href = window.prompt("请输入链接地址");
+    if (!href) {
+      return;
+    }
+    runCommand("createLink", href);
+  }
+
+  function insertTable() {
+    insertHtml(
+      `<table><tbody><tr><th>要点</th><th>说明</th></tr><tr><td>场景</td><td>补充读者会遇到的真实问题</td></tr><tr><td>方法</td><td>给出可执行步骤</td></tr></tbody></table>`,
+      "表格已插入正文"
+    );
+  }
+
+  function insertSlashAction(action: "continue" | "polish" | "tone" | "image") {
+    if (action === "continue") {
+      insertHtml("<p>接下来可以从一个具体生活场景切入，先写痛点，再给出可复制的方法。</p>", "AI 已续写一段内容");
+      return;
+    }
+
+    if (action === "polish") {
+      insertHtml("<p>这段内容可以进一步压缩表达，让观点更集中、转折更自然。</p>", "AI 已插入润色建议");
+      return;
+    }
+
+    if (action === "tone") {
+      insertHtml("<p>换一种更轻松的语气：别把穿搭当成考试，它更像是给今天的自己选一个舒服的出场方式。</p>", "AI 已插入语气示例");
+      return;
+    }
+
+    insertHtml("<p><strong>配图建议：</strong>清爽自然光、浅色衬衫、通勤包、街角步行场景，画面留白适合信息流封面。</p>", "AI 已插入配图建议");
   }
 
   return (
-    <section className="flex flex-col max-w-350 mx-auto w-full px-6 lg:px-10 py-6 bg-slate-50 font-sans">
-      {/* 头部布局 */}
-      <header className="flex items-end justify-between gap-6 mb-6 pb-4 border-b border-slate-200 shrink-0">
-        <div>
-          <span className="mb-2 block text-sm font-extrabold tracking-widest uppercase text-blue-600">CreatorFlow Studio</span>
-          <h1 className="m-0 text-[26px] font-black tracking-tight text-slate-900">让 AI 理解上下文，创作者掌控最终表达。</h1>
-          <p className="mt-1 text-sm text-slate-500">以画布编辑为主体，左侧沉淀资产与反显配置，右侧统筹输入与思路碰撞。</p>
+    <section className="min-h-full bg-[#f6f6f7] px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
+      <header className="mx-auto mb-5 flex max-w-[1480px] flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => router.push("/dashboard")}
+            className="grid size-10 place-items-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:border-[#ff2442]/30 hover:text-[#ff2442]"
+            aria-label="返回"
+          >
+            <ChevronLeft size={20} />
+          </button>
+          <div>
+            <h1 className="text-2xl font-semibold tracking-normal text-slate-950">发布文章</h1>
+          </div>
         </div>
-        <div className="flex gap-3">
-          <button className="rounded-lg border border-slate-200 bg-white px-6 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-50 transition-colors" type="button">保存草稿</button>
-          <button className="rounded-lg border border-slate-200 bg-white px-6 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-50 transition-colors" type="button">预览</button>
-          <button className="rounded-lg bg-slate-900 px-6 py-2.5 text-sm font-bold text-white hover:bg-slate-800 transition-colors" type="button">提交审核</button>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="rounded-full bg-white px-4 py-2 text-sm text-slate-500 shadow-sm">
+            {isLoadingInitial ? "正在读取草稿箱" : statusMessage}
+          </span>
+          <button
+            type="button"
+            onClick={autoSave}
+            disabled={isBusy}
+            className="rounded-full border border-slate-200 bg-white px-5 py-2.5 text-sm font-medium text-slate-700 shadow-sm transition hover:border-[#ff2442]/30 hover:text-[#ff2442] disabled:opacity-60"
+          >
+            保存草稿
+          </button>
+          <button
+            type="button"
+            onClick={submitForReview}
+            disabled={isBusy}
+            className="rounded-full bg-[#ff2442] px-6 py-2.5 text-sm font-semibold text-white transition hover:bg-[#e91635] disabled:opacity-60"
+          >
+            发布
+          </button>
         </div>
       </header>
 
-      {/* 主体工作台 */}
-      <div className="flex gap-5 flex-1 min-h-0">
-        
-        {/* 1. 左侧：创作前置准备区（去除主动生成按钮，降级为资产/配置面板） */}
-        <aside className={`flex flex-col shrink-0 bg-white border border-slate-200 rounded-xl overflow-hidden transition-all duration-300 ease-in-out shadow-sm ${isLeftExpanded ? "w-80" : "w-14 items-center"}`}>
-          {!isLeftExpanded ? (
-            <div className="flex-1 flex items-center justify-center cursor-pointer bg-slate-50 w-full hover:bg-slate-100 transition-colors" onClick={() => setIsLeftExpanded(true)}>
-              <div className="text-slate-400 font-bold tracking-[0.2em] [writing-mode:vertical-rl] text-xs flex items-center gap-1">
-                <span>◀</span> 展开配置与素材库
-              </div>
+      <div className="mx-auto grid max-w-[1480px] grid-cols-[280px_minmax(0,1fr)_340px] gap-5 xl:items-start max-xl:grid-cols-1">
+        <aside className="sticky top-5 rounded-[24px] border border-slate-100 bg-white p-4 shadow-sm max-xl:static">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="mt-1 text-lg font-semibold">创作目标</h2>
+          </div>
+
+          <div className="mb-4 grid grid-cols-2 rounded-full bg-slate-100 p-1">
+            <button
+              type="button"
+              onClick={() => setPrepTab("brief")}
+              className={`rounded-full px-3 py-2 text-sm font-medium transition ${
+                prepTab === "brief" ? "bg-white text-[#ff2442] shadow-sm" : "text-slate-500 hover:text-slate-900"
+              }`}
+            >
+              基础需求
+            </button>
+            <button
+              type="button"
+              onClick={() => setPrepTab("assets")}
+              className={`rounded-full px-3 py-2 text-sm font-medium transition ${
+                prepTab === "assets" ? "bg-white text-[#ff2442] shadow-sm" : "text-slate-500 hover:text-slate-900"
+              }`}
+            >
+              素材管理
+            </button>
+          </div>
+
+          {prepTab === "brief" ? (
+            <div className="space-y-3">
+              <Field label="主题" value={topic} onChange={setTopic} />
+              <Field label="目标人群" value={audience} onChange={setAudience} />
+              <Field label="风格" value={style} onChange={setStyle} />
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-slate-700">核心观点</span>
+                <textarea
+                  value={viewpoint}
+                  onChange={(event) => setViewpoint(event.target.value)}
+                  rows={4}
+                  className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none transition focus:border-[#ff2442]/50 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10"
+                />
+              </label>
             </div>
           ) : (
-            <div className="flex flex-col h-full p-5 min-h-0">
-              <div className="flex justify-between items-center mb-4 shrink-0">
-                <div>
-                  <h2 className="text-sm font-bold text-slate-900 m-0">策略与素材资产</h2>
-                  <p className="text-[11px] text-slate-400 mt-0.5">控制全局硬性约束条件</p>
-                </div>
-                <button onClick={() => setIsLeftExpanded(false)} className="text-slate-400 hover:text-slate-600 text-xs">收起 ◀</button>
-              </div>
-              
-              <div className="flex gap-2 p-1 bg-slate-100 rounded-lg mb-4 shrink-0">
-                <button onClick={() => setLeftTab("requirements")} className={`flex-1 py-1 text-xs rounded-md font-medium transition-all ${leftTab === "requirements" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
-                  基础需求
-                </button>
-                <button onClick={() => setLeftTab("assets")} className={`flex-1 py-1 text-xs rounded-md font-medium transition-all ${leftTab === "assets" ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
-                  素材管理
-                </button>
-              </div>
-
-              <div className="flex-1 overflow-y-auto pr-1 space-y-3.5 text-xs">
-                {leftTab === "requirements" ? (
-                  <>
-                    <div>
-                      <span className="font-semibold text-slate-500 block mb-1">主题 (AI 生成后自动提炼)</span>
-                      <input type="text" value={globalTheme} onChange={(e) => setGlobalTheme(e.target.value)} placeholder="暂无，由右侧一键生成后自动反显" className={inputClass} />
-                    </div>
-                    <div>
-                      <span className="font-semibold text-slate-500 block mb-1">目标人群</span>
-                      <input type="text" value={globalAudience} onChange={(e) => setGlobalAudience(e.target.value)} placeholder="例如：20-30岁职场人" className={inputClass} />
-                    </div>
-                    <div>
-                      <span className="font-semibold text-slate-500 block mb-1">内容风格约束</span>
-                      <input type="text" value={globalStyle} onChange={(e) => setGlobalStyle(e.target.value)} placeholder="例如：种草风、幽默" className={inputClass} />
-                    </div>
-                    <div>
-                      <span className="font-semibold text-slate-500 block mb-1">核心观点</span>
-                      <textarea value={globalPoints} onChange={(e) => setGlobalPoints(e.target.value)} placeholder="列出你想强调的几个核心点..." className={`${inputClass} min-h-20 resize-none`} />
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="border-2 border-dashed border-slate-200 bg-slate-50 rounded-lg p-6 text-center cursor-pointer hover:border-slate-300 transition-colors">
-                      <span className="text-2xl text-slate-400">+</span>
-                      <p className="mt-1 text-xs text-slate-400">拖拽上传图片/视频资产</p>
-                    </div>
-                    <div>
-                      <span className="font-semibold text-slate-500 block mb-1">背景参考资料 (AI 将自动引用)</span>
-                      <textarea placeholder="在这里粘贴你找好的爆款大纲或行业硬核数据..." className={`${inputClass} min-h-20 resize-none`} />
-                    </div>
-                    <div>
-                      <span className="font-semibold text-slate-500 block mb-1">关键词</span>
-                      <input type="text" value={globalKeywords} onChange={(e) => setGlobalKeywords(e.target.value)} placeholder="输入SEO或标签关键词，逗号分隔" className={inputClass} />
-                    </div>
-                  </>
-                )}
-              </div>
-              <div className="pt-4 mt-3 border-t border-slate-100 flex flex-col gap-2 shrink-0">
-                <button 
-                  onClick={handleSuperGenerate}
-                  className="w-full py-2.5 rounded-lg text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 shadow-sm shadow-blue-500/20 transition-all flex justify-center items-center gap-1.5"
-                >
-                  <span className="text-sm">✨</span> AI 一键生成初稿
-                </button>
-              </div>
+            <div className="space-y-3">
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-slate-700">参考文本 / 关键词</span>
+                <textarea
+                  value={assetNote}
+                  onChange={(event) => setAssetNote(event.target.value)}
+                  rows={7}
+                  className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none transition focus:border-[#ff2442]/50 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  setImageTarget("asset");
+                  imageInputRef.current?.click();
+                }}
+                className="flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-[#ff2442]/30 bg-[#fff3f5] px-4 py-4 text-sm font-medium text-[#ff2442]"
+              >
+                <ImagePlus size={18} />
+                上传图片素材
+              </button>
             </div>
           )}
+
+          <button
+            type="button"
+            onClick={() => createAiDraft("brief")}
+            disabled={isBusy}
+            className="mt-5 flex w-full items-center justify-center gap-2 rounded-2xl bg-[#ff2442] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#e91635] disabled:opacity-60"
+          >
+            <Wand2 size={18} />
+            AI 一键生成
+          </button>
         </aside>
 
-        {/* 2. 中间：人工编辑画布 */}
-        <main className="flex-1 flex flex-col bg-white border border-slate-200 rounded-xl px-8 lg:px-12 py-7 shadow-sm overflow-hidden min-w-0">
-          <div className="flex justify-between items-start max-w-6xl w-full mx-auto mb-6 shrink-0">
-            <div>
-              <h2 className="text-xl font-bold text-slate-900 m-0">中央主编辑区</h2>
-              <p className="text-xs text-slate-400 mt-1">这里是属于你的终稿画布。使用 <kbd className="px-1 py-0.5 rounded border border-slate-200 bg-slate-50 text-slate-600 font-mono text-[11px] mx-0.5">/</kbd> 触发伴随指令，或直接用鼠标划词。</p>
-            </div>
-            <span className={`px-3 py-1.5 rounded-md text-xs font-medium border ${status.includes("⚡") ? "bg-amber-50 text-amber-700 border-amber-200" : "bg-emerald-50 text-emerald-700 border-emerald-200"}`}>
-              {status}
-            </span>
-          </div>
+        <main className="space-y-5">
+          {hasSavedDrafts ? (
+            <section className="rounded-2xl border border-slate-100 bg-white px-4 py-3 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="text-sm text-slate-500">
+                  检测到 <span className="font-semibold text-slate-700">{drafts.length}</span> 篇草稿，可随时恢复。
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => restoreDraft(drafts[0].id)}
+                    className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:border-[#ff2442]/30 hover:text-[#ff2442]"
+                  >
+                    恢复最近草稿
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowDraftList((value) => !value)}
+                    className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-[#fff3f5] hover:text-[#ff2442]"
+                  >
+                    草稿列表
+                    <ChevronDown size={14} className={showDraftList ? "rotate-180 transition" : "transition"} />
+                  </button>
+                </div>
+              </div>
 
-          <div className="flex-1 flex flex-col relative max-w-6xl w-full mx-auto pb-6">
-            {/* 标题与爆款魔法棒 */}
-            <div className="flex items-center pb-3 mb-4 border-b border-slate-100 relative shrink-0">
-              <input className="flex-1 text-2xl font-bold bg-transparent border-0 outline-none text-slate-900 placeholder:text-slate-200" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="未命名标题" />
-              <button onClick={() => setShowTitlePanel(!showTitlePanel)} className="ml-3 p-1.5 rounded-lg bg-slate-50 border border-slate-200 text-sm hover:bg-slate-100 transition-colors" title="AI 智能衍生更多标题">
-                🪄 换个爆款标题
+              {showDraftList ? (
+                <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">
+                  {drafts.slice(0, 3).map((draft) => (
+                    <button
+                      key={draft.id}
+                      type="button"
+                      onClick={() => restoreDraft(draft.id)}
+                      className={`flex w-full items-center justify-between rounded-xl border px-3 py-2 text-left text-sm transition ${
+                        draft.id === contentId ? "border-[#ff2442]/30 bg-[#fff6f7]" : "border-slate-100 bg-slate-50 hover:border-[#ff2442]/20"
+                      }`}
+                    >
+                      <span className="line-clamp-1 font-medium text-slate-800">{draft.title || "未命名草稿"}</span>
+                      <span className="shrink-0 text-xs text-slate-400">{formatDraftTime(draft.updatedAt)}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+
+          <section className="rounded-[28px] bg-white p-5 shadow-sm sm:p-7">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <ToolbarButton label="撤销" onClick={() => runCommand("undo")} icon={<Undo2 size={17} />} />
+                <ToolbarButton label="重做" onClick={() => runCommand("redo")} icon={<Redo2 size={17} />} />
+                <span className="mx-1 h-6 w-px bg-slate-200" />
+                <ToolbarButton label="标题" onClick={() => runCommand("formatBlock", "h2")} icon={<Heading1 size={17} />} />
+                <ToolbarButton label="加粗" onClick={() => runCommand("bold")} icon={<Bold size={17} />} />
+                <ToolbarButton label="斜体" onClick={() => runCommand("italic")} icon={<Italic size={17} />} />
+                <ToolbarButton label="引用" onClick={() => runCommand("formatBlock", "blockquote")} icon={<Quote size={17} />} />
+                <ToolbarButton label="无序列表" onClick={() => runCommand("insertUnorderedList")} icon={<List size={17} />} />
+                <ToolbarButton label="有序列表" onClick={() => runCommand("insertOrderedList")} icon={<ListOrdered size={17} />} />
+                <ToolbarButton label="删除线" onClick={() => runCommand("strikeThrough")} icon={<Strikethrough size={17} />} />
+                <ToolbarButton label="代码" onClick={() => runCommand("formatBlock", "pre")} icon={<Code2 size={17} />} />
+                <ToolbarButton
+                  label="图片"
+                  onClick={() => {
+                    setImageTarget("body");
+                    imageInputRef.current?.click();
+                  }}
+                  icon={<ImagePlus size={17} />}
+                />
+                <ToolbarButton label="链接" onClick={insertLink} icon={<Link2 size={17} />} />
+                <ToolbarButton label="表格" onClick={insertTable} icon={<Table2 size={17} />} />
+                <ToolbarButton label="清除格式" onClick={() => runCommand("removeFormat")} icon={<Trash2 size={17} />} />
+              </div>
+              <button
+                type="button"
+                onClick={() => createAiDraft("title")}
+                disabled={isBusy}
+                className="inline-flex items-center gap-2 rounded-full bg-[#fff3f5] px-4 py-2 text-sm font-medium text-[#ff2442] transition hover:bg-[#ffe7eb] disabled:opacity-60"
+              >
+                <Sparkles size={16} />
+                智能标题
+                <ChevronDown size={15} />
               </button>
-              {showTitlePanel && (
-                <div className="absolute top-[110%] right-0 bg-white border border-slate-200 rounded-xl p-4 z-20 w-80 shadow-xl animate-in fade-in zoom-in-95 duration-150">
-                  <div className="flex justify-between items-center mb-2.5">
-                    <h4 className="text-xs font-bold text-slate-500 m-0">AI 针对本文推荐的衍生标题</h4>
-                    <button className="text-slate-400 text-base" onClick={() => setShowTitlePanel(false)}>×</button>
+            </div>
+
+            <input
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              placeholder="填写标题会有更多赞哦"
+              maxLength={60}
+              className="w-full border-none bg-transparent px-2 py-3 text-2xl font-semibold tracking-normal text-slate-950 outline-none placeholder:text-slate-300"
+            />
+
+            <div className="relative rounded-[22px] bg-white px-2 py-3">
+              {selectionMenu.visible ? (
+                <div
+                  className="absolute z-20 flex items-center gap-1 rounded-full border border-slate-100 bg-white p-1 shadow-lg"
+                  style={{ top: selectionMenu.top, left: selectionMenu.left }}
+                >
+                  <MiniAiButton label="润色" onClick={() => transformSelection("polish")} />
+                  <MiniAiButton label="扩写" onClick={() => transformSelection("expand")} />
+                  <MiniAiButton label="改变风格" onClick={() => transformSelection("tone")} />
+                </div>
+              ) : null}
+
+              <div
+                ref={editorRef}
+                contentEditable
+                suppressContentEditableWarning
+                onInput={handleEditorInput}
+                onMouseUp={updateSelectionMenu}
+                onKeyUp={updateSelectionMenu}
+                onFocus={cacheSelectionRange}
+                onBlur={() => setSelectionMenu(emptySelectionMenu)}
+                className="min-h-[420px] w-full cursor-text select-text text-[16px] leading-8 text-slate-800 outline-none empty:before:pointer-events-none empty:before:text-slate-300 empty:before:content-[attr(data-placeholder)] [&_a]:text-[#ff2442] [&_blockquote]:my-4 [&_blockquote]:border-l-4 [&_blockquote]:border-[#ff2442]/30 [&_blockquote]:bg-[#fff7f8] [&_blockquote]:px-4 [&_blockquote]:py-2 [&_figcaption]:mt-2 [&_figcaption]:text-center [&_figcaption]:text-sm [&_figcaption]:text-slate-400 [&_figure]:my-5 [&_h2]:my-4 [&_h2]:text-xl [&_h2]:font-semibold [&_img]:max-h-96 [&_img]:w-full [&_img]:rounded-2xl [&_img]:object-cover [&_li]:my-1 [&_ol]:my-4 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-3 [&_pre]:my-4 [&_pre]:rounded-2xl [&_pre]:bg-slate-950 [&_pre]:p-4 [&_pre]:text-sm [&_pre]:text-white [&_table]:my-4 [&_table]:w-full [&_table]:overflow-hidden [&_table]:rounded-2xl [&_table]:border [&_table]:border-slate-200 [&_td]:border [&_td]:border-slate-200 [&_td]:px-3 [&_td]:py-2 [&_th]:border [&_th]:border-slate-200 [&_th]:bg-slate-50 [&_th]:px-3 [&_th]:py-2 [&_ul]:my-4 [&_ul]:list-disc [&_ul]:pl-6"
+                data-placeholder="输入正文描述，真诚有价值的分享予人温暖。输入 / 唤醒 AI 伴写能力。"
+              />
+
+              {showSlashMenu ? (
+                <div className="absolute left-6 top-24 z-10 w-72 rounded-2xl border border-slate-100 bg-white p-2 shadow-xl">
+                  <SlashAction label="AI 续写" desc="沿着当前段落继续写下去" onClick={() => insertSlashAction("continue")} />
+                  <SlashAction label="润色表达" desc="让这段内容更顺、更像人话" onClick={() => insertSlashAction("polish")} />
+                  <SlashAction label="改变语气" desc="切换为轻松、专业或种草风" onClick={() => insertSlashAction("tone")} />
+                  <SlashAction label="插入配图建议" desc="给当前位置补一段图片方向" onClick={() => insertSlashAction("image")} />
+                </div>
+              ) : null}
+            </div>
+
+            <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                {topicSuggestions.map((item) => (
+                  <button
+                    type="button"
+                    key={item}
+                    onClick={() => setTopic(item.replace("#", ""))}
+                    className="rounded-full bg-slate-100 px-3 py-1.5 text-sm text-slate-600 transition hover:bg-[#fff0f2] hover:text-[#ff2442]"
+                  >
+                    {item}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1.5 text-sm font-medium text-slate-700"
+                >
+                  更多
+                  <ChevronDown size={14} />
+                </button>
+              </div>
+              <span className="text-sm text-slate-400">{wordCount}/3000</span>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <PillButton icon={<Hash size={16} />} label="话题" />
+              <PillButton icon={<Users size={16} />} label="用户" />
+              <PillButton icon={<Smile size={16} />} label="表情" />
+            </div>
+          </section>
+
+          <section className="rounded-[24px] bg-white p-5 shadow-sm sm:p-7">
+            <div className="mb-5 flex items-center justify-between">
+              <h2 className="text-lg font-semibold">活动话题</h2>
+              <button type="button" className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-[#ff2442]">
+                更多
+                <ChevronRight size={16} />
+              </button>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              {activityTopics.map((item) => (
+                <button
+                  key={item.title}
+                  type="button"
+                  className="flex items-center gap-3 rounded-2xl bg-slate-50 p-3 text-left transition hover:bg-[#fff3f5]"
+                  onClick={() => setTopic(item.title.replace("# ", ""))}
+                >
+                  <img src={item.cover} alt="" className="size-14 rounded-xl object-cover" />
+                  <div className="min-w-0 flex-1">
+                    <h3 className="line-clamp-1 font-semibold">{item.title}</h3>
+                    <p className="mt-1 text-sm text-slate-500">{item.meta}</p>
                   </div>
-                  <ul className="m-0 p-0 list-none space-y-1.5">
-                    {titleCandidates.map((candidate, i) => (
-                      <li key={i} className="cursor-pointer text-xs text-blue-700 p-2.5 rounded-lg bg-blue-50/50 border border-transparent hover:border-blue-200 transition-colors" onClick={() => { setTitle(candidate); setShowTitlePanel(false); }}>
-                        {candidate}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+                  <ChevronRight size={18} className="text-slate-400" />
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="rounded-[24px] bg-white p-5 shadow-sm sm:p-7">
+            <div className="mb-5 flex items-center justify-between">
+              <h2 className="text-lg font-semibold">内容设置</h2>
+              <button type="button" className="inline-flex items-center gap-1 text-sm text-slate-500">
+                收起
+                <ChevronDown size={16} />
+              </button>
             </div>
 
-            {/* 正文文本区域 */}
-            <div className="relative flex-1">
-              <textarea className="w-full h-full text-sm leading-relaxed text-slate-700 bg-transparent border-0 outline-none resize-none font-normal" value={body} onChange={(event) => updateBody(event.target.value)} onSelect={(event) => setShowSelectionMenu(event.currentTarget.selectionStart !== event.currentTarget.selectionEnd)} placeholder="直接动手写下你的第一个灵感碎片，或者使用右侧 AI 一键输出初稿..." />
-              
-              {showSlashMenu && (
-                <div className="absolute left-4 top-12 z-20 bg-white border border-slate-200 w-48 p-1.5 rounded-xl shadow-xl flex flex-col">
-                  <strong className="text-[10px] text-slate-400 px-2.5 py-1.5">AI 随身挂件</strong>
-                  {slashActions.map((action) => (
-                    <button className="text-left px-2.5 py-1.5 text-xs text-slate-700 rounded-lg hover:bg-blue-50 hover:text-blue-700 transition-colors" type="button" key={action} onClick={() => applySlashAction(action)}>
-                      {action}
-                    </button>
-                  ))}
+            <SettingRow label="展示封面">
+              <div className="space-y-3">
+                <div className="flex flex-wrap gap-4">
+                  <RadioLabel active={coverMode === "single"} label="单图" onClick={() => setCoverMode("single")} />
+                  <RadioLabel active={coverMode === "triple"} label="三图" onClick={() => setCoverMode("triple")} />
+                  <RadioLabel active={coverMode === "none"} label="无封面" onClick={() => setCoverMode("none")} />
                 </div>
-              )}
+                {coverMode !== "none" ? (
+                  <div className="flex flex-wrap items-center gap-4">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setImageTarget("cover");
+                        imageInputRef.current?.click();
+                      }}
+                      className="grid size-32 place-items-center overflow-hidden rounded-2xl border border-dashed border-slate-200 bg-slate-50 text-slate-400 transition hover:border-[#ff2442]/40 hover:bg-[#fff3f5] hover:text-[#ff2442]"
+                    >
+                      {coverPreview ? (
+                        <img src={coverPreview} alt="封面预览" className="h-full w-full object-cover" />
+                      ) : (
+                        <ImagePlus size={28} />
+                      )}
+                    </button>
+                    <p className="max-w-md text-sm leading-6 text-slate-500">
+                      优质封面有利于推荐，建议使用明亮、主体清晰的图片。正文插入的第一张图片也可作为封面。
+                    </p>
+                  </div>
+                ) : null}
+              </div>
+            </SettingRow>
 
-              {showSelectionMenu && (
-                <div className="absolute top-1/4 left-1/4 bg-slate-900 text-white p-1 rounded-lg flex shadow-xl z-20 gap-0.5">
-                  {selectionActions.map((action) => (
-                    <button className="px-2.5 py-1.5 text-xs font-medium rounded hover:bg-slate-800 transition-colors" type="button" key={action} onClick={() => { setStatus(`已对选中文字执行 AI ${action}`); setShowSelectionMenu(false); }}>
-                      {action}
-                    </button>
-                  ))}
-                </div>
-              )}
+            <SettingRow label="添加位置">
+              <button type="button" className="flex w-full max-w-lg items-center justify-between rounded-2xl bg-slate-50 px-4 py-3 text-left text-slate-500">
+                标记城市，让更多同城用户看到
+                <ChevronDown size={18} />
+              </button>
+            </SettingRow>
+
+            <SettingRow label="原创声明">
+              <Toggle checked={isOriginal} onChange={setIsOriginal} label="声明原创内容" />
+            </SettingRow>
+
+            <SettingRow label="添加组件">
+              <div className="grid gap-3 md:grid-cols-2">
+                <ComponentButton icon={<FolderOpen size={18} />} label="加入合集" />
+                <ComponentButton icon={<MessageCircle size={18} />} label="选择群聊" />
+                <ComponentButton icon={<CalendarClock size={18} />} label="关联直播预告" />
+                <ComponentButton icon={<MapPin size={18} />} label="标记地点或朋友" />
+                <ComponentButton icon={<FileText size={18} />} label="选择文件" />
+                <ComponentButton icon={<BadgeCheck size={18} />} label="内容类型声明" />
+              </div>
+            </SettingRow>
+          </section>
+
+          <section className="rounded-[24px] bg-white p-5 shadow-sm sm:p-7">
+            <div className="mb-5 flex items-center justify-between">
+              <h2 className="text-lg font-semibold">更多设置</h2>
+              <button type="button" className="inline-flex items-center gap-1 text-sm text-slate-500">
+                收起
+                <ChevronDown size={16} />
+              </button>
             </div>
-            <div className="absolute bottom-0 right-0 text-slate-400 text-xs font-medium">{wordCount} 字</div>
-          </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <ToggleTile icon={<Users size={18} />} label="允许合拍" checked={allowCoCreate} onChange={setAllowCoCreate} />
+              <ToggleTile icon={<Copy size={18} />} label="允许正文复制" checked={allowCopy} onChange={setAllowCopy} />
+              <button type="button" className="flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-3 text-left">
+                <span className="inline-flex items-center gap-2">
+                  <Eye size={18} />
+                  {visibility === "public" ? "公开可见" : visibility === "friends" ? "好友可见" : "仅自己可见"}
+                </span>
+                <ChevronDown size={18} className="text-slate-400" />
+              </button>
+              <ToggleTile icon={<CalendarClock size={18} />} label="定时发布" checked={schedulePublish} onChange={setSchedulePublish} />
+            </div>
+          </section>
+
+          <section className="rounded-[24px] bg-white p-5 shadow-sm sm:p-7">
+            <h2 className="mb-5 text-lg font-semibold">发布设置</h2>
+            <div className="grid gap-3 md:grid-cols-3">
+              <PublishOption active={visibility === "public"} label="公开" onClick={() => setVisibility("public")} />
+              <PublishOption active={visibility === "friends"} label="好友可见" onClick={() => setVisibility("friends")} />
+              <PublishOption active={visibility === "private"} label="仅自己可见" onClick={() => setVisibility("private")} />
+            </div>
+            <div className="mt-6 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={submitForReview}
+                disabled={isBusy}
+                className="rounded-2xl bg-[#ff2442] px-10 py-3 font-semibold text-white transition hover:bg-[#e91635] disabled:opacity-60"
+              >
+                发布
+              </button>
+              <button
+                type="button"
+                onClick={persistDraft}
+                disabled={isBusy}
+                className="rounded-2xl bg-slate-100 px-10 py-3 font-semibold text-slate-600 transition hover:bg-slate-200 disabled:opacity-60"
+              >
+                暂存离开
+              </button>
+            </div>
+          </section>
         </main>
 
-        {/* 3. 右侧：全站唯一发动机交互中心 */}
-        <aside className="w-90 shrink-0 flex flex-col bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-           {/* 双轨切换模式 */}
-           <div className="flex border-b border-slate-200 bg-slate-50 shrink-0">
-             <button onClick={() => setRightTab("brainstorm")} className={`flex-1 py-3.5 text-xs transition-all border-b-2 ${rightTab === "brainstorm" ? "bg-white font-black border-blue-500 text-blue-600" : "border-transparent text-slate-400 hover:text-slate-600"}`}>
-               💬 碰撞思路 (聊天轨)
-             </button>
-             <button onClick={() => setRightTab("generate")} className={`flex-1 py-3.5 text-xs transition-all border-b-2 ${rightTab === "generate" ? "bg-white font-black border-emerald-500 text-emerald-600" : "border-transparent text-slate-400 hover:text-slate-600"}`}>
-               🚀 直接生成 (生产轨)
-             </button>
-           </div>
+        <aside className="sticky top-5 space-y-4 max-xl:static">
+          <section className="rounded-[24px] border border-slate-100 bg-white p-4 shadow-sm">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="mt-1 text-lg font-semibold">创作助手</h2>
+            </div>
 
-           {/* 主动交互视图 */}
-           <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3 bg-slate-50/50 min-h-0">
-             {rightTab === "brainstorm" ? (
-               <>
-                 <div className="text-center text-[11px] text-slate-400 mb-1">在这个轨道聊天不会污染中间的主画布。</div>
-                 <div className="flex flex-col gap-3 flex-1 overflow-y-auto mb-2 pr-1">
-                   {chatMessages.map((msg, i) => (
-                     <div key={i} className={`p-3 rounded-xl max-w-[90%] leading-relaxed text-xs shadow-sm ${msg.role === "user" ? "bg-blue-600 text-white self-end rounded-tr-none" : "bg-white text-slate-700 border border-slate-100 self-start rounded-tl-none"}`}>
-                       {msg.text}
-                       {i === chatMessages.length - 1 && msg.role === "ai" && (
-                         <div className="mt-2.5 pt-2 border-t border-slate-100 flex justify-end">
-                           <button onClick={bridgeChatToGeneration} className="text-[11px] bg-blue-50 hover:bg-blue-100 text-blue-600 px-2 py-1 rounded font-bold transition-colors">
-                             👉 满意！以此思路切换去生成
-                           </button>
-                         </div>
-                       )}
-                     </div>
-                   ))}
-                 </div>
-               </>
-             ) : (
-               <div className="flex flex-col gap-3">
-                 <div className="bg-emerald-50/80 p-4 rounded-xl border border-emerald-200/60 text-emerald-800 text-xs leading-normal">
-                   <div className="font-bold mb-1 flex items-center gap-1.5 text-sm">⚡️ 生产力直接成稿模式</div>
-                   输入最终确定的选题或想法。大模型会在后台自动提炼特征并**在左侧完成硬性埋点**，同时把结构完备的完整长文**直接注入中央画布**。
-                 </div>
-               </div>
-             )}
-           </div>
-
-           {/* 伴随式动态实时建议流（只在右侧底部悬浮） */}
-           <div className="px-4 py-3 bg-slate-50 border-t border-slate-100 flex flex-col gap-2 shrink-0">
-             <div className="bg-white border border-slate-200 border-l-2 border-l-amber-500 p-3 rounded-lg shadow-sm text-xs">
-               <div className="font-bold text-slate-700 flex items-center gap-1 mb-0.5">💡 思路评审</div>
-               <span className="text-slate-400 block mb-1.5 leading-snug">检测到当前框架略显单薄，建议在这里补充一段“防晒霜误区”。</span>
-               <button onClick={() => setBody(prev => prev + "\n\n补充细节：注意防晒霜与底妆冲突时可能带来的整体效果缺陷...")} className="bg-amber-50 hover:bg-amber-100 text-amber-700 px-2 py-1 rounded text-[11px] font-bold transition-colors">点击一键塞入正文</button>
-             </div>
-             
-             <div className="bg-white border border-slate-200 border-l-2 border-l-blue-500 p-3 rounded-lg shadow-sm text-xs">
-               <div className="font-bold text-slate-700 flex items-center gap-1 mb-0.5">🖼️ 配图建议</div>
-               <span className="text-slate-400 block mb-1.5 leading-snug">此处建议插入一张清爽夏日穿搭街拍图作为配图。</span>
-               <button onClick={() => setStatus("已为您生成 Midjourney/生图提示词，复制到剪贴板！")} className="bg-blue-50 hover:bg-blue-100 text-blue-700 px-2 py-1 rounded text-[11px] font-bold transition-colors">一键生成文生图提示词</button>
-             </div>
-           </div>
-
-           {/* 底部全站主输入控制槽 */}
-           <div className="p-4 border-t border-slate-200 bg-white shrink-0">
-             <textarea
-               value={rightTab === "brainstorm" ? chatInputValue : generateInputValue}
-               onChange={(e) => rightTab === "brainstorm" ? setChatInputValue(e.target.value) : setGenerateInputValue(e.target.value)}
-               placeholder={rightTab === "brainstorm" ? "把这里当做你的草稿桶，随便聊些想法..." : "输入确定的骨架思路（或直接由聊天轨一键导入）..."}
-               className="w-full p-2.5 border border-slate-200 rounded-lg outline-none resize-none h-16 text-xs bg-slate-50 text-slate-800 focus:bg-white focus:border-blue-400 focus:ring-1 focus:ring-blue-100 transition-all mb-2"
-             />
-             <button
+            <div className="mb-4 grid grid-cols-2 rounded-full bg-slate-100 p-1">
+              <button
                 type="button"
-                onClick={rightTab === "generate" ? handleSuperGenerate : handleSendChatMessage}
-                className={`w-full py-2.5 rounded-lg text-xs font-bold text-white transition-colors flex justify-center items-center shadow-sm ${rightTab === "brainstorm" ? "bg-blue-600 hover:bg-blue-700 shadow-blue-500/10" : "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-500/10"}`}
-             >
-               {rightTab === "brainstorm" ? "发送指令给 AI 副驾" : "🚀 释放生产力：直接一键生成图文"}
-             </button>
-           </div>
-        </aside>
+                onClick={() => setAiMode("brainstorm")}
+                className={`rounded-full px-3 py-2 text-sm font-medium transition ${
+                  aiMode === "brainstorm" ? "bg-white text-[#ff2442] shadow-sm" : "text-slate-500 hover:text-slate-900"
+                }`}
+              >
+                碰撞思路
+              </button>
+              <button
+                type="button"
+                onClick={() => setAiMode("direct")}
+                className={`rounded-full px-3 py-2 text-sm font-medium transition ${
+                  aiMode === "direct" ? "bg-white text-[#ff2442] shadow-sm" : "text-slate-500 hover:text-slate-900"
+                }`}
+              >
+                直接生成
+              </button>
+            </div>
 
+            {aiMode === "brainstorm" ? (
+              <div className="space-y-3">
+                {defaultIdeas.map((idea) => (
+                  <button
+                    key={idea}
+                    type="button"
+                    onClick={() => setChatInput(idea)}
+                    className="w-full rounded-2xl bg-slate-50 px-4 py-3 text-left text-sm text-slate-600 transition hover:bg-[#fff3f5] hover:text-[#ff2442]"
+                  >
+                    {idea}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-2xl bg-[#fff3f5] p-4 text-sm leading-6 text-[#9f1239]">
+                输入确定好的主题或思路，AI 会直接把完整图文写入中央主编辑区，不在右侧堆长文本。
+              </div>
+            )}
+
+            <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50 p-2">
+              <textarea
+                value={chatInput}
+                onChange={(event) => setChatInput(event.target.value)}
+                rows={4}
+                placeholder={aiMode === "brainstorm" ? "输入你的疑问，和 AI 一起拆角度..." : "输入最终主题，AI 将生成完整图文..."}
+                className="w-full resize-none bg-transparent p-2 text-sm outline-none placeholder:text-slate-400"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  if (aiMode === "direct") {
+                    void createAiDraft("direct");
+                  } else {
+                    insertHtml(`<p><strong>灵感记录：</strong>${escapeHtml(chatInput || "可以从读者真实场景、反差标题和可执行清单三个方向展开。")}</p>`, "灵感已写入正文");
+                    setChatInput("");
+                  }
+                }}
+                disabled={isBusy}
+                className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-[#ff2442] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#e91635] disabled:opacity-60"
+              >
+                <Sparkles size={16} />
+                {aiMode === "direct" ? "生成到编辑区" : "写入灵感"}
+              </button>
+            </div>
+          </section>
+
+          <section className="rounded-[24px] border border-slate-100 bg-white p-4 shadow-sm">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="font-semibold">伴随式建议</h2>
+              <ShieldCheck size={18} className="text-[#ff2442]" />
+            </div>
+            <div className="space-y-3">
+              {assistantCards.map((card) => (
+                <button
+                  key={card.title}
+                  type="button"
+                  onClick={() => {
+                    if (card.action.includes("标题")) {
+                      void createAiDraft("title");
+                    } else if (card.action.includes("结构")) {
+                      insertHtml("<p><strong>补充结构：</strong>场景痛点 - 实用方法 - 读者行动建议。</p>", "已插入结构建议");
+                    } else {
+                      insertHtml("<p><strong>文生图提示词：</strong>夏日通勤穿搭，清爽自然光，浅色衬衫，城市街角，真实摄影质感。</p>", "已插入配图提示词");
+                    }
+                  }}
+                  className="w-full rounded-2xl border border-slate-100 bg-slate-50 p-4 text-left transition hover:border-[#ff2442]/20 hover:bg-[#fff3f5]"
+                >
+                  <h3 className="font-semibold text-slate-900">{card.title}</h3>
+                  <p className="mt-1 text-sm leading-6 text-slate-500">{card.desc}</p>
+                  <span className="mt-3 inline-flex rounded-full bg-white px-3 py-1 text-xs font-medium text-[#ff2442]">
+                    {card.action}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </section>
+        </aside>
       </div>
+
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(event) => {
+          handleImagePick(event.target.files?.[0]);
+          event.currentTarget.value = "";
+        }}
+      />
     </section>
+  );
+}
+
+function Field({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-sm font-medium text-slate-700">{label}</span>
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none transition focus:border-[#ff2442]/50 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10"
+      />
+    </label>
+  );
+}
+
+function ToolbarButton({ label, icon, onClick }: { label: string; icon: React.ReactNode; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={onClick}
+      title={label}
+      className="grid size-9 place-items-center rounded-xl text-slate-600 transition hover:bg-[#fff3f5] hover:text-[#ff2442]"
+      aria-label={label}
+    >
+      {icon}
+    </button>
+  );
+}
+
+function MiniAiButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={onClick}
+      className="rounded-full px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-[#fff3f5] hover:text-[#ff2442]"
+    >
+      {label}
+    </button>
+  );
+}
+
+function SlashAction({ label, desc, onClick }: { label: string; desc: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={onClick}
+      className="block w-full rounded-xl px-3 py-2 text-left transition hover:bg-[#fff3f5]"
+    >
+      <span className="block text-sm font-semibold text-slate-900">{label}</span>
+      <span className="mt-0.5 block text-xs text-slate-500">{desc}</span>
+    </button>
+  );
+}
+
+function PillButton({ icon, label }: { icon: React.ReactNode; label: string }) {
+  return (
+    <button
+      type="button"
+      className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-[#fff3f5] hover:text-[#ff2442]"
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
+function SettingRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="grid gap-3 border-t border-slate-100 py-5 first:border-t-0 md:grid-cols-[120px_minmax(0,1fr)]">
+      <div className="font-semibold text-slate-900">{label}</div>
+      <div>{children}</div>
+    </div>
+  );
+}
+
+function RadioLabel({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} className="inline-flex items-center gap-2 text-sm font-medium text-slate-700">
+      <span className={`grid size-5 place-items-center rounded-full border ${active ? "border-[#ff2442] bg-[#ff2442]" : "border-slate-300 bg-white"}`}>
+        <span className="size-2 rounded-full bg-white" />
+      </span>
+      {label}
+    </button>
+  );
+}
+
+function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (value: boolean) => void; label: string }) {
+  return (
+    <button type="button" onClick={() => onChange(!checked)} className="inline-flex items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3">
+      <span className="text-sm font-medium text-slate-700">{label}</span>
+      <span className={`relative h-7 w-12 rounded-full transition ${checked ? "bg-[#ff2442]" : "bg-slate-300"}`}>
+        <span className={`absolute top-1 size-5 rounded-full bg-white shadow-sm transition ${checked ? "left-6" : "left-1"}`} />
+      </span>
+    </button>
+  );
+}
+
+function ComponentButton({ icon, label }: { icon: React.ReactNode; label: string }) {
+  return (
+    <button type="button" className="flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-3 text-left transition hover:bg-[#fff3f5] hover:text-[#ff2442]">
+      <span className="inline-flex items-center gap-2">
+        {icon}
+        {label}
+      </span>
+      <ChevronRight size={18} className="text-slate-400" />
+    </button>
+  );
+}
+
+function ToggleTile({
+  icon,
+  label,
+  checked,
+  onChange,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  checked: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <button type="button" onClick={() => onChange(!checked)} className="flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-3 text-left transition hover:bg-[#fff3f5]">
+      <span className="inline-flex items-center gap-2">
+        {icon}
+        {label}
+      </span>
+      <span className={`relative h-7 w-12 rounded-full transition ${checked ? "bg-[#ff2442]" : "bg-slate-300"}`}>
+        <span className={`absolute top-1 size-5 rounded-full bg-white shadow-sm transition ${checked ? "left-6" : "left-1"}`} />
+      </span>
+    </button>
+  );
+}
+
+function PublishOption({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex items-center gap-3 rounded-2xl px-4 py-3 text-left font-medium transition ${
+        active ? "bg-[#fff3f5] text-[#ff2442]" : "bg-slate-50 text-slate-600 hover:bg-slate-100"
+      }`}
+    >
+      <span className={`grid size-5 place-items-center rounded-full border ${active ? "border-[#ff2442] bg-[#ff2442]" : "border-slate-300 bg-white"}`}>
+        <span className="size-2 rounded-full bg-white" />
+      </span>
+      {label}
+    </button>
   );
 }
