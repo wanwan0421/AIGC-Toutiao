@@ -39,13 +39,6 @@ export class ContentsService {
         excerpt: contentBody.slice(0, 72),
         status: DbContentStatus.draft,
         tags: body.tags ?? [],
-        drafts: {
-          create: {
-            authorId: author.id,
-            title: body.title?.trim() || "未命名草稿",
-            body: contentBody
-          }
-        },
         assets: body.assetIds?.length
           ? {
               createMany: {

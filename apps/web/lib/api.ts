@@ -135,13 +135,19 @@ export async function getDraft(contentId: string) {
     authorId: string;
     title?: string;
     body?: string;
-    payload?: Record<string, unknown>;
+    payload?: {
+      html?: string;
+      coverPreview?: string;
+      tags?: string[];
+      [key: string]: unknown;
+    };
     clientHash?: string;
     savedAt: string;
     source: string;
   }>(`/drafts/${contentId}`);
 }
 
+// 保存草稿到后端，并更新草稿列表和编辑器内容（如果是新草稿则创建，否则更新）
 export async function autosaveDraft(
   contentId: string,
   body: { title?: string; body?: string; payload?: Record<string, unknown>; clientHash?: string }

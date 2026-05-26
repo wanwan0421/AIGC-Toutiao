@@ -24,9 +24,8 @@ export class DraftsService {
       };
     }
 
-    const draft = await this.prisma.draft.findFirst({
-      where: { contentId },
-      orderBy: { savedAt: "desc" }
+    const draft = await this.prisma.draft.findUnique({
+      where: { contentId }
     });
 
     if (draft) {
@@ -57,9 +56,17 @@ export class DraftsService {
       throw new NotFoundException("content not found");
     }
 
-    const draft = await this.prisma.draft.create({
-      data: {
+    const draft = await this.prisma.draft.upsert({
+      where: { contentId },
+      create: {
         contentId,
+        authorId: content.authorId,
+        title: body.title,
+        body: body.body,
+        payload: body.payload as Prisma.InputJsonValue | undefined,
+        clientHash: body.clientHash
+      },
+      update: {
         authorId: content.authorId,
         title: body.title,
         body: body.body,

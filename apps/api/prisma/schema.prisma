@@ -7,49 +7,20 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum ContentStatus {
-  draft
-  pending_review
-  approved
-  rejected
-  published
-  updated
-  offline
-}
-
-enum PromptScene {
-  generate
-  audit
-  score
-  rewrite
-}
-
-enum AuditRiskLevel {
-  low
-  medium
-  high
-}
-
-enum AssetAuditStatus {
-  pending
-  approved
-  rejected
-}
-
 model User {
-  id           String           @id @default(cuid())
-  email        String?          @unique
-  phone        String?          @unique
+  id           String            @id @default(cuid())
+  email        String?           @unique
+  phone        String?           @unique
   passwordHash String
   nickname     String
   avatarUrl    String?
-  createdAt    DateTime         @default(now())
-  updatedAt    DateTime         @updatedAt
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  assets       Asset[]
   contents     Content[]
   prompts      PromptTemplate[]
-  assets       Asset[]
-  preferences  UserPreference?
   events       UserActionEvent[]
+  preferences  UserPreference?
 }
 
 model UserPreference {
@@ -65,40 +36,40 @@ model UserPreference {
 }
 
 model Content {
-  id            String            @id @default(cuid())
-  authorId      String
-  title         String
-  body          String
-  excerpt       String?
-  status        ContentStatus     @default(draft)
-  tags          String[]          @default([])
-  qualityScore  Int               @default(0)
-  heatScore     Int               @default(0)
-  viewCount     Int               @default(0)
-  likeCount     Int               @default(0)
-  collectCount  Int               @default(0)
-  clickCount    Int               @default(0)
-  publishedAt   DateTime?
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
-  author        User              @relation(fields: [authorId], references: [id])
-  drafts        Draft[]
-  versions      ContentVersion[]
-  assets        ContentAsset[]
-  audits        AuditRecord[]
-  scores        QualityScore[]
-  events        UserActionEvent[]
+  id           String            @id @default(cuid())
+  authorId     String
+  title        String
+  body         String
+  excerpt      String?
+  status       ContentStatus     @default(draft)
+  tags         String[]          @default([])
+  qualityScore Int               @default(0)
+  heatScore    Int               @default(0)
+  viewCount    Int               @default(0)
+  likeCount    Int               @default(0)
+  collectCount Int               @default(0)
+  clickCount   Int               @default(0)
+  publishedAt  DateTime?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  audits       AuditRecord[]
+  author       User              @relation(fields: [authorId], references: [id])
+  assets       ContentAsset[]
+  versions     ContentVersion[]
+  drafts       Draft[]
+  scores       QualityScore[]
+  events       UserActionEvent[]
 }
 
 model Draft {
   id         String   @id @default(cuid())
-  contentId  String
+  contentId  String   @unique
   authorId   String
   title      String?
   body       String?
   payload    Json?
   clientHash String?
-  savedAt    DateTime @default(now())
+  savedAt    DateTime @updatedAt
   content    Content  @relation(fields: [contentId], references: [id])
 }
 
@@ -149,8 +120,8 @@ model ContentAsset {
   contentId String
   assetId   String
   sortOrder Int     @default(0)
-  content   Content @relation(fields: [contentId], references: [id])
   asset     Asset   @relation(fields: [assetId], references: [id])
+  content   Content @relation(fields: [contentId], references: [id])
 
   @@id([contentId, assetId])
 }
@@ -162,20 +133,20 @@ model AuditRecord {
   riskLevel   AuditRiskLevel
   riskTypes   String[]       @default([])
   reasons     String[]       @default([])
-  rawResponse  Json?
-  createdAt    DateTime       @default(now())
-  content      Content        @relation(fields: [contentId], references: [id])
+  rawResponse Json?
+  createdAt   DateTime       @default(now())
+  content     Content        @relation(fields: [contentId], references: [id])
 }
 
 model QualityScore {
-  id         String   @id @default(cuid())
-  contentId  String
-  total      Int
-  dimensions Json
-  reason     String
+  id          String   @id @default(cuid())
+  contentId   String
+  total       Int
+  dimensions  Json
+  reason      String
   rawResponse Json?
-  createdAt  DateTime @default(now())
-  content    Content  @relation(fields: [contentId], references: [id])
+  createdAt   DateTime @default(now())
+  content     Content  @relation(fields: [contentId], references: [id])
 }
 
 model AiCallLog {
@@ -197,8 +168,37 @@ model UserActionEvent {
   eventType String
   metadata  Json?
   createdAt DateTime @default(now())
-  user      User?    @relation(fields: [userId], references: [id])
   content   Content  @relation(fields: [contentId], references: [id])
+  user      User?    @relation(fields: [userId], references: [id])
 
   @@index([contentId, eventType, createdAt])
+}
+
+enum ContentStatus {
+  draft
+  pending_review
+  approved
+  rejected
+  published
+  updated
+  offline
+}
+
+enum PromptScene {
+  generate
+  audit
+  score
+  rewrite
+}
+
+enum AuditRiskLevel {
+  low
+  medium
+  high
+}
+
+enum AssetAuditStatus {
+  pending
+  approved
+  rejected
 }
