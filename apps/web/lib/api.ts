@@ -4,7 +4,15 @@ import type {
   AuditResult,
   ContentDetail,
   ContentSummary,
-  QualityScoreResult
+  CreativeChatDone,
+  CreativeChatRequest,
+  DirectGenerateRequest,
+  DirectGenerateResult,
+  QualityScoreResult,
+  SelectionRewriteRequest,
+  SelectionRewriteResult,
+  TitleGenerateRequest,
+  TitleGenerateResult
 } from "@aicp/shared";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001/api";
@@ -163,6 +171,88 @@ export async function generateDraft(body: AiGenerateRequest & { audience?: strin
     method: "POST",
     body: JSON.stringify(body)
   });
+}
+
+export async function generateCreativeDraft(body: DirectGenerateRequest) {
+  return apiRequest<DirectGenerateResult>("/ai/creative/direct-generate", {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
+}
+
+export async function generateCreativeTitles(body: TitleGenerateRequest) {
+  return apiRequest<TitleGenerateResult>("/ai/creative/titles", {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
+}
+
+export async function rewriteSelection(body: SelectionRewriteRequest) {
+  return apiRequest<SelectionRewriteResult>("/ai/creative/selection/rewrite", {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
+}
+
+export async function streamCreativeChat(
+  body: CreativeChatRequest,
+  handlers: {
+    onMeta?: (event: CreativeChatDone) => void;
+    onDelta: (text: string) => void;
+    onDone?: (event: CreativeChatDone) => void;
+    onError?: (message: string) => void;
+  }
+) {
+  const response = await fetch(`${API_BASE_URL}/ai/creative/chat/stream`, {
+    method: "POST",
+    headers: buildHeaders(undefined),
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok || !response.body) {
+    throw new Error(`Creative chat stream failed: ${response.status}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() ?? "";
+
+    for (const eventBlock of events) {
+      const event = parseSseEvent(eventBlock);
+      if (!event) continue;
+
+      if (event.type === "delta") {
+        handlers.onDelta((event.data as { text?: string }).text ?? "");
+      } else if (event.type === "meta") {
+        handlers.onMeta?.(event.data as CreativeChatDone);
+      } else if (event.type === "done") {
+        handlers.onDone?.(event.data as CreativeChatDone);
+      } else if (event.type === "error") {
+        handlers.onError?.((event.data as { message?: string }).message ?? "AI stream failed");
+      }
+    }
+  }
+}
+
+function parseSseEvent(block: string) {
+  const lines = block.split("\n");
+  const type = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
+  const dataLine = lines.find((line) => line.startsWith("data:"))?.slice(5).trim();
+  if (!type || !dataLine) return null;
+
+  try {
+    return { type, data: JSON.parse(dataLine) as unknown };
+  } catch {
+    return null;
+  }
 }
 
 export async function auditText(body: { title: string; body: string }) {

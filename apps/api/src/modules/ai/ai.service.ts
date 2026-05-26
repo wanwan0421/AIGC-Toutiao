@@ -1,12 +1,22 @@
 import { Injectable } from "@nestjs/common";
-import type { AiGenerateRequest } from "@aicp/shared";
+import type { AiGenerateRequest, CreativeChatRequest, DirectGenerateRequest, SelectionRewriteRequest, TitleGenerateRequest } from "@aicp/shared";
 import { Prisma } from "@prisma/client";
 import { buildAuditResult, buildQualityScore, makeGeneratedDraft } from "../../common/business-rules";
 import { PrismaService } from "../../infra/prisma/prisma.service";
+import { CreativeChatSkill } from "./skills/creative-chat.skill";
+import { DirectGenerateSkill } from "./skills/direct-generate.skill";
+import { SelectionRewriteSkill } from "./skills/selection-rewrite.skill";
+import { TitleGenerateSkill } from "./skills/title-generate.skill";
 
 @Injectable()
 export class AiService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly creativeChatSkill: CreativeChatSkill,
+    private readonly directGenerateSkill: DirectGenerateSkill,
+    private readonly titleGenerateSkill: TitleGenerateSkill,
+    private readonly selectionRewriteSkill: SelectionRewriteSkill
+  ) {}
 
   async generate(request: AiGenerateRequest & { audience?: string }) {
     const startedAt = Date.now();
@@ -105,6 +115,22 @@ export class AiService {
       orderBy: { createdAt: "desc" },
       take: 50
     });
+  }
+
+  streamCreativeChat(body: CreativeChatRequest) {
+    return this.creativeChatSkill.stream(body);
+  }
+
+  directGenerate(body: DirectGenerateRequest) {
+    return this.directGenerateSkill.run(body);
+  }
+
+  generateTitles(body: TitleGenerateRequest) {
+    return this.titleGenerateSkill.run(body);
+  }
+
+  rewriteSelection(body: SelectionRewriteRequest) {
+    return this.selectionRewriteSkill.run(body);
   }
 
   private log(data: {

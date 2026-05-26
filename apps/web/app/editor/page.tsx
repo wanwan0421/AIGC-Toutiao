@@ -3,13 +3,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ContentStatus } from "@aicp/shared";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   autosaveDraft,
   createContent,
-  generateDraft,
+  generateCreativeDraft,
+  generateCreativeTitles,
   getContentDetail,
   getContents,
   getDraft,
+  rewriteSelection,
+  streamCreativeChat,
   submitReview,
   updateContent,
 } from "../../lib/api";
@@ -89,6 +94,18 @@ type DraftCard = {
   tags?: string[];
 };
 
+type ChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  insertable?: boolean;
+};
+
+type TitleCandidate = {
+  title: string;
+  reason: string;
+};
+
 type SelectionMenu = {
   visible: boolean;
   top: number;
@@ -114,6 +131,46 @@ function textToEditorHtml(text: string) {
     .filter(Boolean)
     .map((paragraph) => `<p>${escapeHtml(paragraph).replace(/\n/g, "<br />")}</p>`)
     .join("");
+}
+
+function markdownToEditorHtml(markdown: string) {
+  if (!markdown.trim()) return "";
+  const lines = markdown.split(/\r?\n/);
+  const html: string[] = [];
+  let listItems: string[] = [];
+
+  const flushList = () => {
+    if (!listItems.length) return;
+    html.push(`<ul>${listItems.join("")}</ul>`);
+    listItems = [];
+  };
+
+  const renderInline = (value: string) =>
+    escapeHtml(value)
+      .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+      .replace(/`(.+?)`/g, "<code>$1</code>");
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      flushList();
+      continue;
+    }
+    if (/^#{1,3}\s+/.test(trimmed)) {
+      flushList();
+      html.push(`<h2>${renderInline(trimmed.replace(/^#{1,3}\s+/, ""))}</h2>`);
+      continue;
+    }
+    if (/^[-*]\s+/.test(trimmed)) {
+      listItems.push(`<li>${renderInline(trimmed.replace(/^[-*]\s+/, ""))}</li>`);
+      continue;
+    }
+    flushList();
+    html.push(`<p>${renderInline(trimmed)}</p>`);
+  }
+
+  flushList();
+  return html.join("");
 }
 
 function extractPlainTextFromHtml(html: string) {
@@ -142,6 +199,7 @@ export default function EditorPage() {
   const selectionRangeRef = useRef<Range | null>(null);
   const pendingEditorHtmlRef = useRef<string | null>(null);
   const saveLockRef = useRef(false);
+  const chatStreamLockRef = useRef(false);
 
   const [contentId, setContentId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
@@ -154,6 +212,11 @@ export default function EditorPage() {
   const [prepTab, setPrepTab] = useState<PrepTab>("brief");
   const [aiMode, setAiMode] = useState<AiMode>("brainstorm");
   const [chatInput, setChatInput] = useState("");
+  const [conversationId, setConversationId] = useState<string | undefined>();
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [isChatStreaming, setIsChatStreaming] = useState(false);
+  const [titleCandidates, setTitleCandidates] = useState<TitleCandidate[]>([]);
+  const [showTitleCandidates, setShowTitleCandidates] = useState(false);
   const [statusMessage, setStatusMessage] = useState("编辑器已准备好");
   const [isLoadingInitial, setIsLoadingInitial] = useState(true);
   const [isBusy, setIsBusy] = useState(false);
@@ -504,25 +567,34 @@ export default function EditorPage() {
     setIsBusy(true);
     setStatusMessage("AI 正在生成结构化初稿...");
     try {
-      const result = await generateDraft({
-        topic: briefTheme,
+      const result = await generateCreativeDraft({
+        contentId: contentId ?? undefined,
+        theme: source === "direct" && chatInput.trim() ? chatInput.trim() : briefTheme,
+        audience,
         style,
-        platform: "今日头条",
-        tags: selectedTopics,
-        materialNotes: [
-          `目标人群：${audience}`,
-          `核心观点：${viewpoint}`,
-          `素材参考：${assetNote}`,
-          source === "direct" ? `最终指令：${chatInput}` : "从基础需求生成完整图文",
-        ].join("\n"),
+        viewpoint,
+        materialNotes: [assetNote, source === "direct" && chatInput.trim() ? `最终指令：${chatInput.trim()}` : ""]
+          .filter(Boolean)
+          .join("\n"),
       });
 
       setTitle(result.title);
-      writeEditorHtml(result.body);
+      const imagePromptText = result.imagePrompts?.length
+        ? `\n\n## 配图建议\n${result.imagePrompts
+            .map((item) => `- ${item.position}：${item.prompt}`)
+            .join("\n")}`
+        : "";
+      const coverSuggestionText = result.coverSuggestion ? `\n\n## 封面方向\n${result.coverSuggestion}` : "";
+      const nextMarkdown = `${result.bodyMarkdown}${coverSuggestionText}${imagePromptText}`;
+      writeEditorMarkup(markdownToEditorHtml(nextMarkdown));
       if (result.tags?.length) {
         setSelectedTopics((items) =>
           Array.from(new Set([...items, ...result.tags.map((tag) => (tag.startsWith("#") ? tag : `#${tag}`))]))
         );
+      }
+      if (result.titleCandidates?.length) {
+        setTitleCandidates(result.titleCandidates);
+        setShowTitleCandidates(true);
       }
       setStatusMessage("AI 初稿已写入中央编辑区，可继续人工修改");
       setChatInput("");
@@ -536,6 +608,97 @@ export default function EditorPage() {
     } finally {
       setIsBusy(false);
     }
+  }
+
+  async function generateSmartTitles() {
+    const currentBody = editorRef.current?.textContent?.trim() || body.trim();
+    if (!currentBody) {
+      setStatusMessage("请先输入正文，再生成标题");
+      return;
+    }
+
+    setIsBusy(true);
+    setStatusMessage("AI 正在根据当前标题和正文生成标题候选...");
+    try {
+      const result = await generateCreativeTitles({
+        currentTitle: title.trim() || undefined,
+        body: currentBody,
+        platform: "今日头条",
+      });
+      setTitleCandidates(result.candidates);
+      setShowTitleCandidates(true);
+      setStatusMessage("已生成标题候选，可直接选择使用");
+    } catch {
+      setStatusMessage("智能标题生成失败，请稍后再试");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function sendCreativeChatMessage() {
+    const message = chatInput.trim();
+    if (!message || isChatStreaming || chatStreamLockRef.current) return;
+
+    chatStreamLockRef.current = true;
+    const userMessageId = `user-${Date.now()}`;
+    const assistantMessageId = `assistant-${Date.now()}`;
+    setChatMessages((items) => [
+      ...items,
+      { id: userMessageId, role: "user", content: message },
+      { id: assistantMessageId, role: "assistant", content: "", insertable: false },
+    ]);
+    setChatInput("");
+    setIsChatStreaming(true);
+    setStatusMessage("AI 正在流式输出思路...");
+
+    try {
+      await streamCreativeChat(
+        {
+          conversationId,
+          contentId: contentId ?? undefined,
+          message,
+          currentTitle: title,
+          currentBody: editorRef.current?.textContent ?? body,
+        },
+        {
+          onMeta: (event) => setConversationId(event.conversationId),
+          onDelta: (text) => {
+            setChatMessages((items) =>
+              items.map((item) =>
+                item.id === assistantMessageId ? { ...item, content: `${item.content}${text}` } : item
+              )
+            );
+          },
+          onDone: (event) => {
+            setConversationId(event.conversationId);
+            setChatMessages((items) =>
+              items.map((item) =>
+                item.id === assistantMessageId ? { ...item, id: event.messageId, insertable: true } : item
+              )
+            );
+            setStatusMessage("AI 回复完成，可一键插入正文");
+          },
+          onError: (messageText) => setStatusMessage(messageText),
+        }
+      );
+    } catch {
+      setChatMessages((items) =>
+        items.map((item) =>
+          item.id === assistantMessageId
+            ? { ...item, content: "AI 对话暂时不可用，请检查后端服务或模型配置。", insertable: false }
+            : item
+        )
+      );
+      setStatusMessage("AI 对话失败，请稍后再试");
+    } finally {
+      setIsChatStreaming(false);
+      chatStreamLockRef.current = false;
+    }
+  }
+
+  function insertAssistantMessage(content: string) {
+    if (!content.trim()) return;
+    insertHtml(markdownToEditorHtml(content.trim()), "AI 回答已插入正文");
   }
 
   async function submitForReview() {
@@ -629,20 +792,34 @@ export default function EditorPage() {
     });
   }
 
-  function transformSelection(kind: "polish" | "expand" | "tone") {
+  async function transformSelection(kind: "polish" | "expand" | "tone") {
     restoreSelectionRange();
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed) return;
     const selectedText = selection.toString();
-    const replacement =
-      kind === "polish"
-        ? `${selectedText}（表达更清晰、节奏更顺）`
-        : kind === "expand"
-          ? `${selectedText}。这里可以补充一个具体场景、用户痛点和可执行建议，让读者更容易代入。`
-          : `${selectedText}（换成更轻松、有陪伴感的语气）`;
-    document.execCommand("insertText", false, replacement);
-    syncBodyFromEditor("AI 已处理选中内容");
-    setSelectionMenu(emptySelectionMenu);
+    const activeRange = selection.rangeCount > 0 ? selection.getRangeAt(0).cloneRange() : null;
+    if (!activeRange) return;
+
+    setIsBusy(true);
+    setStatusMessage("AI 正在处理选中内容...");
+    try {
+      const result = await rewriteSelection({
+        selectedText,
+        action: kind,
+        surroundingContext: editorRef.current?.textContent ?? body,
+        tone: kind === "tone" ? style : undefined,
+      });
+      const nextSelection = window.getSelection();
+      nextSelection?.removeAllRanges();
+      nextSelection?.addRange(activeRange);
+      document.execCommand("insertText", false, result.replacement);
+      syncBodyFromEditor("AI 已处理选中内容");
+    } catch {
+      setStatusMessage("选区 AI 处理失败，请稍后再试");
+    } finally {
+      setIsBusy(false);
+      setSelectionMenu(emptySelectionMenu);
+    }
   }
 
   function handleImagePick(file: File | undefined) {
@@ -741,7 +918,7 @@ export default function EditorPage() {
 
   return (
     <section className="min-h-full bg-[#f6f6f7] px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
-      <header className="mx-auto mb-5 flex max-w-[1480px] flex-wrap items-center justify-between gap-4">
+      <header className="mx-auto mb-5 flex max-w-370 flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <button
             type="button"
@@ -780,7 +957,7 @@ export default function EditorPage() {
         </div>
       </header>
 
-      <div className="mx-auto grid max-w-370 grid-cols-[280px_minmax(0,1fr)_340px] gap-5 xl:items-start max-xl:grid-cols-1">
+      <div className="mx-auto grid max-w-390 grid-cols-[280px_minmax(0,1fr)_390px] gap-5 xl:items-start max-xl:grid-cols-1">
         <aside className="sticky top-5 rounded-3xl border border-slate-100 bg-white p-4 shadow-sm max-xl:static">
           <div className="mb-4 flex items-center justify-between">
             <div>
@@ -947,7 +1124,7 @@ export default function EditorPage() {
               />
               <button
                 type="button"
-                onClick={() => createAiDraft("title")}
+                onClick={() => void generateSmartTitles()}
                 disabled={isBusy}
                 className="inline-flex shrink-0 items-center gap-2 rounded-full bg-[#fff3f5] px-4 py-2 text-sm font-medium text-[#ff2442] transition hover:bg-[#ffe7eb] disabled:opacity-60"
               >
@@ -957,15 +1134,48 @@ export default function EditorPage() {
               </button>
             </div>
 
+            {showTitleCandidates && titleCandidates.length ? (
+              <div className="mb-4 rounded-2xl border border-[#ff2442]/10 bg-[#fff7f8] p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-sm font-semibold text-slate-900">AI 标题候选</span>
+                  <button
+                    type="button"
+                    onClick={() => setShowTitleCandidates(false)}
+                    className="rounded-full p-1 text-slate-400 transition hover:bg-white hover:text-slate-700"
+                    aria-label="关闭标题候选"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  {titleCandidates.map((candidate) => (
+                    <button
+                      key={candidate.title}
+                      type="button"
+                      onClick={() => {
+                        setTitle(candidate.title);
+                        setShowTitleCandidates(false);
+                        setStatusMessage("已应用智能标题");
+                      }}
+                      className="w-full rounded-xl bg-white px-3 py-2 text-left transition hover:bg-[#fff0f3]"
+                    >
+                      <span className="block text-sm font-medium text-slate-950">{candidate.title}</span>
+                      <span className="mt-1 block text-xs leading-5 text-slate-500">{candidate.reason}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
             <div className="relative rounded-[22px] bg-white px-2 py-3">
               {selectionMenu.visible ? (
                 <div
                   className="absolute z-20 flex items-center gap-1 rounded-full border border-slate-100 bg-white p-1 shadow-lg"
                   style={{ top: selectionMenu.top, left: selectionMenu.left }}
                 >
-                  <MiniAiButton label="润色" onClick={() => transformSelection("polish")} />
-                  <MiniAiButton label="扩写" onClick={() => transformSelection("expand")} />
-                  <MiniAiButton label="改变风格" onClick={() => transformSelection("tone")} />
+                  <MiniAiButton label="润色" onClick={() => void transformSelection("polish")} />
+                  <MiniAiButton label="扩写" onClick={() => void transformSelection("expand")} />
+                  <MiniAiButton label="改变风格" onClick={() => void transformSelection("tone")} />
                 </div>
               ) : null}
 
@@ -978,7 +1188,7 @@ export default function EditorPage() {
                 onMouseUp={updateSelectionMenu}
                 onKeyUp={updateSelectionMenu}
                 onBlur={() => window.setTimeout(() => setSelectionMenu(emptySelectionMenu), 120)}
-                className="min-h-[420px] w-full text-[16px] leading-8 text-slate-800 outline-none empty:before:pointer-events-none empty:before:text-slate-300 empty:before:content-[attr(data-placeholder)] [&_a]:text-[#ff2442] [&_blockquote]:my-4 [&_blockquote]:border-l-4 [&_blockquote]:border-[#ff2442]/30 [&_blockquote]:bg-[#fff7f8] [&_blockquote]:px-4 [&_blockquote]:py-2 [&_figure]:my-5 [&_h2]:my-4 [&_h2]:text-xl [&_h2]:font-semibold [&_img]:max-h-96 [&_img]:w-full [&_img]:rounded-2xl [&_img]:object-cover [&_li]:my-1 [&_ol]:my-4 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-3 [&_pre]:my-4 [&_pre]:rounded-2xl [&_pre]:bg-slate-950 [&_pre]:p-4 [&_pre]:text-sm [&_pre]:text-white [&_table]:my-4 [&_table]:w-full [&_table]:overflow-hidden [&_table]:rounded-2xl [&_table]:border [&_table]:border-slate-200 [&_td]:border [&_td]:border-slate-200 [&_td]:px-3 [&_td]:py-2 [&_th]:border [&_th]:border-slate-200 [&_th]:bg-slate-50 [&_th]:px-3 [&_th]:py-2 [&_ul]:my-4 [&_ul]:list-disc [&_ul]:pl-6"
+                className="min-h-105 w-full text-[16px] leading-8 text-slate-800 outline-none empty:before:pointer-events-none empty:before:text-slate-300 empty:before:content-[attr(data-placeholder)] [&_a]:text-[#ff2442] [&_blockquote]:my-4 [&_blockquote]:border-l-4 [&_blockquote]:border-[#ff2442]/30 [&_blockquote]:bg-[#fff7f8] [&_blockquote]:px-4 [&_blockquote]:py-2 [&_figure]:my-5 [&_h2]:my-4 [&_h2]:text-xl [&_h2]:font-semibold [&_img]:max-h-96 [&_img]:w-full [&_img]:rounded-2xl [&_img]:object-cover [&_li]:my-1 [&_ol]:my-4 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-3 [&_pre]:my-4 [&_pre]:rounded-2xl [&_pre]:bg-slate-950 [&_pre]:p-4 [&_pre]:text-sm [&_pre]:text-white [&_table]:my-4 [&_table]:w-full [&_table]:overflow-hidden [&_table]:rounded-2xl [&_table]:border [&_table]:border-slate-200 [&_td]:border [&_td]:border-slate-200 [&_td]:px-3 [&_td]:py-2 [&_th]:border [&_th]:border-slate-200 [&_th]:bg-slate-50 [&_th]:px-3 [&_th]:py-2 [&_ul]:my-4 [&_ul]:list-disc [&_ul]:pl-6"
                 data-placeholder="输入正文描述，真诚有价值的分享予人温暖。输入 / 唤醒 AI 伴写能力。"
               />
 
@@ -1306,16 +1516,55 @@ export default function EditorPage() {
 
             {aiMode === "brainstorm" ? (
               <div className="space-y-3">
-                {defaultIdeas.map((idea) => (
-                  <button
-                    key={idea}
-                    type="button"
-                    onClick={() => setChatInput(idea)}
-                    className="w-full rounded-2xl bg-slate-50 px-4 py-3 text-left text-sm text-slate-600 transition hover:bg-[#fff3f5] hover:text-[#ff2442]"
-                  >
-                    {idea}
-                  </button>
-                ))}
+                {!chatMessages.length
+                  ? defaultIdeas.map((idea) => (
+                      <button
+                        key={idea}
+                        type="button"
+                        onClick={() => setChatInput(idea)}
+                        className="w-full rounded-2xl bg-slate-50 px-4 py-3 text-left text-sm text-slate-600 transition hover:bg-[#fff3f5] hover:text-[#ff2442]"
+                      >
+                        {idea}
+                      </button>
+                    ))
+                  : null}
+                {chatMessages.length ? (
+                  <div className="mt-4 max-h-[58vh] min-h-80 space-y-3 overflow-y-auto pr-1">
+                    {chatMessages.map((message) => (
+                      <div
+                        key={message.id}
+                        className={`rounded-2xl px-4 py-3 text-sm leading-6 ${
+                          message.role === "user"
+                            ? "bg-[#fff3f5] text-[#9f1239]"
+                            : "border border-slate-100 bg-white text-slate-700 shadow-sm"
+                        }`}
+                      >
+                        <div className="mb-1 text-xs font-semibold text-slate-400">
+                          {message.role === "user" ? "你" : "AI"}
+                        </div>
+                        {message.role === "assistant" ? (
+                          <div className="text-sm leading-6 text-slate-700 [&_blockquote]:border-l-4 [&_blockquote]:border-[#ff2442]/30 [&_blockquote]:pl-3 [&_code]:rounded [&_code]:bg-slate-100 [&_code]:px-1 [&_h1]:text-base [&_h1]:font-semibold [&_h2]:text-base [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold [&_li]:my-1 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_strong]:font-semibold [&_strong]:text-slate-950 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              {message.content || "AI 正在思考..."}
+                            </ReactMarkdown>
+                          </div>
+                        ) : (
+                          <p className="whitespace-pre-wrap">{message.content}</p>
+                        )}
+                        {message.role === "assistant" && message.insertable && message.content.trim() ? (
+                          <button
+                            type="button"
+                            onClick={() => insertAssistantMessage(message.content)}
+                            className="mt-3 inline-flex items-center gap-1 rounded-full bg-[#ff2442] px-3 py-1 text-xs font-medium text-white transition hover:bg-[#e91635]"
+                          >
+                            <Copy size={13} />
+                            插入正文
+                          </button>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ) : (
               <div className="rounded-2xl bg-[#fff3f5] p-4 text-sm leading-6 text-[#9f1239]">
@@ -1337,15 +1586,14 @@ export default function EditorPage() {
                   if (aiMode === "direct") {
                     void createAiDraft("direct");
                   } else {
-                    insertHtml(`<p><strong>灵感记录：</strong>${escapeHtml(chatInput || "可以从读者真实场景、反差标题和可执行清单三个方向展开。")}</p>`, "灵感已写入正文");
-                    setChatInput("");
+                    void sendCreativeChatMessage();
                   }
                 }}
-                disabled={isBusy}
+                disabled={isBusy || isChatStreaming}
                 className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-[#ff2442] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#e91635] disabled:opacity-60"
               >
                 <Sparkles size={16} />
-                {aiMode === "direct" ? "生成到编辑区" : "写入灵感"}
+                {isChatStreaming ? "AI 输出中..." : aiMode === "direct" ? "生成到编辑区" : "发送给 AI"}
               </button>
             </div>
           </section>
@@ -1362,7 +1610,7 @@ export default function EditorPage() {
                   type="button"
                   onClick={() => {
                     if (card.action.includes("标题")) {
-                      void createAiDraft("title");
+                      void generateSmartTitles();
                     } else if (card.action.includes("结构")) {
                       insertHtml("<p><strong>补充结构：</strong>场景痛点 - 实用方法 - 读者行动建议。</p>", "已插入结构建议");
                     } else {

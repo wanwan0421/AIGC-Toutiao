@@ -81,6 +81,80 @@ export interface AiGenerateResult {
   coverSuggestion: string;
 }
 
+export interface CreativeChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface CreativeChatRequest {
+  userId?: string;
+  contentId?: string;
+  conversationId?: string;
+  message: string;
+  currentTitle?: string;
+  currentBody?: string;
+  selectedText?: string;
+}
+
+export interface CreativeChatDone {
+  conversationId: string;
+  messageId: string;
+}
+
+export interface DirectGenerateRequest {
+  userId?: string;
+  contentId?: string;
+  theme: string;
+  audience?: string;
+  style?: string;
+  viewpoint?: string;
+  materialNotes?: string;
+  assets?: string[];
+}
+
+export interface DirectGenerateResult {
+  title: string;
+  titleCandidates: Array<{
+    title: string;
+    reason: string;
+  }>;
+  bodyMarkdown: string;
+  tags: string[];
+  coverSuggestion: string;
+  imagePrompts: Array<{
+    position: string;
+    prompt: string;
+  }>;
+  outline: Array<{
+    heading: string;
+    summary: string;
+  }>;
+}
+
+export interface TitleGenerateRequest {
+  currentTitle?: string;
+  body: string;
+  platform?: string;
+}
+
+export interface TitleGenerateResult {
+  candidates: Array<{
+    title: string;
+    reason: string;
+  }>;
+}
+
+export interface SelectionRewriteRequest {
+  selectedText: string;
+  action: "polish" | "expand" | "tone";
+  surroundingContext?: string;
+  tone?: string;
+}
+
+export interface SelectionRewriteResult {
+  replacement: string;
+}
+
 export interface AuditResult {
   passed: boolean;
   riskLevel: AuditRiskLevel;
