@@ -1,40 +1,40 @@
 import { Injectable } from "@nestjs/common";
 import type { AiGenerateRequest, CreativeChatRequest, DirectGenerateRequest, SelectionRewriteRequest, TitleGenerateRequest } from "@aicp/shared";
 import { Prisma } from "@prisma/client";
-import { buildAuditResult, buildQualityScore, makeGeneratedDraft } from "../../common/business-rules";
+import { buildAuditResult, buildQualityScore } from "../../common/business-rules";
 import { PrismaService } from "../../infra/prisma/prisma.service";
-import { CreativeChatSkill } from "./skills/creative-chat.skill";
-import { DirectGenerateSkill } from "./skills/direct-generate.skill";
-import { SelectionRewriteSkill } from "./skills/selection-rewrite.skill";
-import { TitleGenerateSkill } from "./skills/title-generate.skill";
+import { ConversationArchiveService } from "./conversation-archive.service";
+import { ContextBuilderService } from "./context-builder.service";
+import { CreativeAssistantSkill } from "./skills/creative-assistant.skill";
+import { CreativeProductionSkill } from "./skills/creative-production.skill";
 
 @Injectable()
 export class AiService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly creativeChatSkill: CreativeChatSkill,
-    private readonly directGenerateSkill: DirectGenerateSkill,
-    private readonly titleGenerateSkill: TitleGenerateSkill,
-    private readonly selectionRewriteSkill: SelectionRewriteSkill
+    private readonly creativeAssistantSkill: CreativeAssistantSkill,
+    private readonly creativeProductionSkill: CreativeProductionSkill,
+    private readonly contextBuilder: ContextBuilderService,
+    private readonly conversations: ConversationArchiveService
   ) {}
 
   async generate(request: AiGenerateRequest & { audience?: string }) {
     const startedAt = Date.now();
-    const prompt = request.promptTemplateId
-      ? await this.prisma.promptTemplate.findUnique({ where: { id: request.promptTemplateId } })
-      : null;
-
-    if (prompt) {
-      await this.prisma.promptTemplate.update({
-        where: { id: prompt.id },
-        data: { usageCount: { increment: 1 } }
-      });
-    }
-
-    const result = makeGeneratedDraft(request.topic, request.style, request.materialNotes);
+    const draft = await this.creativeProductionSkill.directGenerate({
+      theme: request.topic,
+      audience: request.audience,
+      style: request.style,
+      materialNotes: request.materialNotes,
+    });
+    const result = {
+      title: draft.title,
+      body: draft.bodyMarkdown,
+      tags: draft.tags,
+      coverSuggestion: draft.coverSuggestion,
+    };
     await this.log({
       scene: "generate",
-      model: prompt?.model ?? "mock-doubao-seed",
+      model: "direct-generate-skill",
       inputSummary: JSON.stringify({
         topic: request.topic,
         style: request.style,
@@ -48,8 +48,7 @@ export class AiService {
 
     return {
       ...result,
-      promptTemplateId: prompt?.id,
-      provider: "volcengine-ark-mock"
+      provider: "volcengine-ark"
     };
   }
 
@@ -58,7 +57,7 @@ export class AiService {
     const result = buildAuditResult(body.title, body.body);
     await this.log({
       scene: "audit",
-      model: "mock-doubao-seed",
+      model: "rule-based-audit",
       inputSummary: `${body.title} / ${body.body.slice(0, 80)}`,
       output: result,
       latencyMs: Date.now() - startedAt,
@@ -76,7 +75,7 @@ export class AiService {
     const result = buildQualityScore(body.title, body.body);
     await this.log({
       scene: "score",
-      model: "mock-doubao-seed",
+      model: "rule-based-score",
       inputSummary: `${body.title} / ${body.body.slice(0, 80)}`,
       output: result,
       latencyMs: Date.now() - startedAt,
@@ -100,7 +99,7 @@ export class AiService {
 
     await this.log({
       scene: "rewrite",
-      model: "mock-doubao-seed",
+      model: "rule-based-rewrite",
       inputSummary: `${body.title} / ${reasons.join(";")}`,
       output: result,
       latencyMs: Date.now() - startedAt,
@@ -117,20 +116,32 @@ export class AiService {
     });
   }
 
+  // 以下接口为AI技能接口，适合用户需要AI辅助生成内容的场景，区别于前面提供的基础能力接口，适合更具体的创作需求
   streamCreativeChat(body: CreativeChatRequest) {
-    return this.creativeChatSkill.stream(body);
+    return this.creativeAssistantSkill.streamChat(body);
   }
 
   directGenerate(body: DirectGenerateRequest) {
-    return this.directGenerateSkill.run(body);
+    return this.creativeProductionSkill.directGenerate(body);
   }
 
   generateTitles(body: TitleGenerateRequest) {
-    return this.titleGenerateSkill.run(body);
+    return this.creativeAssistantSkill.generateTitles(body);
   }
 
   rewriteSelection(body: SelectionRewriteRequest) {
-    return this.selectionRewriteSkill.run(body);
+    return this.creativeAssistantSkill.rewriteSelection(body);
+  }
+
+  async creativeConversations(contentId: string, userId?: string) {
+    const resolvedUserId = await this.contextBuilder.resolveUserId(userId);
+    return this.conversations.listByContent({ userId: resolvedUserId, contentId });
+  }
+
+  async attachCreativeConversation(conversationId: string, body: { contentId: string; userId?: string }) {
+    const resolvedUserId = await this.contextBuilder.resolveUserId(body.userId);
+    await this.conversations.attachToContent({ conversationId, userId: resolvedUserId, contentId: body.contentId });
+    return { ok: true, conversationId, contentId: body.contentId };
   }
 
   private log(data: {

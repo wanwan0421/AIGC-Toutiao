@@ -63,6 +63,8 @@ export interface AssetSummary {
   mimeType: string;
   url: string;
   auditStatus: "pending" | "approved" | "rejected";
+  source?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface AiGenerateRequest {
@@ -82,8 +84,24 @@ export interface AiGenerateResult {
 }
 
 export interface CreativeChatMessage {
+  id?: string;
   role: "user" | "assistant";
   content: string;
+  createdAt?: string;
+}
+
+export interface CreativeConversationSummary {
+  id: string;
+  contentId?: string;
+  title?: string;
+  createdAt: string;
+  updatedAt: string;
+  messages: CreativeChatMessage[];
+}
+
+export interface GeneratedImageAsset extends AssetSummary {
+  position: string;
+  prompt: string;
 }
 
 export interface CreativeChatRequest {
@@ -125,6 +143,8 @@ export interface DirectGenerateResult {
     position: string;
     prompt: string;
   }>;
+  coverAsset?: GeneratedImageAsset;
+  imageAssets: GeneratedImageAsset[];
   outline: Array<{
     heading: string;
     summary: string;

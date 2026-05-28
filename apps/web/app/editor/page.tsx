@@ -6,10 +6,12 @@ import { ContentStatus } from "@aicp/shared";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
+  attachCreativeConversation,
   autosaveDraft,
   createContent,
   generateCreativeDraft,
   generateCreativeTitles,
+  getCreativeConversations,
   getContentDetail,
   getContents,
   getDraft,
@@ -229,6 +231,7 @@ export default function EditorPage() {
   const [customTopicInput, setCustomTopicInput] = useState("");
   const [coverMode, setCoverMode] = useState<"single" | "none">("single");
   const [coverPreview, setCoverPreview] = useState("");
+  const [generatedAssetIds, setGeneratedAssetIds] = useState<string[]>([]);
   const [imageTarget, setImageTarget] = useState<ImageTarget>("body");
   const [selectedLocation, setSelectedLocation] = useState("");
   const [locationOptions, setLocationOptions] = useState(nearbyLocations);
@@ -253,6 +256,7 @@ export default function EditorPage() {
     briefTheme,
     selectedTopics,
     coverPreview,
+    generatedAssetIds,
     selectedLocation,
     selectedCollection,
     attachedFileName,
@@ -314,6 +318,7 @@ export default function EditorPage() {
       briefTheme,
       selectedTopics,
       coverPreview,
+      generatedAssetIds,
       selectedLocation,
       selectedCollection,
       attachedFileName,
@@ -336,6 +341,7 @@ export default function EditorPage() {
     contentDeclaration,
     contentId,
     coverPreview,
+    generatedAssetIds,
     isOriginal,
     publishTimeMode,
     scheduledAt,
@@ -366,6 +372,11 @@ export default function EditorPage() {
     }, 30000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!contentId) return;
+    void loadCreativeConversation(contentId);
+  }, [contentId]);
 
   function writeEditorHtml(nextBody: string) {
     const nextHtml = textToEditorHtml(nextBody);
@@ -466,6 +477,9 @@ export default function EditorPage() {
       const draftHtml = typeof payload.html === "string" ? payload.html : "";
       const draftCoverPreview = typeof payload.coverPreview === "string" ? payload.coverPreview : "";
       const tags = Array.isArray(payload.tags) ? payload.tags.filter((tag): tag is string => typeof tag === "string") : [];
+      const assetIds = Array.isArray(payload.generatedAssetIds)
+        ? payload.generatedAssetIds.filter((id): id is string => typeof id === "string")
+        : [];
 
       setContentId(draft.contentId);
       setTitle(draft.title ?? "");
@@ -476,6 +490,7 @@ export default function EditorPage() {
       }
       setSelectedTopics(tags);
       setCoverPreview(draftCoverPreview);
+      setGeneratedAssetIds(assetIds);
       setShowDraftList(false);
       setStatusMessage(message);
     } catch {
@@ -486,11 +501,36 @@ export default function EditorPage() {
         writeEditorHtml(detail.body ?? "");
         setSelectedTopics(detail.tags ?? []);
         setCoverPreview(detail.coverUrl ?? "");
+        setGeneratedAssetIds(detail.assets.map((asset) => asset.id));
         setShowDraftList(false);
         setStatusMessage(message);
       } catch {
         setStatusMessage("草稿恢复失败，请稍后再试");
       }
+    }
+  }
+
+  async function loadCreativeConversation(nextContentId: string) {
+    try {
+      const conversations = await getCreativeConversations(nextContentId);
+      const latest = conversations[0];
+      if (!latest) {
+        setConversationId(undefined);
+        setChatMessages([]);
+        return;
+      }
+
+      setConversationId(latest.id);
+      setChatMessages(
+        latest.messages.map((message) => ({
+          id: message.id ?? `${message.role}-${message.createdAt ?? Math.random()}`,
+          role: message.role,
+          content: message.content,
+          insertable: message.role === "assistant",
+        }))
+      );
+    } catch {
+      setStatusMessage("历史 AI 对话加载失败，当前仍可继续编辑");
     }
   }
 
@@ -507,11 +547,15 @@ export default function EditorPage() {
         title: state.title.trim() || "未命名图文草稿",
         body: nextBody || "这里开始记录你的创作正文。",
         tags: state.selectedTopics,
+        assetIds: state.generatedAssetIds,
       };
 
       const saved = state.contentId ? await updateContent(state.contentId, payload) : await createContent(payload);
       setContentId(saved.id);
       setTitle(saved.title);
+      if (conversationId) {
+        await attachCreativeConversation(conversationId, saved.id).catch(() => undefined);
+      }
 
       await autosaveDraft(saved.id, {
         title: saved.title,
@@ -519,6 +563,7 @@ export default function EditorPage() {
         payload: {
           html: nextHtml,
           tags: state.selectedTopics,
+          generatedAssetIds: state.generatedAssetIds,
           coverPreview: state.coverPreview,
           briefTheme: state.briefTheme,
           selectedLocation: state.selectedLocation,
@@ -563,6 +608,7 @@ export default function EditorPage() {
     await persistDraft();
   }
 
+  // 仅创建草稿，不更新正文内容，适合AI生成初稿后第一次保存使用
   async function createAiDraft(source = "brief") {
     setIsBusy(true);
     setStatusMessage("AI 正在生成结构化初稿...");
@@ -579,14 +625,28 @@ export default function EditorPage() {
       });
 
       setTitle(result.title);
-      const imagePromptText = result.imagePrompts?.length
+      const hasGeneratedImages = Boolean(result.coverAsset || result.imageAssets.length);
+      const imagePromptText = !hasGeneratedImages && result.imagePrompts?.length
         ? `\n\n## 配图建议\n${result.imagePrompts
             .map((item) => `- ${item.position}：${item.prompt}`)
             .join("\n")}`
         : "";
-      const coverSuggestionText = result.coverSuggestion ? `\n\n## 封面方向\n${result.coverSuggestion}` : "";
+      const coverSuggestionText = !hasGeneratedImages && result.coverSuggestion ? `\n\n## 封面方向\n${result.coverSuggestion}` : "";
+      const generatedImageHtml = result.imageAssets
+        .map(
+          (asset) =>
+            `<figure><img src="${asset.url}" alt="${escapeHtml(asset.position)}" /><figcaption>${escapeHtml(asset.position)}</figcaption></figure>`
+        )
+        .join("");
       const nextMarkdown = `${result.bodyMarkdown}${coverSuggestionText}${imagePromptText}`;
-      writeEditorMarkup(markdownToEditorHtml(nextMarkdown));
+      writeEditorMarkup(`${markdownToEditorHtml(nextMarkdown)}${generatedImageHtml}`);
+      const nextAssetIds = [result.coverAsset?.id, ...result.imageAssets.map((asset) => asset.id)].filter(
+        (id): id is string => Boolean(id)
+      );
+      setGeneratedAssetIds(nextAssetIds);
+      if (result.coverAsset?.url) {
+        setCoverPreview(result.coverAsset.url);
+      }
       if (result.tags?.length) {
         setSelectedTopics((items) =>
           Array.from(new Set([...items, ...result.tags.map((tag) => (tag.startsWith("#") ? tag : `#${tag}`))]))
@@ -599,12 +659,7 @@ export default function EditorPage() {
       setStatusMessage("AI 初稿已写入中央编辑区，可继续人工修改");
       setChatInput("");
     } catch {
-      const fallbackTitle = `${briefTheme}：一套更轻松的实用方法`;
-      const fallbackBody = `开头：很多人不是不会搭配，而是每天早上缺少一个稳定、低成本的选择框架。\n\n核心观点：${viewpoint}。\n\n第一部分：先确定今天的场景。通勤、见客户、下班约会，对衣服的要求其实不一样。\n\n第二部分：用一个主色、一个基础款、一个亮点单品完成组合，让整体看起来有重点但不费力。\n\n第三部分：配图建议可以围绕“清爽街拍、通勤包、自然光”展开。\n\n结尾：把内容变成可复用公式，真正节省的是每天出门前的犹豫时间。`;
-      setTitle(fallbackTitle);
-      writeEditorHtml(fallbackBody);
-      setStatusMessage("后端 AI 暂不可用，已写入本地示例初稿");
-      setChatInput("");
+      setStatusMessage("AI 初稿生成失败，请检查后端服务与模型配置");
     } finally {
       setIsBusy(false);
     }
@@ -635,6 +690,7 @@ export default function EditorPage() {
     }
   }
 
+  // 发送创意聊天消息，适用于在创意头脑风暴模式下与AI进行多轮对话，逐步完善内容
   async function sendCreativeChatMessage() {
     const message = chatInput.trim();
     if (!message || isChatStreaming || chatStreamLockRef.current) return;
@@ -709,6 +765,7 @@ export default function EditorPage() {
         title: title.trim() || "未命名图文草稿",
         body: nextBody,
         tags: selectedTopics,
+        assetIds: generatedAssetIds,
       };
       const saved = contentId ? await updateContent(contentId, payload) : await createContent(payload);
       setContentId(saved.id);

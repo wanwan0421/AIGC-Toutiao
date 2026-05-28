@@ -11,10 +11,10 @@ export class ModelClientService {
   private readonly apiKey = process.env.ARK_API_KEY;
   private readonly apiBaseUrl = process.env.ARK_API_URL ?? process.env.ARK_BASE_URL ?? "https://ark.cn-beijing.volces.com/api/v3";
   private readonly apiUrl = this.resolveApiUrl(this.apiBaseUrl);
-  private readonly defaultModel = process.env.ARK_MODEL_ID ?? process.env.ARK_MODEL ?? "mock-doubao-seed";
+  private readonly defaultModel = process.env.ARK_MODEL_ID ?? process.env.ARK_MODEL;
 
   hasRemoteProvider() {
-    return Boolean(this.apiKey && this.defaultModel && !this.defaultModel.startsWith("mock"));
+    return Boolean(this.apiKey && this.defaultModel);
   }
 
   modelName(model?: string) {
@@ -25,11 +25,8 @@ export class ModelClientService {
     messages: ChatMessage[];
     model?: string;
     temperature?: number;
-    fallback?: string;
   }) {
-    if (!this.hasRemoteProvider()) {
-      return options.fallback ?? "";
-    }
+    this.assertConfigured(options.model);
 
     try {
       const response = await fetch(this.apiUrl, {
@@ -46,10 +43,14 @@ export class ModelClientService {
       }
 
       const payload = (await response.json()) as Record<string, unknown>;
-      return this.extractText(payload) ?? options.fallback ?? "";
+      const text = this.extractText(payload);
+      if (!text) {
+        throw new Error("Ark response did not contain text output");
+      }
+      return text;
     } catch (error) {
-      this.logger.warn(`Ark completion fallback: ${(error as Error).message}`);
-      return options.fallback ?? "";
+      this.logger.error(`Ark completion failed: ${(error as Error).message}`);
+      throw error;
     }
   }
 
@@ -57,15 +58,8 @@ export class ModelClientService {
     messages: ChatMessage[];
     model?: string;
     temperature?: number;
-    fallback: string;
   }) {
-    if (!this.hasRemoteProvider()) {
-      for (const chunk of this.chunkText(options.fallback)) {
-        await new Promise((resolve) => setTimeout(resolve, 18));
-        yield chunk;
-      }
-      return;
-    }
+    this.assertConfigured(options.model);
 
     try {
       const response = await fetch(this.apiUrl, {
@@ -116,10 +110,17 @@ export class ModelClientService {
         }
       }
     } catch (error) {
-      this.logger.warn(`Ark stream fallback: ${(error as Error).message}`);
-      for (const chunk of this.chunkText(options.fallback)) {
-        yield chunk;
-      }
+      this.logger.error(`Ark stream failed: ${(error as Error).message}`);
+      throw error;
+    }
+  }
+
+  private assertConfigured(model?: string) {
+    if (!this.apiKey) {
+      throw new Error("ARK_API_KEY is required for AI calls");
+    }
+    if (!this.modelName(model)) {
+      throw new Error("ARK_MODEL_ID or ARK_MODEL is required for AI calls");
     }
   }
 
@@ -254,11 +255,4 @@ export class ModelClientService {
     return "";
   }
 
-  private chunkText(text: string) {
-    const chunks: string[] = [];
-    for (let index = 0; index < text.length; index += 8) {
-      chunks.push(text.slice(index, index + 8));
-    }
-    return chunks;
-  }
 }

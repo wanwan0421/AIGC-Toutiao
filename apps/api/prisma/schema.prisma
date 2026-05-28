@@ -20,6 +20,7 @@ model User {
   contents     Content[]
   prompts      PromptTemplate[]
   events       UserActionEvent[]
+  aiConversations AiConversation[]
   preferences  UserPreference?
 }
 
@@ -59,6 +60,7 @@ model Content {
   drafts       Draft[]
   scores       QualityScore[]
   events       UserActionEvent[]
+  aiConversations AiConversation[]
 }
 
 model Draft {
@@ -109,11 +111,39 @@ model Asset {
   fileName    String
   mimeType    String
   url         String
+  source      String           @default("uploaded")
+  metadata    Json?
   auditStatus AssetAuditStatus @default(pending)
   auditReason String?
   createdAt   DateTime         @default(now())
   uploader    User             @relation(fields: [uploaderId], references: [id])
   contents    ContentAsset[]
+}
+
+model AiConversation {
+  id        String      @id @default(cuid())
+  userId    String
+  contentId String?
+  title     String?
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  user      User        @relation(fields: [userId], references: [id])
+  content   Content?    @relation(fields: [contentId], references: [id])
+  messages  AiMessage[]
+
+  @@index([userId, contentId, updatedAt])
+}
+
+model AiMessage {
+  id             String         @id @default(cuid())
+  conversationId String
+  role           AiMessageRole
+  content        String
+  metadata       Json?
+  createdAt      DateTime       @default(now())
+  conversation   AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
 }
 
 model ContentAsset {
@@ -201,4 +231,9 @@ enum AssetAuditStatus {
   pending
   approved
   rejected
+}
+
+enum AiMessageRole {
+  user
+  assistant
 }

@@ -41,6 +41,8 @@ type AssetLike = {
   mimeType: string;
   url: string;
   auditStatus: DbAssetAuditStatus;
+  source?: string;
+  metadata?: unknown;
 };
 
 type ContentAssetLike = {
@@ -73,7 +75,9 @@ export function toAssetSummary(asset: AssetLike): AssetSummary {
     fileName: asset.fileName,
     mimeType: asset.mimeType,
     url: asset.url,
-    auditStatus: asset.auditStatus
+    auditStatus: asset.auditStatus,
+    source: asset.source,
+    metadata: asset.metadata && typeof asset.metadata === "object" ? (asset.metadata as Record<string, unknown>) : undefined
   };
 }
 

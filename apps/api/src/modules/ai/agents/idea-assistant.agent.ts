@@ -36,12 +36,10 @@ export class IdeaAssistantAgent {
 
 请给出具体、可插入、可行动的回答。`
     );
-    const fallback = this.mock(input.message, input.bodySummary);
 
     yield* this.modelClient.stream({
       model,
       temperature: 0.75,
-      fallback,
       messages: [
         {
           role: "system",
@@ -55,18 +53,5 @@ export class IdeaAssistantAgent {
         },
       ],
     });
-  }
-
-  private mock(message: string, bodySummary?: string) {
-    if (/扩充|补充|增加|展开/.test(message)) {
-      return bodySummary
-        ? `可以，我会围绕你提出的“${message}”补一段更适合插入正文的内容：\n\n**可插入段落：**\n如果想让这一部分更有画面感，可以把读者带到一个具体场景里：现场的灯光、音乐、人群反应，以及你真正想表达的情绪，都可以写出来。比如先写“走进现场时听到的第一段旋律”，再补充“它为什么让人停下来”，最后落到你的观点：这不只是一次活动，而是一次让人重新感受到生活热度的瞬间。\n\n**建议放置位置：** 放在正文中提到相关场景或案例之后，用来增强代入感。`
-        : `当前正文里还没有检测到可参考内容，但可以先给你一段可插入的扩充文本：\n\n**可插入段落：**\n这一部分可以从具体场景写起，让读者先看到画面，再理解观点。比如写现场氛围、人物反应和你的真实感受，最后再收束到这段内容想表达的核心价值。这样会比单纯描述更有感染力。`;
-    }
-
-    const base = bodySummary
-      ? "我先基于你当前正文来想：这篇内容已经有了雏形，下一步可以强化读者场景、方法步骤和结尾行动。"
-      : "可以，我们先从创意角度拆。";
-    return `${base}\n\n针对“${message}”，我建议你从三个方向展开：\n1. 先写读者会遇到的真实场景，让开头更容易代入。\n2. 再给一个可复用的方法框架，避免内容变成泛泛而谈。\n3. 最后补一个具体例子或配图建议，让图文更像一篇可以发布的作品。\n\n如果你满意，可以把这段思路插入正文，再继续人工调整。`;
   }
 }

@@ -5,6 +5,7 @@ import type {
   ContentDetail,
   ContentSummary,
   CreativeChatDone,
+  CreativeConversationSummary,
   CreativeChatRequest,
   DirectGenerateRequest,
   DirectGenerateResult,
@@ -240,6 +241,22 @@ export async function streamCreativeChat(
       }
     }
   }
+}
+
+export async function getCreativeConversations(contentId: string) {
+  return apiRequest<CreativeConversationSummary[]>(
+    `/ai/creative/conversations?contentId=${encodeURIComponent(contentId)}`
+  );
+}
+
+export async function attachCreativeConversation(conversationId: string, contentId: string) {
+  return apiRequest<{ ok: boolean; conversationId: string; contentId: string }>(
+    `/ai/creative/conversations/${conversationId}/attach`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ contentId })
+    }
+  );
 }
 
 function parseSseEvent(block: string) {

@@ -13,6 +13,8 @@ function hashPassword(password: string) {
 }
 
 async function main() {
+  const textModel = process.env.ARK_MODEL_ID ?? process.env.ARK_MODEL ?? "doubao-seed";
+
   const user = await prisma.user.upsert({
     where: { email: "creator@example.com" },
     create: {
@@ -193,6 +195,130 @@ async function main() {
       template: "检查标题和正文是否存在违规风险，输出风险类型、风险等级和原因。"
     }
   });
+
+  const creativePrompts = [
+    {
+      id: "prompt_direct_generate",
+      name: "direct_generate",
+      scene: PromptScene.generate,
+      template: `你是今日头条图文创作助手。请根据用户提供的前置需求生成结构完整、表达丰富的图文草稿。
+
+主题：{{theme}}
+目标人群：{{audience}}
+风格：{{style}}
+核心观点：{{viewpoint}}
+素材参考：{{materialNotes}}
+
+只返回 JSON，字段必须包含：
+title, titleCandidates, bodyMarkdown, tags, coverSuggestion, imagePrompts, outline。`,
+      variables: ["theme", "audience", "style", "viewpoint", "materialNotes"],
+      modelOptions: { temperature: 0.75 }
+    },
+    {
+      id: "prompt_creative_chat",
+      name: "creative_chat",
+      scene: PromptScene.generate,
+      template: `你是今日头条创作者的右侧创作助手，当前模式是「碰撞思路」，不是「直接生成」。
+
+必须优先回答用户这一次的问题：{{message}}
+不要根据“主题、目标人群、风格”重新生成整篇图文，除非用户明确要求你生成完整草稿。
+如果用户要求扩充、润色、改写正文中的某个部分，请先依据当前正文判断相关段落；如果正文里没有找到该部分，要明确说明“当前正文未检测到该段落”，再给出一段可插入内容。
+回答使用 Markdown，但不要输出推理过程、不要重复回答。
+
+当前标题：{{currentTitle}}
+当前正文：{{currentBody}}
+正文摘要：{{bodySummary}}
+选中文本：{{selectedText}}
+最近对话：{{historyText}}
+用户问题：{{message}}
+
+请给出具体、可插入、可行动的回答。`,
+      variables: ["message", "currentTitle", "currentBody", "bodySummary", "selectedText", "historyText"],
+      modelOptions: { temperature: 0.75 }
+    },
+    {
+      id: "prompt_title_generate",
+      name: "title_generate",
+      scene: PromptScene.generate,
+      template: `你是今日头条标题优化助手。只能根据当前标题和正文生成标题候选，不要使用用户未提供的主题、目标人群或风格。
+
+当前标题：{{currentTitle}}
+正文：{{body}}
+
+只返回 JSON：{"candidates":[{"title":"标题","reason":"推荐理由"}]}`,
+      variables: ["currentTitle", "body"],
+      modelOptions: { temperature: 0.65 }
+    },
+    {
+      id: "prompt_selection_polish",
+      name: "selection_polish",
+      scene: PromptScene.rewrite,
+      template: `你是中文图文编辑助手。请润色选中文本，让表达更顺、更清晰，但不要改变原意。
+
+选中文本：{{selectedText}}
+周边上下文：{{surroundingContext}}
+目标语气：{{tone}}
+
+只返回 JSON：{"replacement":"替换后的文本"}`,
+      variables: ["selectedText", "surroundingContext", "tone"],
+      modelOptions: { temperature: 0.45 }
+    },
+    {
+      id: "prompt_selection_expand",
+      name: "selection_expand",
+      scene: PromptScene.rewrite,
+      template: `你是中文图文编辑助手。请扩写选中文本，补充具体场景、细节或可执行建议，使其更适合今日头条图文内容。
+
+选中文本：{{selectedText}}
+周边上下文：{{surroundingContext}}
+目标语气：{{tone}}
+
+只返回 JSON：{"replacement":"替换后的文本"}`,
+      variables: ["selectedText", "surroundingContext", "tone"],
+      modelOptions: { temperature: 0.6 }
+    },
+    {
+      id: "prompt_selection_tone",
+      name: "selection_tone",
+      scene: PromptScene.rewrite,
+      template: `你是中文图文编辑助手。请将选中文本改写为目标语气，保持信息准确，不额外解释。
+
+选中文本：{{selectedText}}
+周边上下文：{{surroundingContext}}
+目标语气：{{tone}}
+
+只返回 JSON：{"replacement":"替换后的文本"}`,
+      variables: ["selectedText", "surroundingContext", "tone"],
+      modelOptions: { temperature: 0.55 }
+    }
+  ];
+
+  for (const prompt of creativePrompts) {
+    await prisma.promptTemplate.upsert({
+      where: { id: prompt.id },
+      create: {
+        id: prompt.id,
+        creatorId: user.id,
+        name: prompt.name,
+        scene: prompt.scene,
+        template: prompt.template,
+        variables: prompt.variables,
+        model: textModel,
+        modelOptions: prompt.modelOptions,
+        version: 1,
+        status: "active"
+      },
+      update: {
+        name: prompt.name,
+        scene: prompt.scene,
+        template: prompt.template,
+        variables: prompt.variables,
+        model: textModel,
+        modelOptions: prompt.modelOptions,
+        status: "active"
+      }
+    });
+  }
 
   await prisma.asset.upsert({
     where: { id: "asset_001" },

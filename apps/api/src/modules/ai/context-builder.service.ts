@@ -20,6 +20,7 @@ export class ContextBuilderService {
     return {
       userId,
       contentId,
+      persistenceContentId: request.contentId ?? null,
       conversationId,
       history,
       currentTitle: request.currentTitle ?? "",
@@ -41,7 +42,7 @@ export class ContextBuilderService {
     return `${compact.slice(0, maxLength)}...`;
   }
 
-  private async resolveUserId(userId?: string) {
+  async resolveUserId(userId?: string) {
     if (userId) return userId;
     const user = await this.prisma.user.findFirst({ where: { email: DEFAULT_USER_EMAIL } }).catch(() => null);
     return user?.id ?? "anonymous-user";
