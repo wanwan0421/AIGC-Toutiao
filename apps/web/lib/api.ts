@@ -13,62 +13,66 @@ import type {
   SelectionRewriteRequest,
   SelectionRewriteResult,
   TitleGenerateRequest,
-  TitleGenerateResult
+  TitleGenerateResult,
+  UpdateUserProfileRequest,
+  UserProfileSummary
 } from "@aicp/shared";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001/api";
+export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
 
-const AUTH_TOKEN_KEY = "aicp.accessToken";
+type AuthSessionResponse = {
+  tokenType: string;
+  expiresIn: number;
+  user: UserProfileSummary;
+};
 
-function getStoredAccessToken() {
-  if (typeof window === "undefined") {
-    return undefined;
-  }
-
-  return window.localStorage.getItem(AUTH_TOKEN_KEY) ?? undefined;
-}
-
-function buildHeaders(initHeaders?: HeadersInit, needsAuth = false) {
+function buildHeaders(initHeaders?: HeadersInit) {
   const headers = new Headers(initHeaders);
-
   if (!headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-
-  if (needsAuth) {
-    const token = getStoredAccessToken();
-    if (token) {
-      headers.set("Authorization", `Bearer ${token}`);
-    }
-  }
-
   return headers;
 }
 
-async function apiRequest<T>(path: string, init: RequestInit = {}, needsAuth = false): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+function resolveApiUrl(path: string) {
+  if (/^https?:\/\//i.test(API_BASE_URL)) {
+    return `${API_BASE_URL}${path}`;
+  }
+
+  if (typeof window === "undefined") {
+    const serverApiOrigin = (process.env.API_PROXY_TARGET ?? "http://localhost:3001").replace(/\/$/, "");
+    return `${serverApiOrigin}${API_BASE_URL}${path}`;
+  }
+
+  return `${API_BASE_URL}${path}`;
+}
+
+export async function apiRequest<T>(path: string, init: RequestInit = {}, needsAuth = false, allowRefresh = true): Promise<T> {
+  const response = await fetch(resolveApiUrl(path), {
     ...init,
-    headers: buildHeaders(init.headers, needsAuth),
+    headers: buildHeaders(init.headers),
+    credentials: "include",
     cache: "no-store"
   });
 
+  if (response.status === 401 && needsAuth && allowRefresh && path !== "/auth/refresh") {
+    try {
+      await refreshAccessToken();
+      return apiRequest<T>(path, init, needsAuth, false);
+    } catch {
+      // Surface the original 401 below.
+    }
+  }
+
   if (!response.ok) {
     let message = `Request failed: ${response.status}`;
-
     try {
       const payload = (await response.json()) as { message?: string | string[] };
-      if (Array.isArray(payload.message)) {
-        message = payload.message.join("; ");
-      } else if (typeof payload.message === "string") {
-        message = payload.message;
-      }
+      message = Array.isArray(payload.message) ? payload.message.join("; ") : payload.message ?? message;
     } catch {
       const text = await response.text().catch(() => "");
-      if (text) {
-        message = text;
-      }
+      if (text) message = text;
     }
-
     throw new Error(message);
   }
 
@@ -79,8 +83,74 @@ async function apiRequest<T>(path: string, init: RequestInit = {}, needsAuth = f
   return response.json() as Promise<T>;
 }
 
+async function refreshAccessToken() {
+  return apiRequest<AuthSessionResponse>("/auth/refresh", { method: "POST" }, false, false);
+}
+
+export async function login(body: { account: string; password: string }) {
+  return apiRequest<AuthSessionResponse>("/auth/login", {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
+}
+
+export async function register(body: { account: string; password: string; nickname?: string; verificationCode: string }) {
+  return apiRequest<AuthSessionResponse>("/auth/register", {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
+}
+
+export async function sendVerificationCode(body: { account: string }) {
+  return apiRequest<{ ok: boolean; delivery: "console" | "email" | "sms"; verificationCode?: string }>(
+    "/auth/verification-code",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    }
+  );
+}
+
+export async function sendContactVerificationCode(body: { account: string }) {
+  return apiRequest<{ ok: boolean; delivery: "console" | "email" | "sms"; verificationCode?: string }>(
+    "/users/contact-verification-code",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    true
+  );
+}
+
+export async function logout() {
+  return apiRequest<{ ok: boolean }>("/auth/logout", { method: "POST" });
+}
+
+export async function me() {
+  return apiRequest<UserProfileSummary>("/auth/me", {}, true);
+}
+
+export async function getUserProfile() {
+  return apiRequest<UserProfileSummary>("/users/profile", {}, true);
+}
+
+export async function getCurrentUser() {
+  return getUserProfile();
+}
+
+export async function updateUserProfile(body: UpdateUserProfileRequest) {
+  return apiRequest<UserProfileSummary>(
+    "/users/profile",
+    {
+      method: "PATCH",
+      body: JSON.stringify(body)
+    },
+    true
+  );
+}
+
 export async function getContents(): Promise<ContentSummary[]> {
-  return apiRequest<ContentSummary[]>("/contents");
+  return apiRequest<ContentSummary[]>("/contents", {}, true);
 }
 
 export async function getRankings(): Promise<ContentSummary[]> {
@@ -89,52 +159,49 @@ export async function getRankings(): Promise<ContentSummary[]> {
 }
 
 export async function getContentDetail(id: string): Promise<ContentDetail> {
-  return apiRequest<ContentDetail>(`/contents/${id}`);
+  return apiRequest<ContentDetail>(`/contents/${id}`, {}, true);
 }
 
 export async function createContent(body: { title?: string; body?: string; tags?: string[]; assetIds?: string[] }) {
-  return apiRequest<ContentDetail>("/contents", {
-    method: "POST",
-    body: JSON.stringify(body)
-  });
+  return apiRequest<ContentDetail>(
+    "/contents",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    true
+  );
 }
 
-export async function updateContent(
-  id: string,
-  body: { title?: string; body?: string; tags?: string[]; assetIds?: string[] }
-) {
-  return apiRequest<ContentDetail>(`/contents/${id}`, {
-    method: "PATCH",
-    body: JSON.stringify(body)
-  });
+export async function updateContent(id: string, body: { title?: string; body?: string; tags?: string[]; assetIds?: string[] }) {
+  return apiRequest<ContentDetail>(
+    `/contents/${id}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(body)
+    },
+    true
+  );
 }
 
 export async function submitReview(id: string) {
-  return apiRequest<{
-    content: ContentSummary;
-    audit: AuditResult;
-    quality: QualityScoreResult;
-  }>(`/contents/${id}/submit-review`, {
-    method: "POST"
-  });
+  return apiRequest<{ content: ContentSummary; audit: AuditResult; quality: QualityScoreResult }>(
+    `/contents/${id}/submit-review`,
+    { method: "POST" },
+    true
+  );
 }
 
 export async function approveContent(id: string) {
-  return apiRequest<ContentSummary>(`/contents/${id}/approve`, {
-    method: "POST"
-  });
+  return apiRequest<ContentSummary>(`/contents/${id}/approve`, { method: "POST" }, true);
 }
 
 export async function publishContent(id: string) {
-  return apiRequest<ContentSummary>(`/contents/${id}/publish`, {
-    method: "POST"
-  });
+  return apiRequest<ContentSummary>(`/contents/${id}/publish`, { method: "POST" }, true);
 }
 
 export async function offlineContent(id: string) {
-  return apiRequest<ContentSummary>(`/contents/${id}/offline`, {
-    method: "POST"
-  });
+  return apiRequest<ContentSummary>(`/contents/${id}/offline`, { method: "POST" }, true);
 }
 
 export async function getDraft(contentId: string) {
@@ -153,46 +220,77 @@ export async function getDraft(contentId: string) {
     clientHash?: string;
     savedAt: string;
     source: string;
-  }>(`/drafts/${contentId}`);
+  }>(`/drafts/${contentId}`, {}, true);
 }
 
-// 保存草稿到后端，并更新草稿列表和编辑器内容（如果是新草稿则创建，否则更新）
 export async function autosaveDraft(
   contentId: string,
   body: { title?: string; body?: string; payload?: Record<string, unknown>; clientHash?: string }
 ) {
-  return apiRequest<Record<string, unknown>>(`/drafts/${contentId}/autosave`, {
-    method: "PUT",
-    body: JSON.stringify(body)
-  });
+  return apiRequest<Record<string, unknown>>(
+    `/drafts/${contentId}/autosave`,
+    {
+      method: "PUT",
+      body: JSON.stringify(body)
+    },
+    true
+  );
 }
 
 export async function generateDraft(body: AiGenerateRequest & { audience?: string }) {
-  return apiRequest<AiGenerateResult>("/ai/generate", {
-    method: "POST",
-    body: JSON.stringify(body)
-  });
+  return apiRequest<AiGenerateResult>(
+    "/ai/generate",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    true
+  );
 }
 
 export async function generateCreativeDraft(body: DirectGenerateRequest) {
-  return apiRequest<DirectGenerateResult>("/ai/creative/direct-generate", {
-    method: "POST",
-    body: JSON.stringify(body)
-  });
+  return apiRequest<DirectGenerateResult>(
+    "/ai/creative/direct-generate",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    true
+  );
 }
 
 export async function generateCreativeTitles(body: TitleGenerateRequest) {
-  return apiRequest<TitleGenerateResult>("/ai/creative/titles", {
-    method: "POST",
-    body: JSON.stringify(body)
-  });
+  return apiRequest<TitleGenerateResult>(
+    "/ai/creative/titles",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    true
+  );
 }
 
 export async function rewriteSelection(body: SelectionRewriteRequest) {
-  return apiRequest<SelectionRewriteResult>("/ai/creative/selection/rewrite", {
-    method: "POST",
-    body: JSON.stringify(body)
-  });
+  return apiRequest<SelectionRewriteResult>(
+    "/ai/creative/selection/rewrite",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    true
+  );
+}
+
+export async function getCreativeImageConfigStatus() {
+  return apiRequest<{
+    configured: boolean;
+    provider: string;
+    apiUrl: string;
+    model: string | null;
+    imageSize: string;
+    hasApiKey: boolean;
+    missing: string[];
+  }>("/ai/creative/image/config", {}, true);
 }
 
 export async function streamCreativeChat(
@@ -204,11 +302,30 @@ export async function streamCreativeChat(
     onError?: (message: string) => void;
   }
 ) {
-  const response = await fetch(`${API_BASE_URL}/ai/creative/chat/stream`, {
+  return streamCreativeChatOnce(body, handlers, true);
+}
+
+async function streamCreativeChatOnce(
+  body: CreativeChatRequest,
+  handlers: {
+    onMeta?: (event: CreativeChatDone) => void;
+    onDelta: (text: string) => void;
+    onDone?: (event: CreativeChatDone) => void;
+    onError?: (message: string) => void;
+  },
+  allowRefresh: boolean
+) {
+  const response = await fetch(resolveApiUrl("/ai/creative/chat/stream"), {
     method: "POST",
-    headers: buildHeaders(undefined),
+    headers: buildHeaders(),
+    credentials: "include",
     body: JSON.stringify(body)
   });
+
+  if (response.status === 401 && allowRefresh) {
+    await refreshAccessToken();
+    return streamCreativeChatOnce(body, handlers, false);
+  }
 
   if (!response.ok || !response.body) {
     throw new Error(`Creative chat stream failed: ${response.status}`);
@@ -245,7 +362,9 @@ export async function streamCreativeChat(
 
 export async function getCreativeConversations(contentId: string) {
   return apiRequest<CreativeConversationSummary[]>(
-    `/ai/creative/conversations?contentId=${encodeURIComponent(contentId)}`
+    `/ai/creative/conversations?contentId=${encodeURIComponent(contentId)}`,
+    {},
+    true
   );
 }
 
@@ -255,7 +374,8 @@ export async function attachCreativeConversation(conversationId: string, content
     {
       method: "PATCH",
       body: JSON.stringify({ contentId })
-    }
+    },
+    true
   );
 }
 
@@ -273,24 +393,36 @@ function parseSseEvent(block: string) {
 }
 
 export async function auditText(body: { title: string; body: string }) {
-  return apiRequest<AuditResult>("/ai/audit", {
-    method: "POST",
-    body: JSON.stringify(body)
-  });
+  return apiRequest<AuditResult>(
+    "/ai/audit",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    true
+  );
 }
 
 export async function scoreText(body: { title: string; body: string }) {
-  return apiRequest<QualityScoreResult>("/ai/score", {
-    method: "POST",
-    body: JSON.stringify(body)
-  });
+  return apiRequest<QualityScoreResult>(
+    "/ai/score",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    true
+  );
 }
 
 export async function rewriteText(body: { title: string; body: string; reasons?: string[] }) {
-  return apiRequest<{ title: string; body: string; reasons: string[] }>("/ai/rewrite", {
-    method: "POST",
-    body: JSON.stringify(body)
-  });
+  return apiRequest<{ title: string; body: string; reasons: string[] }>(
+    "/ai/rewrite",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    true
+  );
 }
 
 export async function trackAnalytics(body: {
@@ -309,10 +441,14 @@ export async function trackAnalytics(body: {
       clickCount: number;
       heatScore: number;
     };
-  }>("/analytics/events", {
-    method: "POST",
-    body: JSON.stringify(body)
-  });
+  }>(
+    "/analytics/events",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    true
+  );
 }
 
 export async function getContentStats(contentId: string) {
@@ -326,53 +462,5 @@ export async function getContentStats(contentId: string) {
       heatScore: number;
     };
     redisCounters: Record<string, string>;
-  }>(`/analytics/contents/${contentId}`);
+  }>(`/analytics/contents/${contentId}`, {}, true);
 }
-
-export async function login(body: { account: string; password: string }) {
-  return apiRequest<{
-    accessToken: string;
-    tokenType: string;
-    expiresIn: number;
-    user: Record<string, unknown>;
-  }>("/auth/login", {
-    method: "POST",
-    body: JSON.stringify(body)
-  });
-}
-
-export async function register(body: { account: string; password: string; nickname?: string }) {
-  return apiRequest<{
-    user: Record<string, unknown>;
-    message: string;
-  }>("/auth/register", {
-    method: "POST",
-    body: JSON.stringify(body)
-  });
-}
-
-export async function me() {
-  return apiRequest<Record<string, unknown>>("/auth/me", {}, true);
-}
-
-export async function logout() {
-  return apiRequest<{ ok: boolean }>("/auth/logout", { method: "POST" }, true);
-}
-
-export function storeAccessToken(token: string) {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  window.localStorage.setItem(AUTH_TOKEN_KEY, token);
-}
-
-export function clearAccessToken() {
-  if (typeof window === "undefined") {
-    return;
-  }
-
-  window.localStorage.removeItem(AUTH_TOKEN_KEY);
-}
-
-export { API_BASE_URL };

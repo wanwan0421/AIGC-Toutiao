@@ -1,36 +1,59 @@
-﻿"use client";
+"use client";
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
+import { getCurrentUser } from "../lib/api";
 import { Icons } from "./icons";
 
 const navItems = [
-  { href: "/dashboard", label: "首页", icon: <Icons.Grid className="w-5 h-5" /> },
-  { href: "/editor", label: "创作画布", icon: <Icons.PenTool className="w-5 h-5" /> },
-  { href: "/content", label: "作品管理", icon: <Icons.Book className="w-5 h-5" /> },
-  { href: "/analytics", label: "数据中心", icon: <Icons.Chart className="w-5 h-5" /> },
-  { href: "/growth", label: "成长指南", icon: <Icons.Compass className="w-5 h-5" /> },
+  { href: "/dashboard", label: "首页", icon: <Icons.Grid className="h-5 w-5" /> },
+  { href: "/editor", label: "创作中心", icon: <Icons.PenTool className="h-5 w-5" /> },
+  { href: "/content", label: "作品管理", icon: <Icons.Book className="h-5 w-5" /> },
+  { href: "/analytics", label: "数据中心", icon: <Icons.Chart className="h-5 w-5" /> },
+  { href: "/growth", label: "成长指南", icon: <Icons.Compass className="h-5 w-5" /> }
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
+  const [authenticated, setAuthenticated] = useState(false);
   const isEditor = pathname === "/editor";
+  const isLogin = pathname === "/login";
+
+  useEffect(() => {
+    let cancelled = false;
+    async function check() {
+      if (isLogin) {
+        setAuthenticated(false);
+        return;
+      }
+      try {
+        await getCurrentUser();
+        if (!cancelled) setAuthenticated(true);
+      } catch {
+        if (!cancelled) setAuthenticated(false);
+      }
+    }
+    void check();
+    return () => {
+      cancelled = true;
+    };
+  }, [isLogin, pathname]);
+
+  if (isLogin || !authenticated) return null;
 
   if (isEditor) {
     return (
-      <aside className="w-[64px] h-screen bg-[#0E121B] border-r border-slate-800 flex flex-col shrink-0 hidden md:flex transition-all">
-        <div className="p-4 flex justify-center">
-          <div className="w-8 h-8 rounded-lg bg-blue-600 text-white flex items-center justify-center font-black text-sm tracking-tighter">
-            AT
-          </div>
-        </div>
-        <nav className="flex-1 px-2 space-y-3 mt-6">
+      <aside className="hidden h-screen w-16 shrink-0 flex-col transition-all md:flex">
+        <nav className="mt-6 flex-1 space-y-3 px-2">
           {navItems.map((item) => (
             <Link
               key={item.href}
               href={item.href}
               title={item.label}
-              className={`flex justify-center p-2.5 rounded-xl transition-all ${pathname === item.href ? "bg-white/10 text-white" : "text-slate-500 hover:bg-white/5 hover:text-slate-300"}`}
+              className={`flex justify-center rounded-xl p-2.5 transition-all ${
+                pathname === item.href ? "bg-white/10 text-white" : "text-slate-500 hover:bg-white/5 hover:text-slate-200"
+              }`}
             >
               {item.icon}
             </Link>
@@ -41,38 +64,36 @@ export function Sidebar() {
   }
 
   return (
-    <aside className="w-[260px] h-screen bg-[#FAFAFA] border-r border-[#EAEAEA] flex flex-col shrink-0 hidden md:flex transition-all">
-      <div className="p-7">
-        <h1 className="text-xl font-black text-slate-900 tracking-tight">
-          今日头条<span className="text-blue-600 font-bold opacity-90">创作服务平台</span>
-        </h1>
+    <aside className="hidden h-screen w-63 shrink-0 flex-col transition-all md:flex">
+      <div className="px-5 pt-4">
+        <Link
+          href="/editor"
+          className="flex h-12 items-center justify-center gap-2 rounded-full bg-[#ff3b30] text-[16px] font-semibold text-white shadow-sm transition hover:bg-[#e6352b]"
+        >
+          <Icons.Plus className="h-4 w-4" />
+          发布作品
+        </Link>
       </div>
 
-      <nav className="flex-1 px-5 space-y-1.5 overflow-y-auto mt-2">
-        {navItems.map((item) => (
-          <Link
-            key={item.href}
-            href={item.href}
-            className={`flex items-center gap-3.5 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all ${pathname === item.href ? "bg-white border border-[#E2E4E9] shadow-sm text-slate-900" : "text-slate-500 hover:text-slate-900 hover:bg-slate-100"}`}
-          >
-            <span className={`transition-colors ${pathname === item.href ? "text-blue-600" : "text-slate-400"}`}>{item.icon}</span>
-            {item.label}
-          </Link>
-        ))}
+      <nav className="mt-5 flex-1 space-y-2 overflow-y-auto px-4">
+        {navItems.map((item) => {
+          const active = pathname === item.href || (item.href !== "/dashboard" && pathname.startsWith(item.href));
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={`flex items-center gap-3 rounded-2xl px-4 py-3 text-[16px] transition-all ${
+                active ? "bg-[#fff3f5] font-semibold text-[#ff3b30]" : "text-slate-500 hover:bg-slate-50 hover:text-slate-950"
+              }`}
+            >
+              <span className={active ? "text-[#ff3b30]" : "text-slate-400"}>{item.icon}</span>
+              {item.label}
+            </Link>
+          );
+        })}
       </nav>
 
-      <div className="p-5 border-t border-[#EAEAEA]">
-        <div className="flex items-center gap-3.5 px-3 py-2.5 rounded-xl hover:bg-white hover:shadow-sm hover:border hover:border-[#E2E4E9] border border-transparent cursor-pointer transition-all">
-          <div className="w-8 h-8 rounded-full bg-slate-900 text-white flex items-center justify-center font-bold text-xs">
-            A
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-slate-900 truncate">Creator</p>
-            <p className="text-xs text-slate-500 truncate">Lv.4 Pro</p>
-          </div>
-        </div>
-      </div>
+      <div className="border-t border-slate-100 p-5" />
     </aside>
   );
 }
-

@@ -1,6 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import { ModelClientService } from "../model-client.service";
 import { PromptTemplateService } from "../prompt-template.service";
+import { AI_PROMPT_NAMES } from "../prompt-names";
 
 @Injectable()
 export class IdeaAssistantAgent {
@@ -18,7 +19,7 @@ export class IdeaAssistantAgent {
     historyText?: string;
   }) {
     const { prompt, model } = await this.prompts.render(
-      "creative_chat",
+      AI_PROMPT_NAMES.creativeChat,
       input,
       `你是今日头条创作者的右侧创作助手，当前模式是「碰撞思路」，不是「直接生成」。
 

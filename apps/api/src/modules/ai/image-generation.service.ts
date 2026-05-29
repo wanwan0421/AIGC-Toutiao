@@ -1,8 +1,7 @@
-import { Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { AssetAuditStatus, Prisma } from "@prisma/client";
 import type { GeneratedImageAsset } from "@aicp/shared";
 import { randomUUID } from "node:crypto";
-import { DEFAULT_USER_EMAIL } from "../../common/defaults";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 
 type ImagePrompt = {
@@ -21,6 +20,24 @@ export class ImageGenerationService {
   private readonly imageSize = process.env.ARK_IMAGE_SIZE ?? "1024x1024";
 
   constructor(private readonly prisma: PrismaService) {}
+
+  configStatus() {
+    const missing = [
+      this.apiKey ? null : "ARK_IMAGE_API_KEY or ARK_API_KEY",
+      this.model ? null : "ARK_IMAGE_MODEL_ID or ARK_IMAGE_MODEL",
+      this.isValidApiUrl() ? null : "ARK_IMAGE_API_URL or ARK_IMAGE_BASE_URL",
+    ].filter((item): item is string => Boolean(item));
+
+    return {
+      configured: missing.length === 0,
+      provider: "volcengine-ark",
+      apiUrl: this.apiUrl,
+      model: this.model ?? null,
+      imageSize: this.imageSize,
+      hasApiKey: Boolean(this.apiKey),
+      missing,
+    };
+  }
 
   async generateForDraft(input: {
     userId?: string;
@@ -184,19 +201,22 @@ export class ImageGenerationService {
 
   private async resolveUserId(userId?: string) {
     if (userId) return userId;
-    const user = await this.prisma.user.findFirst({ where: { email: DEFAULT_USER_EMAIL } });
-    if (!user) {
-      throw new NotFoundException("default user not found, please run prisma seed first");
-    }
-    return user.id;
+    throw new BadRequestException("authenticated user is required for image generation");
   }
 
   private assertConfigured() {
-    if (!this.apiKey) {
-      throw new Error("ARK_IMAGE_API_KEY or ARK_API_KEY is required for image generation");
+    const status = this.configStatus();
+    if (!status.configured) {
+      throw new Error(`Image generation is not configured: missing ${status.missing.join(", ")}`);
     }
-    if (!this.model) {
-      throw new Error("ARK_IMAGE_MODEL_ID or ARK_IMAGE_MODEL is required for image generation");
+  }
+
+  private isValidApiUrl() {
+    try {
+      const url = new URL(this.apiUrl);
+      return url.protocol === "http:" || url.protocol === "https:";
+    } catch {
+      return false;
     }
   }
 

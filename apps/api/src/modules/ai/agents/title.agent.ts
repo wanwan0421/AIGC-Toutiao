@@ -3,6 +3,7 @@ import type { TitleGenerateRequest, TitleGenerateResult } from "@aicp/shared";
 import { AiCallLogService } from "../ai-call-log.service";
 import { ModelClientService } from "../model-client.service";
 import { PromptTemplateService } from "../prompt-template.service";
+import { AI_PROMPT_NAMES } from "../prompt-names";
 import { parseJsonObject } from "../structured-output";
 
 @Injectable()
@@ -16,7 +17,7 @@ export class TitleAgent {
   async run(input: TitleGenerateRequest): Promise<TitleGenerateResult> {
     const startedAt = Date.now();
     const { prompt, model } = await this.prompts.render(
-      "title_generate",
+      AI_PROMPT_NAMES.titleGenerate,
       input as unknown as Record<string, unknown>,
       `你是今日头条标题优化助手。只能根据当前标题和正文生成标题候选，不要使用用户未提供的主题、目标人群或风格。
 
@@ -41,7 +42,7 @@ export class TitleAgent {
     const result = parsed;
 
     await this.logs.log({
-      scene: "title_generate",
+      scene: AI_PROMPT_NAMES.titleGenerate,
       model: this.modelClient.modelName(model),
       inputSummary: `${input.currentTitle ?? ""} / ${input.body.slice(0, 100)}`,
       output: result,

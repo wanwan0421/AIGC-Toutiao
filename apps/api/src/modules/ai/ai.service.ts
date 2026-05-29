@@ -1,26 +1,30 @@
 import { Injectable } from "@nestjs/common";
-import type { AiGenerateRequest, CreativeChatRequest, DirectGenerateRequest, SelectionRewriteRequest, TitleGenerateRequest } from "@aicp/shared";
+import type {
+  AiGenerateRequest,
+  CreativeChatRequest,
+  DirectGenerateRequest,
+  SelectionRewriteRequest,
+  TitleGenerateRequest,
+} from "@aicp/shared";
 import { Prisma } from "@prisma/client";
 import { buildAuditResult, buildQualityScore } from "../../common/business-rules";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { ConversationArchiveService } from "./conversation-archive.service";
+import { CreativeOrchestratorService } from "./creative-orchestrator.service";
 import { ContextBuilderService } from "./context-builder.service";
-import { CreativeAssistantSkill } from "./skills/creative-assistant.skill";
-import { CreativeProductionSkill } from "./skills/creative-production.skill";
 
 @Injectable()
 export class AiService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly creativeAssistantSkill: CreativeAssistantSkill,
-    private readonly creativeProductionSkill: CreativeProductionSkill,
+    private readonly creativeOrchestrator: CreativeOrchestratorService,
     private readonly contextBuilder: ContextBuilderService,
     private readonly conversations: ConversationArchiveService
   ) {}
 
-  async generate(request: AiGenerateRequest & { audience?: string }) {
+  async generate(request: AiGenerateRequest & { audience?: string; userId?: string }) {
     const startedAt = Date.now();
-    const draft = await this.creativeProductionSkill.directGenerate({
+    const draft = await this.creativeOrchestrator.directGenerate({
       theme: request.topic,
       audience: request.audience,
       style: request.style,
@@ -32,23 +36,24 @@ export class AiService {
       tags: draft.tags,
       coverSuggestion: draft.coverSuggestion,
     };
+
     await this.log({
       scene: "generate",
-      model: "direct-generate-skill",
+      model: "creative-orchestrator",
       inputSummary: JSON.stringify({
         topic: request.topic,
         style: request.style,
         platform: request.platform,
-        promptTemplateId: request.promptTemplateId
+        promptTemplateId: request.promptTemplateId,
       }),
       output: result,
       latencyMs: Date.now() - startedAt,
-      success: true
+      success: true,
     });
 
     return {
       ...result,
-      provider: "volcengine-ark"
+      provider: "volcengine-ark",
     };
   }
 
@@ -61,12 +66,12 @@ export class AiService {
       inputSummary: `${body.title} / ${body.body.slice(0, 80)}`,
       output: result,
       latencyMs: Date.now() - startedAt,
-      success: true
+      success: true,
     });
 
     return {
       ...result,
-      inputLength: body.title.length + body.body.length
+      inputLength: body.title.length + body.body.length,
     };
   }
 
@@ -79,22 +84,22 @@ export class AiService {
       inputSummary: `${body.title} / ${body.body.slice(0, 80)}`,
       output: result,
       latencyMs: Date.now() - startedAt,
-      success: true
+      success: true,
     });
 
     return {
       ...result,
-      inputLength: body.title.length + body.body.length
+      inputLength: body.title.length + body.body.length,
     };
   }
 
   async rewrite(body: { title: string; body: string; reasons?: string[] }) {
     const startedAt = Date.now();
-    const reasons = body.reasons?.length ? body.reasons : ["优化表达，降低合规风险，增强信息密度。"];
+    const reasons = body.reasons?.length ? body.reasons : ["优化表达并降低合规风险"];
     const result = {
       title: body.title.replace(/绝对|必买|第一/g, "值得参考"),
       body: `${body.body}\n\n合规改写建议：已弱化绝对化表达，补充适用范围，并保留创作者原有观点。\n\n修改原因：${reasons.join("；")}`,
-      reasons
+      reasons,
     };
 
     await this.log({
@@ -103,7 +108,7 @@ export class AiService {
       inputSummary: `${body.title} / ${reasons.join(";")}`,
       output: result,
       latencyMs: Date.now() - startedAt,
-      success: true
+      success: true,
     });
 
     return result;
@@ -112,25 +117,28 @@ export class AiService {
   logs() {
     return this.prisma.aiCallLog.findMany({
       orderBy: { createdAt: "desc" },
-      take: 50
+      take: 50,
     });
   }
 
-  // 以下接口为AI技能接口，适合用户需要AI辅助生成内容的场景，区别于前面提供的基础能力接口，适合更具体的创作需求
   streamCreativeChat(body: CreativeChatRequest) {
-    return this.creativeAssistantSkill.streamChat(body);
+    return this.creativeOrchestrator.streamCreativeChat(body);
   }
 
   directGenerate(body: DirectGenerateRequest) {
-    return this.creativeProductionSkill.directGenerate(body);
+    return this.creativeOrchestrator.directGenerate(body);
   }
 
   generateTitles(body: TitleGenerateRequest) {
-    return this.creativeAssistantSkill.generateTitles(body);
+    return this.creativeOrchestrator.generateTitles(body);
   }
 
   rewriteSelection(body: SelectionRewriteRequest) {
-    return this.creativeAssistantSkill.rewriteSelection(body);
+    return this.creativeOrchestrator.rewriteSelection(body);
+  }
+
+  creativeImageConfigStatus() {
+    return this.creativeOrchestrator.imageConfigStatus();
   }
 
   async creativeConversations(contentId: string, userId?: string) {
@@ -140,8 +148,13 @@ export class AiService {
 
   async attachCreativeConversation(conversationId: string, body: { contentId: string; userId?: string }) {
     const resolvedUserId = await this.contextBuilder.resolveUserId(body.userId);
-    await this.conversations.attachToContent({ conversationId, userId: resolvedUserId, contentId: body.contentId });
-    return { ok: true, conversationId, contentId: body.contentId };
+    const conversation = await this.conversations.attachToContent({
+      conversationId,
+      userId: resolvedUserId,
+      contentId: body.contentId,
+    });
+
+    return { ok: true, conversationId: conversation.id, contentId: body.contentId };
   }
 
   private log(data: {
@@ -156,8 +169,8 @@ export class AiService {
     return this.prisma.aiCallLog.create({
       data: {
         ...data,
-        output: data.output as Prisma.InputJsonValue
-      }
+        output: data.output as Prisma.InputJsonValue,
+      },
     });
   }
 }

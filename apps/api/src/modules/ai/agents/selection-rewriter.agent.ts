@@ -3,6 +3,7 @@ import type { SelectionRewriteRequest, SelectionRewriteResult } from "@aicp/shar
 import { AiCallLogService } from "../ai-call-log.service";
 import { ModelClientService } from "../model-client.service";
 import { PromptTemplateService } from "../prompt-template.service";
+import { selectionPromptName } from "../prompt-names";
 import { parseJsonObject } from "../structured-output";
 
 @Injectable()
@@ -16,7 +17,7 @@ export class SelectionRewriterAgent {
   async run(input: SelectionRewriteRequest): Promise<SelectionRewriteResult> {
     const startedAt = Date.now();
     const { prompt, model } = await this.prompts.render(
-      `selection_${input.action}`,
+      selectionPromptName(input.action),
       input as unknown as Record<string, unknown>,
       `你是中文图文编辑助手。请对选中文本执行 {{action}}。
 
@@ -42,7 +43,7 @@ export class SelectionRewriterAgent {
     const result = parsed;
 
     await this.logs.log({
-      scene: `selection_${input.action}`,
+      scene: selectionPromptName(input.action),
       model: this.modelClient.modelName(model),
       inputSummary: input.selectedText.slice(0, 120),
       output: result,

@@ -1,6 +1,5 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { AssetAuditStatus } from "@prisma/client";
-import { DEFAULT_USER_EMAIL } from "../../common/defaults";
 import { toAssetSummary } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 
@@ -8,14 +7,14 @@ import { PrismaService } from "../../infra/prisma/prisma.service";
 export class AssetsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async list(contentId?: string) {
+  async list(userId: string, contentId?: string) {
     if (!contentId) {
-      const items = await this.prisma.asset.findMany({ orderBy: { createdAt: "desc" } });
+      const items = await this.prisma.asset.findMany({ where: { uploaderId: userId }, orderBy: { createdAt: "desc" } });
       return items.map(toAssetSummary);
     }
 
     const relations = await this.prisma.contentAsset.findMany({
-      where: { contentId },
+      where: { contentId, content: { authorId: userId } },
       include: { asset: true },
       orderBy: { sortOrder: "asc" }
     });
@@ -23,15 +22,10 @@ export class AssetsService {
     return relations.map((item) => toAssetSummary(item.asset));
   }
 
-  async create(body: { fileName: string; mimeType: string; url: string; contentId?: string }) {
-    const uploader = await this.prisma.user.findFirst({ where: { email: DEFAULT_USER_EMAIL } });
-    if (!uploader) {
-      throw new NotFoundException("default user not found, please run prisma seed first");
-    }
-
+  async create(userId: string, body: { fileName: string; mimeType: string; url: string; contentId?: string }) {
     const asset = await this.prisma.asset.create({
       data: {
-        uploaderId: uploader.id,
+        uploaderId: userId,
         fileName: body.fileName,
         mimeType: body.mimeType,
         url: body.url,
@@ -40,19 +34,19 @@ export class AssetsService {
     });
 
     if (body.contentId) {
-      await this.link(asset.id, body.contentId);
+      await this.link(userId, asset.id, body.contentId);
     }
 
     return toAssetSummary(asset);
   }
 
-  async link(id: string, contentId: string) {
-    const asset = await this.prisma.asset.findUnique({ where: { id } });
+  async link(userId: string, id: string, contentId: string) {
+    const asset = await this.prisma.asset.findFirst({ where: { id, uploaderId: userId } });
     if (!asset) {
       throw new NotFoundException("asset not found");
     }
 
-    const content = await this.prisma.content.findUnique({ where: { id: contentId } });
+    const content = await this.prisma.content.findFirst({ where: { id: contentId, authorId: userId } });
     if (!content) {
       throw new NotFoundException("content not found");
     }

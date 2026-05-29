@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Draft" ALTER COLUMN "savedAt" DROP DEFAULT;

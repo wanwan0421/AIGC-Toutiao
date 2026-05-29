@@ -36,6 +36,35 @@ export interface CreatorProfile {
   avatarUrl?: string;
 }
 
+export interface UserPreferenceSummary {
+  writingStyles: string[];
+  domains: string[];
+  blockedWords: string[];
+}
+
+export interface UserProfileSummary {
+  id: string;
+  account?: string;
+  email?: string;
+  phone?: string;
+  nickname: string;
+  bio?: string;
+  avatarUrl?: string;
+  preferences: UserPreferenceSummary;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface UpdateUserProfileRequest {
+  nickname?: string;
+  bio?: string;
+  avatarUrl?: string;
+  email?: string;
+  phone?: string;
+  contactVerificationCode?: string;
+  blockedWords?: string[];
+}
+
 export interface ContentSummary {
   id: string;
   title: string;

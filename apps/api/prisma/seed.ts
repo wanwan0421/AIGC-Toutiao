@@ -5,6 +5,7 @@ import {
   PrismaClient,
   PromptScene
 } from "@prisma/client";
+import { AI_PROMPT_NAMES } from "../src/modules/ai/prompt-names";
 
 const prisma = new PrismaClient();
 
@@ -21,6 +22,7 @@ async function main() {
       email: "creator@example.com",
       passwordHash: hashPassword("123456"),
       nickname: "Luna Studio",
+      bio: "专注 AI 辅助图文创作、内容增长与生活方式选题。",
       avatarUrl: "",
       preferences: {
         create: {
@@ -33,6 +35,7 @@ async function main() {
     },
     update: {
       nickname: "Luna Studio",
+      bio: "专注 AI 辅助图文创作、内容增长与生活方式选题。",
       avatarUrl: ""
     }
   });
@@ -199,7 +202,7 @@ async function main() {
   const creativePrompts = [
     {
       id: "prompt_direct_generate",
-      name: "direct_generate",
+      name: AI_PROMPT_NAMES.directGenerate,
       scene: PromptScene.generate,
       template: `你是今日头条图文创作助手。请根据用户提供的前置需求生成结构完整、表达丰富的图文草稿。
 
@@ -216,7 +219,7 @@ title, titleCandidates, bodyMarkdown, tags, coverSuggestion, imagePrompts, outli
     },
     {
       id: "prompt_creative_chat",
-      name: "creative_chat",
+      name: AI_PROMPT_NAMES.creativeChat,
       scene: PromptScene.generate,
       template: `你是今日头条创作者的右侧创作助手，当前模式是「碰撞思路」，不是「直接生成」。
 
@@ -238,7 +241,7 @@ title, titleCandidates, bodyMarkdown, tags, coverSuggestion, imagePrompts, outli
     },
     {
       id: "prompt_title_generate",
-      name: "title_generate",
+      name: AI_PROMPT_NAMES.titleGenerate,
       scene: PromptScene.generate,
       template: `你是今日头条标题优化助手。只能根据当前标题和正文生成标题候选，不要使用用户未提供的主题、目标人群或风格。
 
@@ -251,7 +254,7 @@ title, titleCandidates, bodyMarkdown, tags, coverSuggestion, imagePrompts, outli
     },
     {
       id: "prompt_selection_polish",
-      name: "selection_polish",
+      name: AI_PROMPT_NAMES.selectionPolish,
       scene: PromptScene.rewrite,
       template: `你是中文图文编辑助手。请润色选中文本，让表达更顺、更清晰，但不要改变原意。
 
@@ -265,7 +268,7 @@ title, titleCandidates, bodyMarkdown, tags, coverSuggestion, imagePrompts, outli
     },
     {
       id: "prompt_selection_expand",
-      name: "selection_expand",
+      name: AI_PROMPT_NAMES.selectionExpand,
       scene: PromptScene.rewrite,
       template: `你是中文图文编辑助手。请扩写选中文本，补充具体场景、细节或可执行建议，使其更适合今日头条图文内容。
 
@@ -279,7 +282,7 @@ title, titleCandidates, bodyMarkdown, tags, coverSuggestion, imagePrompts, outli
     },
     {
       id: "prompt_selection_tone",
-      name: "selection_tone",
+      name: AI_PROMPT_NAMES.selectionTone,
       scene: PromptScene.rewrite,
       template: `你是中文图文编辑助手。请将选中文本改写为目标语气，保持信息准确，不额外解释。
 

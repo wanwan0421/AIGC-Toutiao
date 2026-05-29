@@ -10,8 +10,8 @@ export class DraftsService {
     private readonly redisService: RedisService
   ) {}
 
-  async getDraft(contentId: string) {
-    const cacheKey = this.cacheKey(contentId);
+  async getDraft(userId: string, contentId: string) {
+    const cacheKey = this.cacheKey(userId, contentId);
     const cached = await this.redisService
       .getClient()
       .get(cacheKey)
@@ -28,14 +28,22 @@ export class DraftsService {
       where: { contentId }
     });
 
-    if (draft) {
+    if (draft && draft.authorId === userId) {
       return {
         source: "postgres",
         ...this.serializeDraft(draft)
       };
     }
 
-    const content = await this.prisma.content.findUnique({ where: { id: contentId } });
+    const content = await this.prisma.content.findFirst({
+      where: { id: contentId, authorId: userId },
+      include: {
+        assets: {
+          include: { asset: true },
+          orderBy: { sortOrder: "asc" },
+        },
+      },
+    });
     if (!content) {
       throw new NotFoundException("content not found");
     }
@@ -46,12 +54,17 @@ export class DraftsService {
       authorId: content.authorId,
       title: content.title,
       body: content.body,
+      payload: {
+        tags: content.tags,
+        generatedAssetIds: content.assets.map((item) => item.assetId),
+        coverPreview: content.assets[0]?.asset.url,
+      },
       savedAt: new Date().toISOString()
     };
   }
 
-  async autosave(contentId: string, body: { title?: string; body?: string; payload?: Record<string, unknown>; clientHash?: string }) {
-    const content = await this.prisma.content.findUnique({ where: { id: contentId } });
+  async autosave(userId: string, contentId: string, body: { title?: string; body?: string; payload?: Record<string, unknown>; clientHash?: string }) {
+    const content = await this.prisma.content.findFirst({ where: { id: contentId, authorId: userId } });
     if (!content) {
       throw new NotFoundException("content not found");
     }
@@ -80,13 +93,13 @@ export class DraftsService {
       ...this.serializeDraft(draft)
     };
 
-    await this.redisService.getClient().set(this.cacheKey(contentId), JSON.stringify(payload), "EX", 60 * 60 * 24).catch(() => undefined);
+    await this.redisService.getClient().set(this.cacheKey(userId, contentId), JSON.stringify(payload), "EX", 60 * 60 * 24).catch(() => undefined);
 
     return payload;
   }
 
-  private cacheKey(contentId: string) {
-    return `draft:auto:${contentId}`;
+  private cacheKey(userId: string, contentId: string) {
+    return `draft:auto:${userId}:${contentId}`;
   }
 
   private serializeDraft(draft: {

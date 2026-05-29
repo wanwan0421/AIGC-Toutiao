@@ -1,53 +1,63 @@
-import { Body, Controller, Get, Param, Patch, Post, Query } from "@nestjs/common";
-import { ContentStatus } from "@aicp/shared";
+import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
+import { ContentStatus, type UserProfileSummary } from "@aicp/shared";
+import { AuthGuard } from "../auth/auth.guard";
+import { CurrentUser } from "../auth/current-user.decorator";
 import { ContentsService } from "./contents.service";
 
+@UseGuards(AuthGuard)
 @Controller("contents")
 export class ContentsController {
   constructor(private readonly contentsService: ContentsService) {}
 
   @Get()
-  list(@Query("status") status?: ContentStatus) {
-    return this.contentsService.list(status);
+  list(@CurrentUser() user: UserProfileSummary, @Query("status") status?: ContentStatus) {
+    return this.contentsService.list(user.id, status);
   }
 
   @Post()
-  create(@Body() body: { title?: string; body?: string; tags?: string[]; assetIds?: string[] }) {
-    return this.contentsService.create(body);
+  create(
+    @CurrentUser() user: UserProfileSummary,
+    @Body() body: { title?: string; body?: string; tags?: string[]; assetIds?: string[] }
+  ) {
+    return this.contentsService.create(user.id, body);
   }
 
   @Get(":id")
-  detail(@Param("id") id: string) {
-    return this.contentsService.detail(id);
+  detail(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
+    return this.contentsService.detail(user.id, id);
   }
 
   @Get(":id/versions")
-  versions(@Param("id") id: string) {
-    return this.contentsService.versions(id);
+  versions(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
+    return this.contentsService.versions(user.id, id);
   }
 
   @Patch(":id")
-  update(@Param("id") id: string, @Body() body: { title?: string; body?: string; tags?: string[]; assetIds?: string[] }) {
-    return this.contentsService.update(id, body);
+  update(
+    @CurrentUser() user: UserProfileSummary,
+    @Param("id") id: string,
+    @Body() body: { title?: string; body?: string; tags?: string[]; assetIds?: string[] }
+  ) {
+    return this.contentsService.update(user.id, id, body);
   }
 
   @Post(":id/submit-review")
-  submitReview(@Param("id") id: string) {
-    return this.contentsService.submitReview(id);
+  submitReview(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
+    return this.contentsService.submitReview(user.id, id);
   }
 
   @Post(":id/approve")
-  approve(@Param("id") id: string) {
-    return this.contentsService.approve(id);
+  approve(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
+    return this.contentsService.approve(user.id, id);
   }
 
   @Post(":id/publish")
-  publish(@Param("id") id: string) {
-    return this.contentsService.publish(id);
+  publish(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
+    return this.contentsService.publish(user.id, id);
   }
 
   @Post(":id/offline")
-  offline(@Param("id") id: string) {
-    return this.contentsService.offline(id);
+  offline(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
+    return this.contentsService.offline(user.id, id);
   }
 }

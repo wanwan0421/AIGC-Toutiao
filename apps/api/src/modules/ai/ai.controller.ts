@@ -1,16 +1,25 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Res } from "@nestjs/common";
+import { Body, Controller, Get, Param, Patch, Post, Query, Res, UseGuards } from "@nestjs/common";
 import type { Response } from "express";
-import type { AiGenerateRequest, CreativeChatRequest, DirectGenerateRequest, SelectionRewriteRequest, TitleGenerateRequest } from "@aicp/shared";
+import type {
+  AiGenerateRequest,
+  CreativeChatRequest,
+  DirectGenerateRequest,
+  SelectionRewriteRequest,
+  TitleGenerateRequest,
+  UserProfileSummary
+} from "@aicp/shared";
+import { AuthGuard } from "../auth/auth.guard";
+import { CurrentUser } from "../auth/current-user.decorator";
 import { AiService } from "./ai.service";
 
+@UseGuards(AuthGuard)
 @Controller("ai")
 export class AiController {
   constructor(private readonly aiService: AiService) {}
 
-  // 生成适合编辑的结构化初稿，适合用户需要AI辅助构思和搭建内容框架的场景
   @Post("generate")
-  generate(@Body() body: AiGenerateRequest & { audience?: string }) {
-    return this.aiService.generate(body);
+  generate(@CurrentUser() user: UserProfileSummary, @Body() body: AiGenerateRequest & { audience?: string }) {
+    return this.aiService.generate({ ...body, userId: user.id });
   }
 
   @Post("audit")
@@ -33,16 +42,19 @@ export class AiController {
     return this.aiService.logs();
   }
 
-  // 创意聊天接口，适合用户与AI进行多轮对话，逐步完善内容的场景
   @Post("creative/chat/stream")
-  async streamCreativeChat(@Body() body: CreativeChatRequest, @Res() response: Response) {
+  async streamCreativeChat(
+    @CurrentUser() user: UserProfileSummary,
+    @Body() body: CreativeChatRequest,
+    @Res() response: Response
+  ) {
     response.setHeader("Content-Type", "text/event-stream; charset=utf-8");
     response.setHeader("Cache-Control", "no-cache, no-transform");
     response.setHeader("Connection", "keep-alive");
     response.flushHeaders?.();
 
     try {
-      for await (const event of this.aiService.streamCreativeChat(body)) {
+      for await (const event of this.aiService.streamCreativeChat({ ...body, userId: user.id })) {
         response.write(`event: ${event.type}\n`);
         response.write(`data: ${JSON.stringify(event.data)}\n\n`);
       }
@@ -54,10 +66,9 @@ export class AiController {
     }
   }
 
-  // 直接生成适合发布的内容，区别于/generate接口生成的结构化初稿，适合用户明确需要AI生成最终内容的场景
   @Post("creative/direct-generate")
-  directGenerate(@Body() body: DirectGenerateRequest) {
-    return this.aiService.directGenerate(body);
+  directGenerate(@CurrentUser() user: UserProfileSummary, @Body() body: DirectGenerateRequest) {
+    return this.aiService.directGenerate({ ...body, userId: user.id });
   }
 
   @Post("creative/titles")
@@ -70,14 +81,23 @@ export class AiController {
     return this.aiService.rewriteSelection(body);
   }
 
+  @Get("creative/image/config")
+  creativeImageConfigStatus() {
+    return this.aiService.creativeImageConfigStatus();
+  }
+
   @Get("creative/conversations")
-  creativeConversations(@Query("contentId") contentId?: string, @Query("userId") userId?: string) {
+  creativeConversations(@CurrentUser() user: UserProfileSummary, @Query("contentId") contentId?: string) {
     if (!contentId) return [];
-    return this.aiService.creativeConversations(contentId, userId);
+    return this.aiService.creativeConversations(contentId, user.id);
   }
 
   @Patch("creative/conversations/:id/attach")
-  attachCreativeConversation(@Param("id") id: string, @Body() body: { contentId: string; userId?: string }) {
-    return this.aiService.attachCreativeConversation(id, body);
+  attachCreativeConversation(
+    @CurrentUser() user: UserProfileSummary,
+    @Param("id") id: string,
+    @Body() body: { contentId: string }
+  ) {
+    return this.aiService.attachCreativeConversation(id, { ...body, userId: user.id });
   }
 }

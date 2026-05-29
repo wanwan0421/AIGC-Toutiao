@@ -3,6 +3,7 @@ import type { DirectGenerateRequest, DirectGenerateResult } from "@aicp/shared";
 import { AiCallLogService } from "../ai-call-log.service";
 import { ModelClientService } from "../model-client.service";
 import { PromptTemplateService } from "../prompt-template.service";
+import { AI_PROMPT_NAMES } from "../prompt-names";
 import { parseJsonObject } from "../structured-output";
 
 @Injectable()
@@ -16,7 +17,7 @@ export class DraftGeneratorAgent {
   async run(input: DirectGenerateRequest): Promise<DirectGenerateResult> {
     const startedAt = Date.now();
     const { prompt, model } = await this.prompts.render(
-      "direct_generate",
+      AI_PROMPT_NAMES.directGenerate,
       input as unknown as Record<string, unknown>,
       `你是今日头条图文创作助手。请根据用户提供的前置需求生成结构完整、表达丰富的图文草稿。
 
@@ -45,7 +46,7 @@ title, titleCandidates, bodyMarkdown, tags, coverSuggestion, imagePrompts, outli
     const result = this.normalize(parsed);
 
     await this.logs.log({
-      scene: "direct_generate",
+      scene: AI_PROMPT_NAMES.directGenerate,
       model: this.modelClient.modelName(model),
       inputSummary: `${input.theme} / ${input.materialNotes?.slice(0, 80) ?? ""}`,
       output: result,

@@ -1,10 +1,10 @@
-import { createHash } from "node:crypto";
+import * as bcrypt from "bcrypt";
 
 export const DEFAULT_USER_EMAIL = "creator@example.com";
 export const DEFAULT_USER_PASSWORD = "123456";
 
 export function hashPassword(password: string) {
-  return createHash("sha256").update(password).digest("hex");
+  return bcrypt.hashSync(password, 10);
 }
 
 export const DEFAULT_USER = {

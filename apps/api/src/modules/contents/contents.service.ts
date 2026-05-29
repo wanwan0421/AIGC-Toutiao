@@ -2,7 +2,6 @@ import { BadRequestException, Injectable, NotFoundException } from "@nestjs/comm
 import { ContentStatus as ApiContentStatus } from "@aicp/shared";
 import { ContentStatus as DbContentStatus, Prisma } from "@prisma/client";
 import { buildAuditResult, buildQualityScore } from "../../common/business-rules";
-import { DEFAULT_USER_EMAIL } from "../../common/defaults";
 import { toContentDetail, toContentSummary, toDbAuditRiskLevel, toDbContentStatus } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 
@@ -18,9 +17,12 @@ const contentInclude = {
 export class ContentsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async list(status?: ApiContentStatus) {
+  async list(userId: string, status?: ApiContentStatus) {
     const items = await this.prisma.content.findMany({
-      where: status ? { status: toDbContentStatus(status) } : undefined,
+      where: {
+        authorId: userId,
+        ...(status ? { status: toDbContentStatus(status) } : {})
+      },
       include: { author: true },
       orderBy: { updatedAt: "desc" }
     });
@@ -28,12 +30,11 @@ export class ContentsService {
     return items.map(toContentSummary);
   }
 
-  async create(body: { title?: string; body?: string; tags?: string[]; assetIds?: string[] }) {
-    const author = await this.getDefaultUser();
+  async create(userId: string, body: { title?: string; body?: string; tags?: string[]; assetIds?: string[] }) {
     const contentBody = body.body?.trim() ?? "";
     const content = await this.prisma.content.create({
       data: {
-        authorId: author.id,
+        authorId: userId,
         title: body.title?.trim() || "未命名草稿",
         body: contentBody,
         excerpt: contentBody.slice(0, 72),
@@ -54,20 +55,20 @@ export class ContentsService {
     return toContentDetail(content);
   }
 
-  async detail(id: string) {
-    return toContentDetail(await this.getContent(id));
+  async detail(userId: string, id: string) {
+    return toContentDetail(await this.getContent(userId, id));
   }
 
-  async versions(id: string) {
-    await this.assertContentExists(id);
+  async versions(userId: string, id: string) {
+    await this.assertContentExists(userId, id);
     return this.prisma.contentVersion.findMany({
       where: { contentId: id },
       orderBy: { version: "desc" }
     });
   }
 
-  async update(id: string, body: { title?: string; body?: string; tags?: string[]; assetIds?: string[] }) {
-    const current = await this.getContent(id);
+  async update(userId: string, id: string, body: { title?: string; body?: string; tags?: string[]; assetIds?: string[] }) {
+    const current = await this.getContent(userId, id);
     await this.createVersion(current.id, current.title, current.body);
 
     const nextBody = body.body ?? current.body;
@@ -98,8 +99,8 @@ export class ContentsService {
     return toContentDetail(updated);
   }
 
-  async submitReview(id: string) {
-    const content = await this.getContent(id);
+  async submitReview(userId: string, id: string) {
+    const content = await this.getContent(userId, id);
     const audit = buildAuditResult(content.title, content.body);
     const quality = buildQualityScore(content.title, content.body);
 
@@ -142,8 +143,8 @@ export class ContentsService {
     };
   }
 
-  async approve(id: string) {
-    const content = await this.getContent(id);
+  async approve(userId: string, id: string) {
+    const content = await this.getContent(userId, id);
     if (content.status !== DbContentStatus.pending_review) {
       throw new BadRequestException("only pending_review content can be approved");
     }
@@ -157,8 +158,8 @@ export class ContentsService {
     return toContentSummary(updated);
   }
 
-  async publish(id: string) {
-    const content = await this.getContent(id);
+  async publish(userId: string, id: string) {
+    const content = await this.getContent(userId, id);
     if (content.status !== DbContentStatus.approved && content.status !== DbContentStatus.updated) {
       throw new BadRequestException("content must be approved before publish");
     }
@@ -175,7 +176,8 @@ export class ContentsService {
     return toContentSummary(updated);
   }
 
-  async offline(id: string) {
+  async offline(userId: string, id: string) {
+    await this.assertContentExists(userId, id);
     const updated = await this.prisma.content.update({
       where: { id },
       data: { status: DbContentStatus.offline },
@@ -185,33 +187,24 @@ export class ContentsService {
     return toContentSummary(updated);
   }
 
-  private async getContent(id: string) {
+  private async getContent(userId: string, id: string) {
     const content = await this.prisma.content.findUnique({
       where: { id },
       include: contentInclude
     });
 
-    if (!content) {
+    if (!content || content.authorId !== userId) {
       throw new NotFoundException("content not found");
     }
 
     return content;
   }
 
-  private async assertContentExists(id: string) {
-    const count = await this.prisma.content.count({ where: { id } });
+  private async assertContentExists(userId: string, id: string) {
+    const count = await this.prisma.content.count({ where: { id, authorId: userId } });
     if (count === 0) {
       throw new NotFoundException("content not found");
     }
-  }
-
-  private async getDefaultUser() {
-    const user = await this.prisma.user.findFirst({ where: { email: DEFAULT_USER_EMAIL } });
-    if (!user) {
-      throw new NotFoundException("default user not found, please run prisma seed first");
-    }
-
-    return user;
   }
 
   private async createVersion(contentId: string, title: string, body: string) {

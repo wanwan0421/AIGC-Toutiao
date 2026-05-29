@@ -25,4 +25,8 @@ export class CreativeProductionSkill {
       imageAssets: generatedImages.imageAssets,
     };
   }
+
+  imageConfigStatus() {
+    return this.imageGeneration.configStatus();
+  }
 }

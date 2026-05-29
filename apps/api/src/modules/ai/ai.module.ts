@@ -1,7 +1,9 @@
 import { Module } from "@nestjs/common";
+import { AuthModule } from "../auth/auth.module";
 import { AiController } from "./ai.controller";
 import { AiService } from "./ai.service";
 import { AiCallLogService } from "./ai-call-log.service";
+import { CreativeOrchestratorService } from "./creative-orchestrator.service";
 import { ContextBuilderService } from "./context-builder.service";
 import { ConversationArchiveService } from "./conversation-archive.service";
 import { ImageGenerationService } from "./image-generation.service";
@@ -16,10 +18,12 @@ import { CreativeAssistantSkill } from "./skills/creative-assistant.skill";
 import { CreativeProductionSkill } from "./skills/creative-production.skill";
 
 @Module({
+  imports: [AuthModule],
   controllers: [AiController],
   providers: [
     AiService,
     AiCallLogService,
+    CreativeOrchestratorService,
     ContextBuilderService,
     ConversationArchiveService,
     ImageGenerationService,

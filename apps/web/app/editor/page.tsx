@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { ContentStatus } from "@aicp/shared";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -195,6 +195,8 @@ function formatDraftTime(value: string) {
 
 export default function EditorPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const editingContentId = searchParams.get("contentId");
   const editorRef = useRef<HTMLDivElement | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
@@ -204,6 +206,7 @@ export default function EditorPage() {
   const chatStreamLockRef = useRef(false);
 
   const [contentId, setContentId] = useState<string | null>(null);
+  const [editingStatus, setEditingStatus] = useState<ContentStatus | null>(null);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [briefTheme, setBriefTheme] = useState("夏日通勤穿搭");
@@ -251,6 +254,7 @@ export default function EditorPage() {
 
   const latestDraftStateRef = useRef({
     contentId,
+    editingStatus,
     title,
     body,
     briefTheme,
@@ -313,6 +317,7 @@ export default function EditorPage() {
   useEffect(() => {
     latestDraftStateRef.current = {
       contentId,
+      editingStatus,
       title,
       body,
       briefTheme,
@@ -340,6 +345,7 @@ export default function EditorPage() {
     briefTheme,
     contentDeclaration,
     contentId,
+    editingStatus,
     coverPreview,
     generatedAssetIds,
     isOriginal,
@@ -435,6 +441,7 @@ export default function EditorPage() {
   async function loadInitialDrafts() {
     setIsLoadingInitial(true);
     setContentId(null);
+    setEditingStatus(null);
     setTitle("");
     writeEditorHtml("");
 
@@ -462,6 +469,9 @@ export default function EditorPage() {
 
       draftCards.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
       setDrafts(draftCards);
+      if (editingContentId) {
+        await restoreDraft(editingContentId, "已打开作品编辑，可在保存后形成更新版本");
+      }
       setStatusMessage(draftCards[0] ? `检测到 ${draftCards.length} 篇草稿，可按需恢复` : "暂无已保存草稿，可以直接开始创作");
     } catch {
       setStatusMessage("草稿加载失败，当前可继续本地编辑");
@@ -480,23 +490,28 @@ export default function EditorPage() {
       const assetIds = Array.isArray(payload.generatedAssetIds)
         ? payload.generatedAssetIds.filter((id): id is string => typeof id === "string")
         : [];
+      const detail = await getContentDetail(id).catch(() => null);
+      const detailAssetIds = detail?.assets.map((asset) => asset.id) ?? [];
+      const detailCoverPreview = detail?.coverUrl ?? detail?.assets[0]?.url ?? "";
 
       setContentId(draft.contentId);
-      setTitle(draft.title ?? "");
+      setEditingStatus(detail?.status ?? ContentStatus.Draft);
+      setTitle(draft.title ?? detail?.title ?? "");
       if (draftHtml) {
         writeEditorMarkup(draftHtml, draft.body ?? extractPlainTextFromHtml(draftHtml));
       } else {
         writeEditorHtml(draft.body ?? "");
       }
-      setSelectedTopics(tags);
-      setCoverPreview(draftCoverPreview);
-      setGeneratedAssetIds(assetIds);
+      setSelectedTopics(tags.length ? tags : detail?.tags ?? []);
+      setCoverPreview(draftCoverPreview || detailCoverPreview);
+      setGeneratedAssetIds(assetIds.length ? assetIds : detailAssetIds);
       setShowDraftList(false);
       setStatusMessage(message);
     } catch {
       try {
         const detail = await getContentDetail(id);
         setContentId(detail.id);
+        setEditingStatus(detail.status);
         setTitle(detail.title ?? "");
         writeEditorHtml(detail.body ?? "");
         setSelectedTopics(detail.tags ?? []);
@@ -550,15 +565,26 @@ export default function EditorPage() {
         assetIds: state.generatedAssetIds,
       };
 
-      const saved = state.contentId ? await updateContent(state.contentId, payload) : await createContent(payload);
+      const isEditingPublishedContent =
+        state.editingStatus === ContentStatus.Published || state.editingStatus === ContentStatus.Updated;
+      const saved = state.contentId
+        ? isEditingPublishedContent
+          ? await getContentDetail(state.contentId)
+          : await updateContent(state.contentId, payload)
+        : await createContent(payload);
+      const draftTitle = payload.title;
       setContentId(saved.id);
-      setTitle(saved.title);
+      setEditingStatus(saved.status);
+      setTitle(isEditingPublishedContent ? draftTitle : saved.title);
       if (conversationId) {
-        await attachCreativeConversation(conversationId, saved.id).catch(() => undefined);
+        const attached = await attachCreativeConversation(conversationId, saved.id).catch(() => null);
+        if (attached?.conversationId) {
+          setConversationId(attached.conversationId);
+        }
       }
 
       await autosaveDraft(saved.id, {
-        title: saved.title,
+        title: draftTitle,
         body: nextBody,
         payload: {
           html: nextHtml,
@@ -583,7 +609,7 @@ export default function EditorPage() {
       setDrafts((items) => {
         const next: DraftCard = {
           id: saved.id,
-          title: saved.title,
+          title: draftTitle,
           updatedAt: new Date().toISOString(),
           body: nextBody,
           html: nextHtml,
@@ -769,7 +795,9 @@ export default function EditorPage() {
       };
       const saved = contentId ? await updateContent(contentId, payload) : await createContent(payload);
       setContentId(saved.id);
+      setEditingStatus(saved.status);
       const reviewed = await submitReview(saved.id);
+      setEditingStatus(reviewed.content.status);
       setStatusMessage(reviewed.content.status === ContentStatus.Published ? "已通过审核并发布" : "已提交审核");
       router.push(`/content/${reviewed.content.id}`);
     } catch {
@@ -975,7 +1003,7 @@ export default function EditorPage() {
 
   return (
     <section className="min-h-full bg-[#f6f6f7] px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
-      <header className="mx-auto mb-5 flex max-w-370 flex-wrap items-center justify-between gap-4">
+      <header className="mx-auto mb-5 flex max-w-390 flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <button
             type="button"

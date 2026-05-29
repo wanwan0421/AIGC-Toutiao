@@ -1,15 +1,10 @@
-import { Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable } from "@nestjs/common";
 import type { CreativeChatMessage, CreativeChatRequest } from "@aicp/shared";
-import { PrismaService } from "../../infra/prisma/prisma.service";
-import { DEFAULT_USER_EMAIL } from "../../common/defaults";
 import { MemoryService } from "./memory.service";
 
 @Injectable()
 export class ContextBuilderService {
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly memoryService: MemoryService
-  ) {}
+  constructor(private readonly memoryService: MemoryService) {}
 
   async buildCreativeChatContext(request: CreativeChatRequest) {
     const userId = await this.resolveUserId(request.userId);
@@ -31,9 +26,7 @@ export class ContextBuilderService {
   }
 
   formatHistory(history: CreativeChatMessage[]) {
-    return history
-      .map((message) => `${message.role === "user" ? "用户" : "AI"}：${message.content}`)
-      .join("\n");
+    return history.map((message) => `${message.role === "user" ? "User" : "AI"}: ${message.content}`).join("\n");
   }
 
   summarize(value: string, maxLength = 600) {
@@ -44,7 +37,6 @@ export class ContextBuilderService {
 
   async resolveUserId(userId?: string) {
     if (userId) return userId;
-    const user = await this.prisma.user.findFirst({ where: { email: DEFAULT_USER_EMAIL } }).catch(() => null);
-    return user?.id ?? "anonymous-user";
+    throw new BadRequestException("authenticated user is required for creative chat context");
   }
 }

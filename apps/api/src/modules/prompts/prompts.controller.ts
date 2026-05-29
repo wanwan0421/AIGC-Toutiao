@@ -1,7 +1,10 @@
-import { Body, Controller, Get, Param, Patch, Post, Query } from "@nestjs/common";
-import { PromptScene } from "@aicp/shared";
+import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
+import { PromptScene, type UserProfileSummary } from "@aicp/shared";
+import { AuthGuard } from "../auth/auth.guard";
+import { CurrentUser } from "../auth/current-user.decorator";
 import { PromptsService } from "./prompts.service";
 
+@UseGuards(AuthGuard)
 @Controller("prompts")
 export class PromptsController {
   constructor(private readonly promptsService: PromptsService) {}
@@ -18,6 +21,7 @@ export class PromptsController {
 
   @Post()
   create(
+    @CurrentUser() user: UserProfileSummary,
     @Body()
     body: {
       name: string;
@@ -28,7 +32,7 @@ export class PromptsController {
       modelOptions?: Record<string, unknown>;
     }
   ) {
-    return this.promptsService.create(body);
+    return this.promptsService.create(user.id, body);
   }
 
   @Patch(":id")

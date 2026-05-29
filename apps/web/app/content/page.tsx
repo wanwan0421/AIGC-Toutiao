@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { ContentStatus, type ContentSummary } from "@aicp/shared";
 import { Icons } from "../../components/icons";
+import { StatusBadge } from "../../components/status-badge";
 import {
   approveContent,
   getContentDetail,
@@ -13,9 +14,8 @@ import {
   publishContent,
   rewriteText,
   submitReview,
-  updateContent
+  updateContent,
 } from "../../lib/api";
-import { StatusBadge } from "../../components/status-badge";
 
 function formatUpdatedAt(value: string) {
   const updatedAt = new Date(value);
@@ -26,12 +26,23 @@ function formatUpdatedAt(value: string) {
   return updatedAt.toLocaleString("zh-CN", { hour12: false });
 }
 
+function actionLabel(content: ContentSummary, busyId: string | null) {
+  if (busyId === content.id) return "处理中...";
+  if (content.status === ContentStatus.Rejected) return "一键合规改写";
+  if (content.status === ContentStatus.Draft) return "提交审核";
+  if (content.status === ContentStatus.PendingReview) return "通过审核";
+  if (content.status === ContentStatus.Approved || content.status === ContentStatus.Updated) return "发布更新";
+  if (content.status === ContentStatus.Published) return "下线";
+  return "执行操作";
+}
+
 export default function ContentPage() {
   const searchParams = useSearchParams();
   const statusFilterValue = searchParams.get("status");
   const statusFilter = Object.values(ContentStatus).includes(statusFilterValue as ContentStatus)
     ? (statusFilterValue as ContentStatus)
     : null;
+
   const [contents, setContents] = useState<ContentSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -84,28 +95,32 @@ export default function ContentPage() {
         const rewritten = await rewriteText({
           title: detail.title,
           body: detail.body,
-          reasons: ["降低夸张表达", "补充事实描述", "增强合规性"]
+          reasons: ["降低夸张表达", "补充事实描述", "增强合规性"],
         });
 
         await updateContent(content.id, {
           title: rewritten.title,
           body: rewritten.body,
-          tags: detail.tags
+          tags: detail.tags,
         });
 
-        setMessage(`已完成 ${detail.title} 的合规改写`);
+        setMessage(`已完成「${detail.title}」的合规改写`);
       } else if (content.status === ContentStatus.Draft) {
         const response = await submitReview(content.id);
-        setMessage(response.audit.passed ? `草稿已提交审核，质量分 ${response.quality.total}` : `草稿审核未通过，质量分 ${response.quality.total}`);
+        setMessage(
+          response.audit.passed
+            ? `草稿已提交审核，质量分 ${response.quality.total}`
+            : `草稿审核未通过，质量分 ${response.quality.total}`
+        );
       } else if (content.status === ContentStatus.PendingReview) {
         await approveContent(content.id);
-        setMessage(`${content.title} 已通过审核`);
+        setMessage(`「${content.title}」已通过审核`);
       } else if (content.status === ContentStatus.Approved || content.status === ContentStatus.Updated) {
         await publishContent(content.id);
-        setMessage(`${content.title} 已发布`);
+        setMessage(`「${content.title}」已发布`);
       } else if (content.status === ContentStatus.Published) {
         await offlineContent(content.id);
-        setMessage(`${content.title} 已下线`);
+        setMessage(`「${content.title}」已下线`);
       }
 
       await refreshContents();
@@ -125,36 +140,42 @@ export default function ContentPage() {
   ];
 
   return (
-    <div className="p-6 md:p-10 max-w-6xl mx-auto w-full">
-      <div className="flex items-center justify-between mb-8 gap-4 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-black text-slate-900 m-0">作品管理</h1>
-          <p className="text-sm text-slate-500 mt-1">管理、分析并优化您的内容资产</p>
-          <p className="mt-2 text-xs font-medium text-slate-400">{message}</p>
-        </div>
-        <Link href="/editor" className="bg-[#0E121B] text-white hover:bg-slate-800 px-4 py-2.5 rounded-lg font-semibold text-sm transition flex items-center gap-2 shadow-sm">
-          <Icons.Plus className="w-4 h-4" /> 新建作品
-        </Link>
-      </div>
-
-      <div className="flex bg-slate-100/80 p-1 rounded-xl w-max mb-6 overflow-x-auto max-w-full">
-        {tabs.map((tab) => (
+    <section className="min-h-full bg-[#f6f6f7] px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-[1400px]">
+        <header className="mb-6 flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <p className="text-sm text-slate-500">今日头条创作平台</p>
+            <h1 className="text-2xl font-semibold tracking-normal text-slate-950">作品管理</h1>
+            <p className="mt-1 text-xs font-medium text-slate-400">{message}</p>
+          </div>
           <Link
-            key={tab.label}
-            href={tab.value !== null ? `/content?status=${tab.value}` : `/content`}
-            className={`px-5 py-2 text-sm font-semibold rounded-lg transition whitespace-nowrap ${statusFilter === tab.value ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+            href="/editor"
+            className="flex items-center gap-2 rounded-full bg-[#ff2442] px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#e91635]"
           >
-            {tab.label}
+            <Icons.Plus className="h-4 w-4" /> 发布新作品
           </Link>
-        ))}
-      </div>
+        </header>
 
-      <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden flex flex-col">
-        <div className="divide-y divide-slate-100">
-          {loading ? (
-            <div className="p-16 text-center text-slate-400 text-sm">正在从后端加载作品...</div>
+        <div className="mb-6 flex w-max max-w-full overflow-x-auto rounded-full bg-slate-100 p-1">
+          {tabs.map((tab) => (
+            <Link
+              key={tab.label}
+              href={tab.value !== null ? `/content?status=${tab.value}` : "/content"}
+              className={`whitespace-nowrap rounded-full px-5 py-2 text-sm font-medium transition ${
+                statusFilter === tab.value ? "bg-white text-[#ff2442] shadow-sm font-semibold" : "text-slate-500 hover:text-slate-900"
+              }`}
+            >
+              {tab.label}
+            </Link>
+          ))}
+        </div>
+
+        <div className="flex flex-col overflow-hidden rounded-3xl border border-slate-100 bg-white shadow-sm">
+          <div className="divide-y divide-slate-50">
+            {loading ? (
+            <div className="p-16 text-center text-sm text-slate-400">正在从后端加载作品...</div>
           ) : filteredContents.length === 0 ? (
-            <div className="p-16 text-center text-slate-400 text-sm">暂无内容，去新建第一篇爆款吧！</div>
+            <div className="p-16 text-center text-sm text-slate-400">暂无内容，去新建第一篇作品吧。</div>
           ) : (
             filteredContents.map((content) => {
               const isRejected = content.status === ContentStatus.Rejected;
@@ -164,45 +185,73 @@ export default function ContentPage() {
               const isReadyToPublish = content.status === ContentStatus.Approved || content.status === ContentStatus.Updated;
 
               return (
-                <div key={content.id} className={`p-6 transition flex flex-col sm:flex-row gap-5 items-start sm:items-center ${isRejected ? "bg-rose-50/20 hover:bg-rose-50/40" : "hover:bg-slate-50/50"}`}>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-3 mb-2 flex-wrap">
-                       <StatusBadge status={content.status} />
-                       <span className="text-xs font-medium text-slate-400">最后更新: {formatUpdatedAt(content.updatedAt)}</span>
+                <div
+                  key={content.id}
+                  className={`flex flex-col items-start gap-5 p-5 transition sm:flex-row sm:items-center ${
+                    isRejected ? "bg-[#fff3f5]/50 hover:bg-[#fff3f5]" : "bg-white hover:bg-slate-50/80"
+                  }`}
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="mb-2 flex flex-wrap items-center gap-3">
+                      <StatusBadge status={content.status} />
+                      <span className="text-xs font-medium text-slate-400">最后更新：{formatUpdatedAt(content.updatedAt)}</span>
                     </div>
-                    <h3 className="text-base font-bold text-slate-900 m-0 mb-1.5 truncate">{content.title || "未命名"}</h3>
-                    <p className="text-sm text-slate-500 m-0 line-clamp-1">{content.excerpt || "暂无摘要"}</p>
+                    <h3 className="m-0 mb-1.5 truncate text-base font-bold text-slate-900">{content.title || "未命名"}</h3>
+                    <p className="m-0 line-clamp-1 text-sm text-slate-500">{content.excerpt || "暂无摘要"}</p>
 
                     {isRejected && (
-                      <div className="mt-4 p-3.5 bg-white border border-rose-100 rounded-xl flex items-start gap-3 shadow-sm">
-                        <Icons.AlertTriangle className="w-4 h-4 text-rose-500 mt-0.5" />
+                      <div className="mt-4 flex items-start gap-3 rounded-xl border border-rose-100 bg-white p-3.5 shadow-sm">
+                        <Icons.AlertTriangle className="mt-0.5 h-4 w-4 text-rose-500" />
                         <div>
-                          <span className="text-xs font-bold text-rose-700 block mb-0.5">AI 诊断拦截</span>
-                          <span className="text-xs text-rose-600/80">点击改写会调用后端合规改写接口，再写回数据库。</span>
+                          <span className="mb-0.5 block text-xs font-bold text-rose-700">AI 诊断拦截</span>
+                          <span className="text-xs text-rose-600/80">点击改写会调用后端合规改写接口，并写回数据库。</span>
                         </div>
                       </div>
                     )}
                   </div>
 
-                  <div className="w-24 shrink-0 text-right max-sm:hidden">
-                    <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">热度引擎</div>
+                  <div className="hidden w-24 shrink-0 text-right sm:block">
+                    <div className="mb-1 text-[11px] font-bold uppercase tracking-wider text-slate-400">热度引擎</div>
                     <span className="text-sm font-black text-slate-700">{content.heatScore || 0}</span>
                   </div>
 
-                  <div className="shrink-0 flex items-center gap-2 flex-wrap">
-                    <Link href={`/content/${content.id}`} className="p-2.5 text-slate-400 hover:text-blue-600 bg-slate-50 hover:bg-blue-50 rounded-lg transition" title="查看详情">
-                      <Icons.Book className="w-4 h-4" />
+                  <div className="flex shrink-0 flex-wrap items-center gap-2">
+                    <Link
+                      href={`/content/${content.id}`}
+                      className="rounded-full bg-slate-50 p-2.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+                      title="查看详情"
+                    >
+                      <Icons.Book className="h-4 w-4" />
                     </Link>
-                    <Link href="/editor" className="p-2.5 text-slate-400 hover:text-slate-800 bg-slate-50 hover:bg-slate-200 rounded-lg transition" title="编辑">
-                      <Icons.PenTool className="w-4 h-4" />
+                    <Link
+                      href={`/editor?contentId=${content.id}`}
+                      className="rounded-full bg-slate-50 p-2.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+                      title={isPublished ? "二次编辑" : "编辑"}
+                    >
+                      <Icons.PenTool className="h-4 w-4" />
                     </Link>
                     <button
-                      className={`px-4 py-2 rounded-lg text-sm font-bold transition flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60 ${isRejected ? "bg-rose-100 hover:bg-rose-200 text-rose-700" : isPending ? "bg-blue-100 hover:bg-blue-200 text-blue-700" : isDraft ? "bg-slate-100 hover:bg-slate-200 text-slate-700" : isReadyToPublish ? "bg-emerald-100 hover:bg-emerald-200 text-emerald-700" : "bg-slate-100 hover:bg-slate-200 text-slate-700"}`}
+                      className={`flex items-center gap-2 rounded-full px-5 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                        isRejected
+                          ? "bg-[#ff2442] text-white hover:bg-[#e91635] shadow-sm"
+                          : isPending
+                            ? "bg-blue-50 text-blue-600 hover:bg-blue-100"
+                            : isDraft
+                              ? "border border-slate-200 bg-white text-slate-700 hover:border-[#ff2442]/30 hover:text-[#ff2442]"
+                              : isReadyToPublish
+                                ? "bg-emerald-50 text-emerald-600 hover:bg-emerald-100"
+                                : "bg-slate-50 text-slate-700 hover:bg-slate-100"
+                      }`}
                       disabled={busyId === content.id}
                       onClick={() => handleLifecycleAction(content)}
                       type="button"
                     >
-                      {busyId === content.id ? "处理中..." : isRejected ? <><Icons.Sparkles className="w-4 h-4" /> 一键合规改写</> : isDraft ? <><Icons.Refresh className="w-4 h-4" /> 提交审核</> : isPending ? <><Icons.Shield className="w-4 h-4" /> 通过审核</> : isReadyToPublish ? <><Icons.Rocket className="w-4 h-4" /> 发布</> : isPublished ? <><Icons.Trash className="w-4 h-4" /> 下线</> : "执行操作"}
+                      {isRejected && busyId !== content.id && <Icons.Sparkles className="h-4 w-4" />}
+                      {isDraft && busyId !== content.id && <Icons.Refresh className="h-4 w-4" />}
+                      {isPending && busyId !== content.id && <Icons.Shield className="h-4 w-4" />}
+                      {isReadyToPublish && busyId !== content.id && <Icons.Rocket className="h-4 w-4" />}
+                      {isPublished && busyId !== content.id && <Icons.Trash className="h-4 w-4" />}
+                      {actionLabel(content, busyId)}
                     </button>
                   </div>
                 </div>
@@ -211,6 +260,7 @@ export default function ContentPage() {
           )}
         </div>
       </div>
-    </div>
+      </div>
+    </section>
   );
 }

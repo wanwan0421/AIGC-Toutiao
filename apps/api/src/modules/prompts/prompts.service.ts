@@ -1,7 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import { PromptScene } from "@aicp/shared";
 import { Prisma } from "@prisma/client";
-import { DEFAULT_USER_EMAIL } from "../../common/defaults";
 import { toDbPromptScene } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 
@@ -20,7 +19,7 @@ export class PromptsService {
     return this.getPrompt(id);
   }
 
-  async create(body: {
+  async create(userId: string, body: {
     name: string;
     scene: PromptScene;
     template: string;
@@ -32,11 +31,9 @@ export class PromptsService {
       throw new BadRequestException("invalid prompt scene");
     }
 
-    const user = await this.prisma.user.findFirst({ where: { email: DEFAULT_USER_EMAIL } });
-
     return this.prisma.promptTemplate.create({
       data: {
-        creatorId: user?.id,
+        creatorId: userId,
         name: body.name,
         scene: toDbPromptScene(body.scene),
         template: body.template,
