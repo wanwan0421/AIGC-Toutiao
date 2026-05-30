@@ -2,19 +2,23 @@
 
 import { useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, CheckCircle2, KeyRound, Loader2, Mail, Phone, UserRound } from "lucide-react";
-import { login, register, sendVerificationCode } from "../../lib/api";
+import { ArrowRight, CheckCircle2, Eye, EyeOff, KeyRound, Loader2, Mail, Phone, UserRound } from "lucide-react";
+import { login, logout, register, sendVerificationCode } from "../../lib/api";
+import { useAuth } from "../../components/auth-provider";
 
 type AuthMode = "login" | "register";
 type RegisterMethod = "phone" | "email";
 
 export default function LoginPage() {
   const router = useRouter();
+  const { setSession, clearSession } = useAuth();
   const [mode, setMode] = useState<AuthMode>("login");
   const [registerMethod, setRegisterMethod] = useState<RegisterMethod>("phone");
   const [loginAccount, setLoginAccount] = useState("");
   const [registerAccount, setRegisterAccount] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [nickname, setNickname] = useState("");
   const [verificationCode, setVerificationCode] = useState("");
   const [loading, setLoading] = useState(false);
@@ -29,13 +33,15 @@ export default function LoginPage() {
   const canSubmit = useMemo(() => {
     if (!password) return false;
     if (mode === "login") return Boolean(loginAccount.trim());
-    return Boolean(registerAccount.trim() && verificationCode.trim());
-  }, [loginAccount, mode, password, registerAccount, verificationCode]);
+    return Boolean(registerAccount.trim() && verificationCode.trim() && confirmPassword.trim() && password === confirmPassword);
+  }, [confirmPassword, loginAccount, mode, password, registerAccount, verificationCode]);
 
   function switchMode(nextMode: AuthMode) {
     setMode(nextMode);
     setError("");
     setCodeHint("");
+    setConfirmPassword("");
+    setShowPassword(false);
   }
 
   function switchRegisterMethod(nextMethod: RegisterMethod) {
@@ -61,8 +67,8 @@ export default function LoginPage() {
       setCodeHint(
         result.delivery === "console"
           ? result.verificationCode
-            ? `开发环境验证码：${result.verificationCode}`
-            : "验证码已生成，请查看后端日志"
+            ? `本次验证码：${result.verificationCode}`
+            : "验证码已生成"
           : `验证码已发送至你的${registerLabel}`
       );
     } catch (submitError) {
@@ -79,18 +85,33 @@ export default function LoginPage() {
 
     try {
       if (mode === "register") {
+        if (password !== confirmPassword) {
+          throw new Error("两次输入的密码不一致");
+        }
+
         await register({
           account: registerAccount.trim(),
           password,
           nickname,
           verificationCode: verificationCode.trim()
         });
+        await logout().catch(() => undefined);
+        clearSession();
+        setMode("login");
+        setLoginAccount(registerAccount.trim());
+        setPassword("");
+        setConfirmPassword("");
+        setVerificationCode("");
+        setNickname("");
+        setError("");
+        setCodeHint("注册成功，请使用新账号重新登录");
+        return;
       } else {
-        await login({ account: loginAccount.trim(), password });
+        const response = await login({ account: loginAccount.trim(), password });
+        setSession(response.user);
+        router.replace("/dashboard");
+        return;
       }
-
-      router.push("/dashboard");
-      router.refresh();
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "操作失败，请检查账号或稍后重试");
     } finally {
@@ -117,10 +138,20 @@ export default function LoginPage() {
                 <AuthField
                   icon={<KeyRound className="h-4 w-4" />}
                   label="密码"
-                  type="password"
+                  type={showPassword ? "text" : "password"}
                   value={password}
                   onChange={setPassword}
                   placeholder="请输入密码"
+                  trailing={
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((current) => !current)}
+                      className="flex items-center justify-center rounded-full p-1 text-slate-400 transition hover:text-rose-600"
+                      aria-label={showPassword ? "隐藏密码" : "显示密码"}
+                    >
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  }
                 />
               </>
             ) : (
@@ -192,10 +223,39 @@ export default function LoginPage() {
                 <AuthField
                   icon={<KeyRound className="h-4 w-4" />}
                   label="密码"
-                  type="password"
+                  type={showPassword ? "text" : "password"}
                   value={password}
                   onChange={setPassword}
                   placeholder="至少 8 位，包含字母和数字"
+                  trailing={
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((current) => !current)}
+                      className="flex items-center justify-center rounded-full p-1 text-slate-400 transition hover:text-rose-600"
+                      aria-label={showPassword ? "隐藏密码" : "显示密码"}
+                    >
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  }
+                />
+
+                <AuthField
+                  icon={<KeyRound className="h-4 w-4" />}
+                  label="确认密码"
+                  type={showPassword ? "text" : "password"}
+                  value={confirmPassword}
+                  onChange={setConfirmPassword}
+                  placeholder="再次输入密码"
+                  trailing={
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((current) => !current)}
+                      className="flex items-center justify-center rounded-full p-1 text-slate-400 transition hover:text-rose-600"
+                      aria-label={showPassword ? "隐藏密码" : "显示密码"}
+                    >
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  }
                 />
               </>
             )}
@@ -240,7 +300,8 @@ function AuthField({
   value,
   onChange,
   placeholder,
-  type = "text"
+  type = "text",
+  trailing
 }: {
   icon: ReactNode;
   label: string;
@@ -248,6 +309,7 @@ function AuthField({
   onChange: (value: string) => void;
   placeholder: string;
   type?: string;
+  trailing?: ReactNode;
 }) {
   return (
     <label className="grid gap-2">
@@ -261,6 +323,7 @@ function AuthField({
           onChange={(event) => onChange(event.target.value)}
           placeholder={placeholder}
         />
+        {trailing ? <span className="shrink-0">{trailing}</span> : null}
       </span>
     </label>
   );

@@ -3,7 +3,15 @@
 import { useEffect, useState } from "react";
 import type { ContentDetail } from "@aicp/shared";
 import { ContentDetailActions } from "../../../components/content-detail-actions";
+import { StatusBadge } from "../../../components/status-badge";
 import { getContentDetail } from "../../../lib/api";
+
+function formatDate(value?: string) {
+  if (!value) return "暂未发布";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "暂未发布";
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
 
 export default function ContentDetailPage({ params }: { params: { id: string } }) {
   const [detail, setDetail] = useState<ContentDetail | null>(null);
@@ -39,22 +47,27 @@ export default function ContentDetailPage({ params }: { params: { id: string } }
   }
 
   return (
-    <article className="grid gap-5">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <span className="mb-2 block text-sm font-black tracking-wide text-rose-600">内容详情</span>
+    <article className="mx-auto grid max-w-350 gap-5 px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <StatusBadge status={detail.status} />
+            <span className="text-xs font-semibold text-slate-400">作者 {detail.author.nickname}</span>
+          </div>
           <h1 className="m-0 text-3xl font-black leading-tight tracking-tight text-slate-950">{detail.title}</h1>
-          <p className="mt-3 text-sm leading-7 text-slate-500">
-            作者 {detail.author.nickname}，内容 ID {params.id}，阅读 {detail.viewCount}，点赞 {detail.likeCount}
-          </p>
+          <p className="mt-3 text-sm leading-7 text-slate-500">发布时间：{formatDate(detail.publishedAt)}</p>
         </div>
-        <ContentDetailActions contentId={params.id} initialLikeCount={detail.likeCount} initialViewCount={detail.viewCount} title={detail.title} />
+        <ContentDetailActions contentId={params.id} title={detail.title} />
       </div>
 
       <div className="grid grid-cols-[minmax(0,1fr)_320px] items-start gap-5 max-lg:grid-cols-1">
-        <main className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-          <div className="grid min-h-64 items-end bg-[linear-gradient(135deg,rgba(244,63,94,0.18),rgba(251,146,60,0.15)),linear-gradient(0deg,rgba(17,24,39,0.08),transparent),#f7fafc] p-6">
-            <strong className="max-w-xl text-3xl font-black leading-tight text-slate-950 max-md:text-2xl">{detail.title}</strong>
+        <main className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="relative min-h-72 overflow-hidden bg-slate-100">
+            {detail.coverUrl || detail.assets[0]?.url ? (
+              <img src={detail.coverUrl ?? detail.assets[0]?.url} alt="" className="h-72 w-full object-cover" />
+            ) : (
+              <div className="h-72 bg-linear-to-br from-rose-50 via-orange-50 to-slate-100" />
+            )}
           </div>
           <div className="p-7 text-base leading-9 text-slate-700">
             {detail.body.split("\n\n").map((paragraph) => (
@@ -73,25 +86,30 @@ export default function ContentDetailPage({ params }: { params: { id: string } }
         </main>
 
         <aside className="grid content-start gap-5">
-          <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="m-0 text-xl font-black text-slate-950">分发数据</h2>
+          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <h2 className="m-0 text-lg font-black text-slate-950">互动概览</h2>
             <div className="mt-5 grid grid-cols-2 gap-3">
-              <Metric label="质量" value={detail.qualityScore} />
-              <Metric label="热度" value={detail.heatScore} />
               <Metric label="阅读" value={detail.viewCount} />
               <Metric label="点赞" value={detail.likeCount} />
+              <Metric label="收藏" value={detail.collectCount ?? 0} />
+              <Metric label="热度" value={detail.heatScore} />
             </div>
           </section>
 
-          <section className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="m-0 text-xl font-black text-slate-950">生命周期</h2>
-            <div className="mt-4 grid gap-3">
-              {["草稿创作", "安全审核", "质量评分", "发布分发", "数据回流"].map((item) => (
-                <div className="grid grid-cols-[18px_minmax(0,1fr)] gap-3 text-sm leading-6 text-slate-500" key={item}>
-                  <span className="mt-2 size-2.5 rounded-full bg-rose-600" />
-                  <span>{item}</span>
+          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <h2 className="m-0 text-lg font-black text-slate-950">作者信息</h2>
+            <div className="mt-4 flex items-center gap-3">
+              {detail.author.avatarUrl ? (
+                <img src={detail.author.avatarUrl} alt="" className="h-11 w-11 rounded-full object-cover" />
+              ) : (
+                <div className="grid h-11 w-11 place-items-center rounded-full bg-rose-600 text-sm font-black text-white">
+                  {detail.author.nickname.slice(0, 1).toUpperCase()}
                 </div>
-              ))}
+              )}
+              <div className="min-w-0">
+                <p className="truncate text-sm font-bold text-slate-900">{detail.author.nickname}</p>
+                <p className="text-xs text-slate-400">持续更新优质图文内容</p>
+              </div>
             </div>
           </section>
         </aside>
@@ -102,9 +120,9 @@ export default function ContentDetailPage({ params }: { params: { id: string } }
 
 function Metric({ label, value }: { label: string; value: number }) {
   return (
-    <div className="grid gap-2 rounded-lg bg-slate-50 p-4">
+    <div className="grid gap-2 rounded-xl bg-slate-50 p-4">
       <span className="text-sm font-bold text-slate-500">{label}</span>
-      <strong className="text-2xl font-black text-slate-950">{value}</strong>
+      <strong className="text-2xl font-black text-slate-950">{value.toLocaleString()}</strong>
     </div>
   );
 }

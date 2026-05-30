@@ -76,6 +76,7 @@ export interface ContentSummary {
   heatScore: number;
   viewCount: number;
   likeCount: number;
+  collectCount: number;
   publishedAt?: string;
   updatedAt: string;
 }
@@ -84,6 +85,16 @@ export interface ContentDetail extends ContentSummary {
   body: string;
   tags: string[];
   assets: AssetSummary[];
+}
+
+export interface OfficialTopicSummary {
+  id: string;
+  title: string;
+  description: string;
+  category: string;
+  heatScore: number;
+  contentCount: number;
+  coverUrl?: string;
 }
 
 export interface AssetSummary {

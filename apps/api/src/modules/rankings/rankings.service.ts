@@ -1,9 +1,12 @@
 import { Injectable } from "@nestjs/common";
-import type { RankingQuery } from "@aicp/shared";
+import type { OfficialTopicSummary, RankingQuery } from "@aicp/shared";
 import { ContentStatus as DbContentStatus } from "@prisma/client";
 import { toContentSummary } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { RedisService } from "../../infra/redis/redis.service";
+
+const OFFICIAL_TOPIC_AUTHOR_EMAILS = ["topics@toutiao.example.com", "official@example.com"];
+const PUBLIC_RANKING_STATUSES = [DbContentStatus.published];
 
 @Injectable()
 export class RankingsService {
@@ -30,9 +33,15 @@ export class RankingsService {
 
     const contents = await this.prisma.content.findMany({
       where: {
-        status: { in: [DbContentStatus.published, DbContentStatus.updated, DbContentStatus.approved] }
+        status: { in: PUBLIC_RANKING_STATUSES }
       },
-      include: { author: true },
+      include: {
+        author: true,
+        assets: {
+          include: { asset: true },
+          orderBy: { sortOrder: "asc" }
+        }
+      },
       orderBy: [{ heatScore: "desc" }, { qualityScore: "desc" }, { updatedAt: "desc" }],
       take: Math.max(limit * 2, 20)
     });
@@ -67,6 +76,81 @@ export class RankingsService {
       source: "postgres",
       ...payload
     };
+  }
+
+  async topics(rawLimit?: string | number) {
+    const limit = Math.min(Number(rawLimit ?? 8) || 8, 20);
+    const officialContents = await this.findTopicContents(true);
+    const sourceContents = officialContents.length ? officialContents : await this.findTopicContents(false);
+    const topics = new Map<
+      string,
+      OfficialTopicSummary & {
+        samples: string[];
+      }
+    >();
+
+    for (const content of sourceContents) {
+      const summary = toContentSummary(content);
+      const tags = content.tags.length ? content.tags : [content.title];
+
+      for (const rawTag of tags) {
+        const title = rawTag.replace(/^#+/, "").trim();
+        if (!title) continue;
+
+        const current =
+          topics.get(title) ??
+          ({
+            id: encodeURIComponent(title),
+            title,
+            description: summary.excerpt,
+            category: content.tags[0] ?? "热门创作",
+            heatScore: 0,
+            contentCount: 0,
+            coverUrl: summary.coverUrl,
+            samples: []
+          } satisfies OfficialTopicSummary & { samples: string[] });
+
+        current.heatScore += content.heatScore + Math.round(content.viewCount / 120) + content.likeCount * 2 + content.collectCount * 3;
+        current.contentCount += 1;
+        current.coverUrl = current.coverUrl ?? summary.coverUrl;
+        if (summary.excerpt && current.samples.length < 2) {
+          current.samples.push(summary.excerpt);
+        }
+        current.description = current.samples[0] ?? current.description;
+        topics.set(title, current);
+      }
+    }
+
+    return {
+      items: [...topics.values()]
+        .sort((left, right) => right.heatScore - left.heatScore)
+        .slice(0, limit)
+        .map(({ samples: _samples, ...topic }) => topic)
+    };
+  }
+
+  private findTopicContents(officialOnly: boolean) {
+    return this.prisma.content.findMany({
+      where: {
+        status: { in: PUBLIC_RANKING_STATUSES },
+        ...(officialOnly
+          ? {
+              author: {
+                email: { in: OFFICIAL_TOPIC_AUTHOR_EMAILS }
+              }
+            }
+          : {})
+      },
+      include: {
+        author: true,
+        assets: {
+          include: { asset: true },
+          orderBy: { sortOrder: "asc" }
+        }
+      },
+      orderBy: [{ heatScore: "desc" }, { viewCount: "desc" }, { updatedAt: "desc" }],
+      take: 100
+    });
   }
 
   private freshnessScore(date: Date) {

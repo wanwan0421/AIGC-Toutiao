@@ -3,19 +3,18 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ChangeEvent, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
-import { ContentStatus, type ContentSummary, type UserProfileSummary } from "@aicp/shared";
+import { ContentStatus, type ContentSummary, type OfficialTopicSummary, type UserProfileSummary } from "@aicp/shared";
 import {
   ArrowRight,
   BadgeCheck,
   Camera,
   ChevronRight,
   Flame,
+  Hash,
   ImagePlus,
   Loader2,
   MessageCircle,
   PenLine,
-  RefreshCw,
-  Sparkles,
   TrendingUp,
   UserRound,
   Wand2,
@@ -23,12 +22,13 @@ import {
 } from "lucide-react";
 import {
   getContents,
+  getOfficialTopics,
   getRankings,
-  getUserProfile,
   sendContactVerificationCode,
   trackAnalytics,
   updateUserProfile
 } from "../../lib/api";
+import { useAuth } from "../../components/auth-provider";
 
 const statusLabel: Record<ContentStatus, string> = {
   [ContentStatus.Draft]: "草稿",
@@ -137,22 +137,25 @@ async function cropAvatarImage(cropState: AvatarCropState) {
 
 export default function DashboardPage() {
   const router = useRouter();
+  const { profile: sessionProfile, status: authStatus } = useAuth();
   const [contents, setContents] = useState<ContentSummary[]>([]);
   const [rankings, setRankings] = useState<ContentSummary[]>([]);
-  const [profile, setProfile] = useState<UserProfileSummary | null>(null);
+  const [topicCards, setTopicCards] = useState<OfficialTopicSummary[]>([]);
+  const [profile, setProfile] = useState<UserProfileSummary | null>(sessionProfile);
   const [loading, setLoading] = useState(true);
   const [syncingId, setSyncingId] = useState<string | null>(null);
-  const [message, setMessage] = useState("正在同步创作数据...");
+  const [message, setMessage] = useState("正在加载创作数据...");
   const [profileOpen, setProfileOpen] = useState(false);
 
   async function loadDashboard() {
     setLoading(true);
     try {
-      const [contentItems, rankingItems, userProfile] = await Promise.all([getContents(), getRankings(), getUserProfile()]);
+      const [contentItems, rankingItems, topicItems] = await Promise.all([getContents(), getRankings(), getOfficialTopics(6)]);
       setContents(contentItems);
       setRankings(rankingItems);
-      setProfile(userProfile);
-      setMessage(`已同步 ${contentItems.length} 篇作品`);
+      setTopicCards(topicItems);
+      setProfile(sessionProfile);
+      setMessage(`已加载 ${contentItems.length} 篇作品`);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "";
       if (errorMessage.includes("login required") || errorMessage.includes("session expired")) {
@@ -167,7 +170,11 @@ export default function DashboardPage() {
 
   useEffect(() => {
     void loadDashboard();
-  }, []);
+  }, [sessionProfile]);
+
+  useEffect(() => {
+    setProfile(sessionProfile);
+  }, [sessionProfile]);
 
   const stats = useMemo(() => {
     const published = contents.filter((item) =>
@@ -177,6 +184,7 @@ export default function DashboardPage() {
     const pending = contents.filter((item) => item.status === ContentStatus.PendingReview);
     const totalViews = contents.reduce((sum, item) => sum + item.viewCount, 0);
     const totalLikes = contents.reduce((sum, item) => sum + item.likeCount, 0);
+    const totalCollects = contents.reduce((sum, item) => sum + (item.collectCount ?? 0), 0);
     const totalHeat = contents.reduce((sum, item) => sum + item.heatScore, 0);
     const averageScore = contents.length ? contents.reduce((sum, item) => sum + item.qualityScore, 0) / contents.length : 0;
 
@@ -186,42 +194,30 @@ export default function DashboardPage() {
       pending,
       totalViews,
       totalLikes,
+      totalCollects,
       totalHeat,
       averageScore,
-      follows: Math.max(published.length * 8 + 73, 73),
-      fans: Math.max(totalLikes + published.length * 16 + 29, 29),
+      follows: 0,
+      fans: 0,
     };
   }, [contents]);
+
+  const loadingProfile = authStatus === "loading" || loading;
+  const displayAccountId = useMemo(() => {
+    if (!profile?.createdAt) return "请先登录";
+
+    const numericId = String(new Date(profile.createdAt).getTime()).replace(/\D/g, "").slice(-10);
+    return numericId || "请先登录";
+  }, [profile]);
+
+  function LoadingStatSkeleton() {
+    return <div className="mx-auto h-5 w-12 animate-pulse rounded-full bg-slate-200/80" />;
+  }
 
   const latestWorks = useMemo(
     () => [...contents].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()).slice(0, 4),
     [contents]
   );
-
-  const topicCards = useMemo(() => {
-    const tagMap = new Map<string, { heat: number; count: number; sample: string }>();
-    for (const item of contents) {
-      const words = item.title
-        .split(/[：:｜|\s]/)
-        .map((word) => word.replace(/[《》！!？?，,。]/g, "").trim())
-        .filter((word) => word.length >= 2)
-        .slice(0, 3);
-
-      for (const word of words.length ? words : ["AI创作"]) {
-        const current = tagMap.get(word) ?? { heat: 0, count: 0, sample: item.excerpt };
-        tagMap.set(word, {
-          heat: current.heat + item.heatScore + item.viewCount,
-          count: current.count + 1,
-          sample: current.sample || item.excerpt,
-        });
-      }
-    }
-
-    return [...tagMap.entries()]
-      .sort((a, b) => b[1].heat - a[1].heat)
-      .slice(0, 6)
-      .map(([tag, meta]) => ({ tag, ...meta }));
-  }, [contents]);
 
   const trendPoints = useMemo(() => buildTrendPoints(contents), [contents]);
   const primaryWork = rankings[0] ?? latestWorks[0];
@@ -235,9 +231,9 @@ export default function DashboardPage() {
         metadata: { source: "dashboard_quick_action" },
       });
       await loadDashboard();
-      setMessage(`已为「${content.title}」写入一次阅读事件`);
+      setMessage(`已为「${content.title}」记录一次阅读`);
     } catch (error) {
-      setMessage(error instanceof Error ? `事件写入失败：${error.message}` : "事件写入失败");
+      setMessage(error instanceof Error ? `记录失败：${error.message}` : "记录失败");
     } finally {
       setSyncingId(null);
     }
@@ -247,85 +243,73 @@ export default function DashboardPage() {
     <div className="min-h-full text-slate-950">
       <main className="grid gap-5 px-6 py-5 md:px-8 xl:grid-cols-[minmax(0,1fr)_360px]">
         <section className="space-y-5">
-          <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_310px]">
-            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-              <div className="flex flex-col gap-6 p-6 lg:flex-row lg:items-center lg:justify-between">
+          <section className="grid gap-5 ">
+            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+              <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
                 <div className="flex min-w-0 items-center gap-4">
-                  <AvatarBlock profile={profile} loading={loading} />
-                  <div className="min-w-0">
+                  <AvatarBlock profile={profile} loading={loadingProfile} />
+                  <div className="min-w-0 space-y-2.5">
                     <div className="flex flex-wrap items-center gap-2">
                       <h1 className="truncate text-xl font-black">
-                        {loading && !profile ? "正在加载账号..." : profile?.nickname ?? "未登录"}
+                        {loadingProfile && !profile
+                          ? "正在加载账号..."
+                          : (profile?.nickname ?? "未登录")}
                       </h1>
                       <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-700">
                         <BadgeCheck className="h-3.5 w-3.5" />
                         账号状态正常
                       </span>
                     </div>
-                    <p className="mt-1 text-sm font-semibold text-slate-500">
-                      账号ID：{loading && !profile ? "同步中" : profile?.id ?? "请先登录"}
-                    </p>
-                    <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-500">
-                      {loading && !profile
-                        ? "正在从后端同步当前登录用户信息..."
-                        : profile?.bio || "还没有填写个人简介，可以在资料设置里补充创作领域、账号定位和内容风格。"}
-                    </p>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {(profile?.preferences.domains?.length ? profile.preferences.domains : ["AI创作", "生活方式"]).slice(0, 4).map((item) => (
-                        <span key={item} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
-                          {item}
-                        </span>
-                      ))}
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-sm text-slate-500">
+                        账号ID：
+                        {loadingProfile && !profile
+                          ? "加载中"
+                          : displayAccountId}
+                      </p>
+
+                      <p className="text-sm text-slate-500">|</p>
+
+                      <p className="max-w-2xl text-sm leading-relaxed text-slate-500">
+                        简介：
+                        {loadingProfile && !profile
+                          ? "正在加载当前登录用户信息..."
+                          : profile?.bio ||
+                            "还没有填写个人简介，可以在资料设置里补充创作领域、内容风格,让更多人发现你吧!"}
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-sm text-slate-500">关注：</p>
+                        {loadingProfile ? <LoadingStatSkeleton /> : <p className="text-sm font-semibold text-slate-800">{stats.follows}</p>}
+                      </div>
+                      <p className="text-sm text-slate-500">|</p>
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-sm text-slate-500">粉丝：</p>
+                        {loadingProfile ? <LoadingStatSkeleton /> : <p className="text-sm font-semibold text-slate-800">{stats.fans}</p>}
+                      </div>
+                      <p className="text-sm text-slate-500">|</p>
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-sm text-slate-500">获赞：</p>
+                        {loadingProfile ? <LoadingStatSkeleton /> : <p className="text-sm font-semibold text-slate-800">{stats.totalLikes}</p>}
+                      </div>
                     </div>
                   </div>
                 </div>
-
-                <div className="grid grid-cols-3 gap-4 rounded-2xl bg-slate-50 p-4">
-                  <ProfileStat label="关注" value={stats.follows} />
-                  <ProfileStat label="粉丝" value={stats.fans} />
-                  <ProfileStat label="获赞" value={stats.totalLikes} />
-                </div>
-              </div>
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 bg-slate-50/70 px-6 py-4">
-                <div className="flex flex-wrap gap-4 text-sm text-slate-500">
-                  <span>手机号：{profile?.phone || "未填写"}</span>
-                  <span>邮箱：{profile?.email || "未填写"}</span>
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void loadDashboard()}
-                    className="inline-flex h-9 items-center gap-2 rounded-full border border-slate-200 bg-white px-3 text-xs font-bold text-slate-600 transition hover:border-rose-200 hover:text-rose-600"
-                  >
-                    <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-                    刷新
-                  </button>
+                <div className="shrink-0">
                   <button
                     type="button"
                     onClick={() => setProfileOpen(true)}
                     disabled={!profile}
-                    className="inline-flex h-9 items-center gap-2 rounded-full bg-rose-600 px-3 text-xs font-bold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                    className="inline-flex h-10 items-center gap-2 rounded-full bg-rose-600 px-4 text-[14px] font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:bg-slate-300"
                   >
-                    <UserRound className="h-3.5 w-3.5" />
+                    <UserRound className="h-4 w-4" />
                     修改资料
                   </button>
                 </div>
               </div>
-            </div>
-
-            <div className="rounded-2xl border border-rose-100 bg-white p-5 shadow-sm">
-              <div className="flex items-center justify-between">
-                <h2 className="text-base font-black">创作成长任务</h2>
-                <span className="rounded-full bg-rose-50 px-2 py-1 text-xs font-bold text-rose-600">本周</span>
-              </div>
-              <div className="mt-5 space-y-4">
-                <ProgressLine label="发布进度" value={Math.min(stats.published.length * 22, 100)} />
-                <ProgressLine label="互动进度" value={Math.min(Math.round(stats.totalLikes / 5), 100)} />
-                <ProgressLine label="质量进度" value={Math.min(Math.round(stats.averageScore), 100)} />
-              </div>
-              <Link href="/growth" className="mt-5 flex h-10 items-center justify-center gap-2 rounded-xl bg-rose-600 text-sm font-bold text-white transition hover:bg-rose-700">
-                查看成长指南 <ArrowRight className="h-4 w-4" />
-              </Link>
             </div>
           </section>
 
@@ -333,16 +317,39 @@ export default function DashboardPage() {
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-lg font-black">新的创作</h2>
-                <p className="mt-1 text-sm text-slate-500">进入 AI 协作创作中心，完成从构思到图文发布的流程</p>
+                <p className="mt-1 text-sm text-slate-500">
+                  进入 AI 协作创作中心，完成从构思到图文发布的流程
+                </p>
               </div>
-              <Link href="/editor" className="text-sm font-bold text-rose-600 hover:text-rose-700">
+              <Link
+                href="/editor"
+                className="text-sm font-bold text-rose-600 hover:text-rose-700"
+              >
                 进入创作中心 <ChevronRight className="inline h-4 w-4" />
               </Link>
             </div>
             <div className="grid gap-3 md:grid-cols-3">
-              <CreationEntry href="/editor" icon={<PenLine className="h-5 w-5" />} title="发布文章" desc="长文、短图文、AI 辅助编辑" tone="rose" />
-              <CreationEntry href="/editor?mode=image" icon={<ImagePlus className="h-5 w-5" />} title="图文草稿" desc="素材整理与图片资产生成" tone="blue" />
-              <CreationEntry href="/editor?mode=ai" icon={<Wand2 className="h-5 w-5" />} title="AI 一键初稿" desc="主题、人群、风格到完整草稿" tone="amber" />
+              <CreationEntry
+                href="/editor"
+                icon={<PenLine className="h-5 w-5" />}
+                title="发布文章"
+                desc="长文、短图文、AI 辅助编辑"
+                tone="rose"
+              />
+              <CreationEntry
+                href="/editor?mode=image"
+                icon={<ImagePlus className="h-5 w-5" />}
+                title="图文草稿"
+                desc="素材整理与图片资产生成"
+                tone="blue"
+              />
+              <CreationEntry
+                href="/editor?mode=ai"
+                icon={<Wand2 className="h-5 w-5" />}
+                title="AI 一键初稿"
+                desc="主题、人群、风格到完整草稿"
+                tone="amber"
+              />
             </div>
           </section>
 
@@ -351,7 +358,9 @@ export default function DashboardPage() {
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <h2 className="text-lg font-black">数据中心</h2>
-                  <p className="mt-1 text-sm text-slate-500">统计来自后端内容库，互动按钮会写入数据库事件</p>
+                  <p className="mt-1 text-sm text-slate-500">
+                    关注近期作品的阅读、互动与发布状态
+                  </p>
                 </div>
                 {primaryWork && (
                   <button
@@ -360,29 +369,64 @@ export default function DashboardPage() {
                     disabled={syncingId === primaryWork.id}
                     className="inline-flex h-9 items-center gap-2 rounded-full bg-rose-50 px-3 text-xs font-bold text-rose-600 transition hover:bg-rose-100 disabled:opacity-60"
                   >
-                    {syncingId === primaryWork.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <TrendingUp className="h-3.5 w-3.5" />}
-                    写入一次阅读事件
+                    {syncingId === primaryWork.id ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <TrendingUp className="h-3.5 w-3.5" />
+                    )}
+                    记录一次阅读
                   </button>
                 )}
               </div>
 
               <div className="mt-5 grid gap-3 sm:grid-cols-4">
-                <MetricCard label="总曝光" value={compactNumber(stats.totalViews)} delta="数据库同步" />
-                <MetricCard label="点赞" value={compactNumber(stats.totalLikes)} delta="内容计数" />
-                <MetricCard label="热度" value={compactNumber(stats.totalHeat)} delta="榜单权重" />
-                <MetricCard label="待审核" value={String(stats.pending.length)} delta="发布流程中" />
+                <MetricCard
+                  label="总曝光"
+                  value={compactNumber(stats.totalViews)}
+                  delta="实时更新"
+                />
+                <MetricCard
+                  label="点赞"
+                  value={compactNumber(stats.totalLikes)}
+                  delta="内容计数"
+                />
+                <MetricCard
+                  label="收藏"
+                  value={compactNumber(stats.totalCollects)}
+                  delta="持续增长"
+                />
+                <MetricCard
+                  label="待审核"
+                  value={String(stats.pending.length)}
+                  delta="发布流程中"
+                />
               </div>
 
               <div className="mt-6 h-48 rounded-2xl bg-slate-50 p-4">
                 <div className="mb-4 flex items-center justify-between">
-                  <span className="text-sm font-bold text-slate-700">最近作品趋势</span>
-                  <span className="text-xs font-semibold text-slate-400">曝光 + 点赞 + 热度</span>
+                  <span className="text-sm font-bold text-slate-700">
+                    最近作品趋势
+                  </span>
+                  <span className="text-xs font-semibold text-slate-400">
+                    曝光 + 点赞 + 热度
+                  </span>
                 </div>
                 <div className="flex h-32 items-end gap-3">
-                  {(trendPoints.length ? trendPoints : [{ label: "1", value: 12 }]).map((point) => (
-                    <div key={point.label} className="flex flex-1 flex-col items-center gap-2">
-                      <div className="w-full rounded-t-xl bg-linear-to-t from-rose-500 to-orange-300" style={{ height: `${point.value}%` }} />
-                      <span className="text-[10px] font-bold text-slate-400">{point.label}</span>
+                  {(trendPoints.length
+                    ? trendPoints
+                    : [{ label: "1", value: 12 }]
+                  ).map((point) => (
+                    <div
+                      key={point.label}
+                      className="flex flex-1 flex-col items-center gap-2"
+                    >
+                      <div
+                        className="w-full rounded-t-xl bg-linear-to-t from-rose-500 to-orange-300"
+                        style={{ height: `${point.value}%` }}
+                      />
+                      <span className="text-[10px] font-bold text-slate-400">
+                        {point.label}
+                      </span>
                     </div>
                   ))}
                 </div>
@@ -395,9 +439,24 @@ export default function DashboardPage() {
                 <MessageCircle className="h-4 w-4 text-slate-400" />
               </div>
               <div className="space-y-3">
-                <InteractionRow title="作品评论" value={stats.totalLikes > 0 ? "有新增互动" : "暂无新增"} />
-                <InteractionRow title="私信消息" value={profile?.phone ? "联系方式已完善" : "待完善资料"} />
-                <InteractionRow title="内容风险" value={contents.some((item) => item.status === ContentStatus.Rejected) ? "存在未通过作品" : "状态稳定"} />
+                <InteractionRow
+                  title="作品评论"
+                  value={stats.totalLikes > 0 ? "有新增互动" : "暂无新增"}
+                />
+                <InteractionRow
+                  title="私信消息"
+                  value={profile?.phone ? "联系方式已完善" : "待完善资料"}
+                />
+                <InteractionRow
+                  title="内容风险"
+                  value={
+                    contents.some(
+                      (item) => item.status === ContentStatus.Rejected,
+                    )
+                      ? "存在未通过作品"
+                      : "状态稳定"
+                  }
+                />
               </div>
             </div>
           </section>
@@ -406,31 +465,66 @@ export default function DashboardPage() {
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="text-lg font-black">创作话题</h2>
-                <span className="text-xs font-semibold text-slate-400">由作品库聚合</span>
+                <span className="text-xs font-semibold text-slate-400">
+                  官方推荐
+                </span>
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 {topicCards.map((topic) => (
-                  <Link key={topic.tag} href={`/rankings?keyword=${encodeURIComponent(topic.tag)}`} className="rounded-xl bg-slate-50 p-4 transition hover:bg-rose-50">
-                    <div className="flex items-center justify-between gap-3">
-                      <h3 className="truncate text-sm font-black text-slate-800">#{topic.tag}</h3>
-                      <span className="text-xs font-bold text-rose-600">{compactNumber(topic.heat)}</span>
+                  <Link
+                    key={topic.id}
+                    href={`/rankings?keyword=${encodeURIComponent(topic.title)}`}
+                    className="flex gap-3 rounded-xl bg-slate-50 p-3 transition hover:bg-rose-50"
+                  >
+                    {topic.coverUrl ? (
+                      <img src={topic.coverUrl} alt="" className="h-14 w-14 shrink-0 rounded-xl object-cover" />
+                    ) : (
+                      <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-rose-50 text-rose-500">
+                        <Hash className="h-5 w-5" />
+                      </div>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-3">
+                        <h3 className="truncate text-sm font-black text-slate-800">
+                          #{topic.title}
+                        </h3>
+                        <span className="shrink-0 text-xs font-bold text-rose-600">
+                          {compactNumber(topic.heatScore)}
+                        </span>
+                      </div>
+                      <p className="mt-1 line-clamp-2 text-xs text-slate-500">
+                        {topic.description || `${topic.contentCount} 篇内容正在讨论`}
+                      </p>
                     </div>
-                    <p className="mt-2 line-clamp-2 text-xs text-slate-500">{topic.sample || `${topic.count} 篇作品正在参与`}</p>
                   </Link>
                 ))}
+                {!topicCards.length && (
+                  <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500 sm:col-span-2">
+                    热门话题正在整理中。
+                  </p>
+                )}
               </div>
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="text-lg font-black">最新作品</h2>
-                <Link href="/content" className="text-xs font-bold text-rose-600">管理全部</Link>
+                <Link
+                  href="/content"
+                  className="text-xs font-bold text-rose-600"
+                >
+                  管理全部
+                </Link>
               </div>
               <div className="space-y-3">
                 {latestWorks.map((work) => (
                   <LatestWorkRow key={work.id} work={work} />
                 ))}
-                {!latestWorks.length && <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">还没有作品，先从创作中心发布第一篇。</p>}
+                {!latestWorks.length && (
+                  <p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">
+                    还没有作品，先从创作中心发布第一篇。
+                  </p>
+                )}
               </div>
             </div>
           </section>
@@ -443,21 +537,66 @@ export default function DashboardPage() {
                 <Flame className="h-5 w-5 text-rose-500" />
                 热门榜单
               </h2>
-              <Link href="/rankings" className="text-xs font-bold text-rose-600">查看全部</Link>
+              <Link
+                href="/rankings"
+                className="text-xs font-bold text-rose-600"
+              >
+                查看全部
+              </Link>
             </div>
             <div className="space-y-2">
               {rankings.slice(0, 8).map((item, index) => (
-                <Link key={item.id} href={`/content/${item.id}`} className="flex gap-3 rounded-xl p-3 transition hover:bg-slate-50">
-                  <span className={`mt-0.5 w-6 text-sm font-black ${index < 3 ? "text-rose-500" : "text-slate-400"}`}>
+                <Link
+                  key={item.id}
+                  href={`/content/${item.id}`}
+                  className="flex gap-3 rounded-xl p-3 transition hover:bg-slate-50"
+                >
+                  <span
+                    className={`mt-0.5 w-6 text-sm font-black ${index < 3 ? "text-rose-500" : "text-slate-400"}`}
+                  >
                     {String(index + 1).padStart(2, "0")}
                   </span>
                   <div className="min-w-0 flex-1">
-                    <h3 className="line-clamp-2 text-sm font-bold text-slate-800">{item.title}</h3>
-                    <p className="mt-1 text-xs text-slate-400">{compactNumber(item.heatScore)} 热度 · {compactNumber(item.viewCount)} 曝光</p>
+                    <h3 className="line-clamp-2 text-sm font-bold text-slate-800">
+                      {item.title}
+                    </h3>
+                    <p className="mt-1 text-xs text-slate-400">
+                      {compactNumber(item.heatScore)} 热度 ·{" "}
+                      {compactNumber(item.viewCount)} 曝光
+                    </p>
                   </div>
                 </Link>
               ))}
             </div>
+          </section>
+
+          <section className="rounded-2xl border border-rose-100 bg-white p-5 shadow-sm">
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-black">创作成长任务</h2>
+              <span className="rounded-full bg-rose-50 px-2 py-1 text-xs font-bold text-rose-600">
+                本周
+              </span>
+            </div>
+            <div className="mt-5 space-y-4">
+              <ProgressLine
+                label="发布进度"
+                value={Math.min(stats.published.length * 22, 100)}
+              />
+              <ProgressLine
+                label="互动进度"
+                value={Math.min(Math.round(stats.totalLikes / 5), 100)}
+              />
+              <ProgressLine
+                label="质量进度"
+                value={Math.min(Math.round(stats.averageScore), 100)}
+              />
+            </div>
+            <Link
+              href="/growth"
+              className="mt-5 flex h-10 items-center justify-center gap-2 rounded-xl bg-rose-600 text-sm font-bold text-white transition hover:bg-rose-700"
+            >
+              查看成长指南 <ArrowRight className="h-4 w-4" />
+            </Link>
           </section>
 
           <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -478,7 +617,7 @@ export default function DashboardPage() {
           onSaved={(nextProfile) => {
             setProfile(nextProfile);
             setProfileOpen(false);
-            setMessage("个人资料已保存到数据库");
+            setMessage("个人资料已保存");
           }}
         />
       )}
@@ -739,8 +878,8 @@ function ProfileDialog({
       setContactCodeHint(
         result.delivery === "console"
           ? result.verificationCode
-            ? `开发环境验证码：${result.verificationCode}`
-            : "验证码已生成，请查看后端日志"
+            ? `本次验证码：${result.verificationCode}`
+            : "验证码已生成"
           : "验证码已发送"
       );
     } catch (sendError) {
@@ -756,7 +895,7 @@ function ProfileDialog({
         <div className="mb-5 flex items-center justify-between">
           <div>
             <h2 className="text-xl font-black">修改个人信息</h2>
-            <p className="mt-1 text-sm text-slate-500">昵称、联系方式、简介与头像会保存到数据库。</p>
+            <p className="mt-1 text-sm text-slate-500">昵称、联系方式、简介与头像会用于账号展示。</p>
           </div>
           <button type="button" onClick={onClose} className="rounded-full bg-slate-100 p-2 text-slate-500 hover:bg-slate-200">
             <X className="h-4 w-4" />

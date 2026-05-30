@@ -6,6 +6,11 @@ import { RankingsService } from "./rankings.service";
 export class RankingsController {
   constructor(private readonly rankingsService: RankingsService) {}
 
+  @Get("topics")
+  topics(@Query("limit") limit?: string) {
+    return this.rankingsService.topics(limit);
+  }
+
   @Get()
   list(@Query() query: RankingQuery) {
     return this.rankingsService.list(query);

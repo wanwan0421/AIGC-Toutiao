@@ -30,9 +30,11 @@ type ContentLike = {
   heatScore: number;
   viewCount: number;
   likeCount: number;
+  collectCount: number;
   publishedAt: Date | null;
   updatedAt: Date;
   author: UserLike;
+  assets?: ContentAssetLike[];
 };
 
 type AssetLike = {
@@ -86,6 +88,7 @@ export function toContentSummary(content: ContentLike): ContentSummary {
     id: content.id,
     title: content.title,
     excerpt: content.excerpt ?? content.body.slice(0, 72),
+    coverUrl: content.assets?.[0]?.asset.url,
     status: toApiContentStatus(content.status),
     author: {
       id: content.author.id,
@@ -96,6 +99,7 @@ export function toContentSummary(content: ContentLike): ContentSummary {
     heatScore: content.heatScore,
     viewCount: content.viewCount,
     likeCount: content.likeCount,
+    collectCount: content.collectCount,
     publishedAt: content.publishedAt?.toISOString(),
     updatedAt: content.updatedAt.toISOString()
   };

@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ContentStatus } from "@aicp/shared";
+import { ContentStatus, type OfficialTopicSummary } from "@aicp/shared";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -15,6 +15,7 @@ import {
   getContentDetail,
   getContents,
   getDraft,
+  getOfficialTopics,
   rewriteSelection,
   streamCreativeChat,
   submitReview,
@@ -60,19 +61,6 @@ const defaultIdeas = [
   "补充一个更有冲突感的开头",
   "给正文增加生活化案例",
   "生成 5 个今日头条标题",
-];
-
-const activityTopics = [
-  {
-    title: "# 城市生活灵感季",
-    meta: "热度 128",
-    cover: "https://images.unsplash.com/photo-1496747611176-843222e1e57c?auto=format&fit=crop&w=200&q=80",
-  },
-  {
-    title: "# 今日好内容计划",
-    meta: "热度 96",
-    cover: "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=200&q=80",
-  },
 ];
 
 const emojiSuggestions = ["😊", "✨", "🔥", "👍", "💡", "📌", "🌿", "🧡"];
@@ -193,6 +181,11 @@ function formatDraftTime(value: string) {
   });
 }
 
+function compactNumber(value: number) {
+  if (value >= 10000) return `${(value / 10000).toFixed(1)}万`;
+  return value.toLocaleString();
+}
+
 export default function EditorPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -209,11 +202,11 @@ export default function EditorPage() {
   const [editingStatus, setEditingStatus] = useState<ContentStatus | null>(null);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
-  const [briefTheme, setBriefTheme] = useState("夏日通勤穿搭");
-  const [audience, setAudience] = useState("20-30 岁女性");
-  const [style, setStyle] = useState("真实、轻松、有方法感");
-  const [viewpoint, setViewpoint] = useState("用轻量公式降低通勤穿搭决策成本");
-  const [assetNote, setAssetNote] = useState("可参考今日头条穿搭热点、通勤场景照片、用户评论关键词");
+  const [briefTheme, setBriefTheme] = useState("");
+  const [audience, setAudience] = useState("");
+  const [style, setStyle] = useState("");
+  const [viewpoint, setViewpoint] = useState("");
+  const [assetNote, setAssetNote] = useState("");
   const [prepTab, setPrepTab] = useState<PrepTab>("brief");
   const [aiMode, setAiMode] = useState<AiMode>("brainstorm");
   const [chatInput, setChatInput] = useState("");
@@ -227,6 +220,8 @@ export default function EditorPage() {
   const [isBusy, setIsBusy] = useState(false);
   const [drafts, setDrafts] = useState<DraftCard[]>([]);
   const [showDraftList, setShowDraftList] = useState(false);
+  const [hotTopics, setHotTopics] = useState<OfficialTopicSummary[]>([]);
+  const [topicsLoading, setTopicsLoading] = useState(true);
   const [showSlashMenu, setShowSlashMenu] = useState(false);
   const [selectionMenu, setSelectionMenu] = useState<SelectionMenu>(emptySelectionMenu);
   const [quickMenu, setQuickMenu] = useState<QuickMenu>(null);
@@ -306,6 +301,28 @@ export default function EditorPage() {
 
   useEffect(() => {
     void loadInitialDrafts();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadHotTopics() {
+      setTopicsLoading(true);
+      try {
+        const topics = await getOfficialTopics(6);
+        if (!cancelled) setHotTopics(topics);
+      } catch {
+        if (!cancelled) setHotTopics([]);
+      } finally {
+        if (!cancelled) setTopicsLoading(false);
+      }
+    }
+
+    void loadHotTopics();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -622,7 +639,7 @@ export default function EditorPage() {
       });
       setStatusMessage("草稿已保存");
     } catch {
-      setStatusMessage("保存失败，请检查后端服务是否已启动");
+      setStatusMessage("保存失败，请稍后再试");
     } finally {
       saveLockRef.current = false;
       setIsBusy(false);
@@ -682,10 +699,10 @@ export default function EditorPage() {
         setTitleCandidates(result.titleCandidates);
         setShowTitleCandidates(true);
       }
-      setStatusMessage("AI 初稿已写入中央编辑区，可继续人工修改");
+      setStatusMessage("AI 初稿已放入中央编辑区，可继续人工修改");
       setChatInput("");
     } catch {
-      setStatusMessage("AI 初稿生成失败，请检查后端服务与模型配置");
+      setStatusMessage("AI 初稿生成失败，请稍后再试");
     } finally {
       setIsBusy(false);
     }
@@ -767,7 +784,7 @@ export default function EditorPage() {
       setChatMessages((items) =>
         items.map((item) =>
           item.id === assistantMessageId
-            ? { ...item, content: "AI 对话暂时不可用，请检查后端服务或模型配置。", insertable: false }
+            ? { ...item, content: "AI 对话暂时不可用，请稍后再试。", insertable: false }
             : item
         )
       );
@@ -1002,7 +1019,7 @@ export default function EditorPage() {
   }
 
   return (
-    <section className="min-h-full bg-[#f6f6f7] px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
+    <section className="bg-[#f6f6f7] px-4 py-5 pb-12 text-slate-950 sm:px-6 lg:px-8">
       <header className="mx-auto mb-5 flex max-w-390 flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <button
@@ -1013,21 +1030,18 @@ export default function EditorPage() {
           >
             <ChevronLeft size={20} />
           </button>
-          <div>
-            <p className="text-sm text-slate-500">今日头条创作平台</p>
-            <h1 className="text-2xl font-semibold tracking-normal text-slate-950">发布文章</h1>
-          </div>
+          <h1 className="text-2xl font-semibold tracking-normal text-slate-950">发布文章</h1>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          <span className="rounded-full bg-white px-4 py-2 text-sm text-slate-500 shadow-sm">
+          <span className="px-2 py-2 text-sm text-slate-500">
             {isLoadingInitial ? "正在读取草稿箱" : statusMessage}
           </span>
           <button
             type="button"
             onClick={persistDraft}
             disabled={isBusy}
-            className="rounded-full border border-slate-200 bg-white px-5 py-2.5 text-sm font-medium text-slate-700 shadow-sm transition hover:border-[#ff2442]/30 hover:text-[#ff2442] disabled:opacity-60"
+            className="rounded-full border border-slate-200 bg-white px-5 py-2.5 text-sm font-medium text-slate-700 transition hover:border-[#ff2442]/30 hover:text-[#ff2442] disabled:opacity-60"
           >
             保存草稿
           </button>
@@ -1074,16 +1088,17 @@ export default function EditorPage() {
 
           {prepTab === "brief" ? (
             <div className="space-y-3">
-              <Field label="主题" value={briefTheme} onChange={setBriefTheme} />
-              <Field label="目标人群" value={audience} onChange={setAudience} />
-              <Field label="风格" value={style} onChange={setStyle} />
+              <Field label="主题" origin="请输入创作主题，例如：影评等" value={briefTheme} onChange={setBriefTheme} />
+              <Field label="目标人群" origin="请输入目标读者，例如：忠实读者等" value={audience} onChange={setAudience} />
+              <Field label="风格" origin="请输入文章风格，例如：正式、娱乐等" value={style} onChange={setStyle} />
               <label className="block">
                 <span className="mb-1 block text-sm font-medium text-slate-700">核心观点</span>
                 <textarea
                   value={viewpoint}
                   onChange={(event) => setViewpoint(event.target.value)}
+                  placeholder="请输入创作核心观点，例如：传达的理念、表达情感等"
                   rows={4}
-                  className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none transition focus:border-[#ff2442]/50 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10"
+                  className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none placeholder:text-slate-400 transition focus:border-[#ff2442]/50 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10"
                 />
               </label>
             </div>
@@ -1094,8 +1109,9 @@ export default function EditorPage() {
                 <textarea
                   value={assetNote}
                   onChange={(event) => setAssetNote(event.target.value)}
+                  placeholder="可参考今日头条热点、新闻摘要、用户评论关键词等素材"
                   rows={7}
-                  className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none transition focus:border-[#ff2442]/50 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10"
+                  className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none placeholder:text-slate-400 transition focus:border-[#ff2442]/50 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10"
                 />
               </label>
               <button
@@ -1316,7 +1332,22 @@ export default function EditorPage() {
                 <div className="absolute left-0 top-12 z-20 w-80 rounded-2xl border border-slate-100 bg-white p-3 shadow-xl">
                   {quickMenu === "topic" ? (
                     <div className="space-y-3">
-                      <p className="text-xs font-medium text-slate-400">添加自定义话题，仅作为发布标签，不写入正文。</p>
+                      <p className="text-xs font-medium text-slate-400">添加话题作为发布标签，不会出现在正文里。</p>
+                      <div className="flex flex-wrap gap-2">
+                        {hotTopics.slice(0, 5).map((topic) => (
+                          <button
+                            key={topic.id}
+                            type="button"
+                            onClick={() => addTopicToArticle(topic.title)}
+                            className="rounded-full bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-600 transition hover:bg-[#fff3f5] hover:text-[#ff2442]"
+                          >
+                            #{topic.title}
+                          </button>
+                        ))}
+                        {!topicsLoading && !hotTopics.length ? (
+                          <span className="text-xs text-slate-400">暂无热门话题</span>
+                        ) : null}
+                      </div>
                       <div className="flex gap-2">
                         <input
                           value={customTopicInput}
@@ -1362,28 +1393,44 @@ export default function EditorPage() {
 
           <section className="rounded-3xl bg-white p-5 shadow-sm sm:p-7">
             <div className="mb-5 flex items-center justify-between">
-              <h2 className="text-lg font-semibold">活动话题</h2>
+              <h2 className="text-lg font-semibold">热门话题</h2>
               <button type="button" className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-[#ff2442]">
                 更多
                 <ChevronRight size={16} />
               </button>
             </div>
             <div className="grid gap-3 md:grid-cols-2">
-              {activityTopics.map((item) => (
+              {hotTopics.map((item) => (
                 <button
-                  key={item.title}
+                  key={item.id}
                   type="button"
                   className="flex items-center gap-3 rounded-2xl bg-slate-50 p-3 text-left transition hover:bg-[#fff3f5]"
                   onClick={() => addTopicToArticle(item.title)}
                 >
-                  <img src={item.cover} alt="" className="size-14 rounded-xl object-cover" />
+                  {item.coverUrl ? (
+                    <img src={item.coverUrl} alt="" className="size-14 rounded-xl object-cover" />
+                  ) : (
+                    <div className="grid size-14 place-items-center rounded-xl bg-[#fff3f5] text-[#ff2442]">
+                      <Hash size={20} />
+                    </div>
+                  )}
                   <div className="min-w-0 flex-1">
-                    <h3 className="line-clamp-1 font-semibold">{item.title}</h3>
-                    <p className="mt-1 text-sm text-slate-500">{item.meta}</p>
+                    <h3 className="line-clamp-1 font-semibold">#{item.title}</h3>
+                    <p className="mt-1 text-sm text-slate-500">热度 {compactNumber(item.heatScore)}</p>
                   </div>
                   <ChevronRight size={18} className="text-slate-400" />
                 </button>
               ))}
+              {topicsLoading ? (
+                <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-400 md:col-span-2">
+                  正在加载热门话题...
+                </div>
+              ) : null}
+              {!topicsLoading && !hotTopics.length ? (
+                <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-400 md:col-span-2">
+                  暂无热门话题可选。
+                </div>
+              ) : null}
             </div>
           </section>
 
@@ -1653,7 +1700,7 @@ export default function EditorPage() {
               </div>
             ) : (
               <div className="rounded-2xl bg-[#fff3f5] p-4 text-sm leading-6 text-[#9f1239]">
-                输入确定好的主题或思路，AI 会直接把完整图文写入中央主编辑区，不在右侧堆长文本。
+                输入确定好的主题或思路，AI 会直接把完整图文放入中央主编辑区，不在右侧堆长文本。
               </div>
             )}
 
@@ -1663,7 +1710,7 @@ export default function EditorPage() {
                 onChange={(event) => setChatInput(event.target.value)}
                 rows={4}
                 placeholder={aiMode === "brainstorm" ? "输入你的疑问，和 AI 一起拆角度..." : "输入最终主题，AI 将生成完整图文..."}
-                className="w-full resize-none bg-transparent p-2 text-sm outline-none placeholder:text-slate-400"
+                className="w-full resize-none bg-transparent p-2 text-sm text-slate-800 outline-none placeholder:text-slate-400"
               />
               <button
                 type="button"
@@ -1739,14 +1786,15 @@ export default function EditorPage() {
   );
 }
 
-function Field({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+function Field({ label, origin, value, onChange }: { label: string; origin: string; value: string; onChange: (value: string) => void }) {
   return (
     <label className="block">
       <span className="mb-1 block text-sm font-medium text-slate-700">{label}</span>
       <input
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none transition focus:border-[#ff2442]/50 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10"
+        placeholder={origin}
+        className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none placeholder:text-slate-400 transition focus:border-[#ff2442]/50 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10"
       />
     </label>
   );

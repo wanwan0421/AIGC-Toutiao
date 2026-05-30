@@ -1,51 +1,35 @@
 "use client";
 
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
-import { getCurrentUser } from "../lib/api";
+import { useEffect } from "react";
+import { useAuth } from "./auth-provider";
+import { LoadingShell } from "./loading-shell";
 
 const publicRoutes = ["/login"];
 
 export function RouteAuthGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const [checking, setChecking] = useState(true);
+  const { status } = useAuth();
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function checkAuth() {
-      if (publicRoutes.some((route) => pathname === route || pathname.startsWith(`${route}/`))) {
-        setChecking(false);
-        return;
-      }
-
-      setChecking(true);
-      try {
-        await getCurrentUser();
-        if (!cancelled) {
-          setChecking(false);
-        }
-      } catch {
-        if (!cancelled) {
-          router.replace("/login");
-        }
-      }
+    if (publicRoutes.some((route) => pathname === route || pathname.startsWith(`${route}/`))) {
+      return;
     }
 
-    void checkAuth();
+    if (status === "anonymous") {
+      router.replace("/login");
+    }
+  }, [pathname, router, status]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [pathname, router]);
+  if (!publicRoutes.some((route) => pathname === route || pathname.startsWith(`${route}/`))) {
+    if (status === "loading") {
+      return <LoadingShell title="正在确认登录状态..." />;
+    }
 
-  if (checking) {
-    return (
-      <div className="grid min-h-[calc(100vh-64px)] place-items-center bg-slate-50 text-sm font-semibold text-slate-500">
-        正在确认登录状态...
-      </div>
-    );
+    if (status === "anonymous") {
+      return <LoadingShell title="正在跳转到登录页..." />;
+    }
   }
 
   return <>{children}</>;

@@ -37,23 +37,23 @@ export default function AnalyticsPage() {
   const stats = useMemo(() => {
     const totalViews = contents.reduce((sum, item) => sum + item.viewCount, 0);
     const totalLikes = contents.reduce((sum, item) => sum + item.likeCount, 0);
+    const totalCollects = contents.reduce((sum, item) => sum + (item.collectCount ?? 0), 0);
     const publishedCount = contents.filter((item) =>
       [ContentStatus.Published, ContentStatus.Updated, ContentStatus.Approved].includes(item.status)
     ).length;
     const averageQuality = contents.length ? contents.reduce((sum, item) => sum + item.qualityScore, 0) / contents.length : 0;
     const topContents = [...contents].sort((left, right) => right.heatScore - left.heatScore).slice(0, 5);
-    return { totalViews, totalLikes, publishedCount, averageQuality, topContents };
+    return { totalViews, totalLikes, totalCollects, publishedCount, averageQuality, topContents };
   }, [contents]);
 
   return (
-    <div className="mx-auto w-full max-w-6xl p-6 md:p-10">
+    <div className="mx-auto max-w-350 w-full px-4 py-5 sm:px-6 lg:px-8">
       <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="m-0 text-2xl font-black text-slate-900">数据中心</h1>
-          <p className="mt-1 text-sm text-slate-500">当前账号内容的曝光、互动与质量数据。</p>
         </div>
-        <span className="rounded-full border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-emerald-700">
-          数据库实时同步
+        <span className="rounded-full border border-slate-200 bg-white px-6 py-2.5 text-sm font-semibold text-emerald-700">
+          数据实时更新
         </span>
       </div>
 
@@ -66,8 +66,8 @@ export default function AnalyticsPage() {
           <div className="mb-8 grid grid-cols-1 gap-4 md:grid-cols-4">
             <MetricCard label="累计阅读" value={compactNumber(stats.totalViews)} />
             <MetricCard label="总点赞" value={compactNumber(stats.totalLikes)} />
+            <MetricCard label="总收藏" value={compactNumber(stats.totalCollects)} />
             <MetricCard label="已发布作品" value={String(stats.publishedCount)} />
-            <MetricCard label="平均质量分" value={stats.averageQuality.toFixed(1)} />
           </div>
 
           <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
@@ -85,10 +85,11 @@ export default function AnalyticsPage() {
                     <h3 className="truncate text-base font-black text-slate-950">{item.title}</h3>
                     <p className="mt-1 line-clamp-1 text-sm text-slate-500">{item.excerpt}</p>
                   </div>
-                  <div className="grid grid-cols-3 gap-5 text-right">
+                  <div className="grid grid-cols-4 gap-5 text-right">
                     <SmallMetric label="质量" value={item.qualityScore} />
                     <SmallMetric label="热度" value={item.heatScore} />
                     <SmallMetric label="阅读" value={item.viewCount} />
+                    <SmallMetric label="收藏" value={item.collectCount ?? 0} />
                   </div>
                 </article>
               ))}

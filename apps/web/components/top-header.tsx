@@ -2,49 +2,25 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import { LogOut, UserRound } from "lucide-react";
-import type { UserProfileSummary } from "@aicp/shared";
-import { getCurrentUser, logout } from "../lib/api";
+import { logout } from "../lib/api";
+import { useAuth } from "./auth-provider";
 
 export function TopHeader() {
   const router = useRouter();
   const pathname = usePathname();
-  const [profile, setProfile] = useState<UserProfileSummary | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { profile, status, clearSession } = useAuth();
   const [loggingOut, setLoggingOut] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadProfile() {
-      try {
-        const currentUser = await getCurrentUser();
-        if (!cancelled) setProfile(currentUser);
-      } catch {
-        if (!cancelled) setProfile(null);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
-    void loadProfile();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const userInitial = useMemo(() => profile?.nickname?.slice(0, 1).toUpperCase() || "创", [profile]);
 
   async function handleLogout() {
     setLoggingOut(true);
     try {
       await logout().catch(() => undefined);
     } finally {
-      setProfile(null);
+      clearSession();
       setLoggingOut(false);
       router.push("/login");
-      router.refresh();
     }
   }
 
@@ -52,30 +28,28 @@ export function TopHeader() {
     return null;
   }
 
+  if (status === "loading") {
+    return null;
+  }
+
   return (
     <header className="sticky top-0 z-50 flex h-16 items-center border-b border-slate-200/70 bg-white/95 px-6 backdrop-blur-md">
-      <div className="mx-auto flex w-full items-center justify-end gap-4">
-        {loading ? (
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 animate-pulse rounded-full bg-slate-100" />
-            <div className="space-y-2 text-right">
-              <div className="h-3 w-24 animate-pulse rounded-full bg-slate-100" />
-              <div className="ml-auto h-2.5 w-16 animate-pulse rounded-full bg-slate-100" />
-            </div>
-          </div>
-        ) : profile ? (
+      <Link href="/dashboard" className="flex min-w-0 items-center gap-2 font-bold text-[24px] text-[#ff2442] transition hover:text-rose-600">
+        <span className="whitespace-nowrap">今日头条创作服务平台</span>
+      </Link>
+      <div className="ml-auto flex items-center gap-4">
+        {profile ? (
           <div className="flex items-center gap-3 text-sm text-slate-700">
-            <Link href="/dashboard" className="flex min-w-0 items-center gap-3 rounded-full px-2 py-1 transition hover:bg-slate-50">
+            <Link href="/dashboard" className="flex min-w-0 items-center gap-3 px-2 py-1">
               {profile.avatarUrl ? (
                 <img alt={profile.nickname} className="h-10 w-10 rounded-full object-cover ring-1 ring-slate-200" src={profile.avatarUrl} />
               ) : (
                 <div className="grid h-10 w-10 place-items-center rounded-full bg-rose-600 text-sm font-black text-white ring-1 ring-rose-100">
-                  {userInitial}
+                  {profile.nickname.slice(0, 1).toUpperCase() || "创"}
                 </div>
               )}
               <div className="min-w-0 text-right">
                 <p className="max-w-36 truncate text-sm font-semibold text-slate-900">{profile.nickname}</p>
-                <p className="max-w-36 truncate text-xs font-medium text-slate-400">{profile.account ?? "创作者账号"}</p>
               </div>
             </Link>
             <button

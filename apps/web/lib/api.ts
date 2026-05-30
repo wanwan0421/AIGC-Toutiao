@@ -9,6 +9,7 @@ import type {
   CreativeChatRequest,
   DirectGenerateRequest,
   DirectGenerateResult,
+  OfficialTopicSummary,
   QualityScoreResult,
   SelectionRewriteRequest,
   SelectionRewriteResult,
@@ -155,6 +156,11 @@ export async function getContents(): Promise<ContentSummary[]> {
 
 export async function getRankings(): Promise<ContentSummary[]> {
   const response = await apiRequest<{ items: ContentSummary[] }>("/rankings?type=hot&limit=20");
+  return response.items;
+}
+
+export async function getOfficialTopics(limit = 8): Promise<OfficialTopicSummary[]> {
+  const response = await apiRequest<{ items: OfficialTopicSummary[] }>(`/rankings/topics?limit=${limit}`);
   return response.items;
 }
 

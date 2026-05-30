@@ -211,6 +211,7 @@ export function toSummary(content: ContentDetail): ContentSummary {
     heatScore: content.heatScore,
     viewCount: content.viewCount,
     likeCount: content.likeCount,
+    collectCount: content.collectCount,
     publishedAt: content.publishedAt,
     updatedAt: content.updatedAt
   };

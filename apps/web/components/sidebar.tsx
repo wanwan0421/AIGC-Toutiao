@@ -2,8 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
-import { getCurrentUser } from "../lib/api";
+import { useAuth } from "./auth-provider";
 import { Icons } from "./icons";
 
 const navItems = [
@@ -16,31 +15,11 @@ const navItems = [
 
 export function Sidebar() {
   const pathname = usePathname();
-  const [authenticated, setAuthenticated] = useState(false);
+  const { status } = useAuth();
   const isEditor = pathname === "/editor";
   const isLogin = pathname === "/login";
 
-  useEffect(() => {
-    let cancelled = false;
-    async function check() {
-      if (isLogin) {
-        setAuthenticated(false);
-        return;
-      }
-      try {
-        await getCurrentUser();
-        if (!cancelled) setAuthenticated(true);
-      } catch {
-        if (!cancelled) setAuthenticated(false);
-      }
-    }
-    void check();
-    return () => {
-      cancelled = true;
-    };
-  }, [isLogin, pathname]);
-
-  if (isLogin || !authenticated) return null;
+  if (isLogin || status !== "authenticated") return null;
 
   if (isEditor) {
     return (
@@ -52,7 +31,7 @@ export function Sidebar() {
               href={item.href}
               title={item.label}
               className={`flex justify-center rounded-xl p-2.5 transition-all ${
-                pathname === item.href ? "bg-white/10 text-white" : "text-slate-500 hover:bg-white/5 hover:text-slate-200"
+                pathname === item.href ? "bg-white/10 text-[#ff3b30]" : "text-slate-500 hover:bg-white/5 hover:text-slate-800"
               }`}
             >
               {item.icon}
@@ -77,7 +56,7 @@ export function Sidebar() {
 
       <nav className="mt-5 flex-1 space-y-2 overflow-y-auto px-4">
         {navItems.map((item) => {
-          const active = pathname === item.href || (item.href !== "/dashboard" && pathname.startsWith(item.href));
+          const active = pathname === item.href;
           return (
             <Link
               key={item.href}

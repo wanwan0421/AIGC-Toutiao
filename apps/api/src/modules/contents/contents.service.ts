@@ -23,7 +23,7 @@ export class ContentsService {
         authorId: userId,
         ...(status ? { status: toDbContentStatus(status) } : {})
       },
-      include: { author: true },
+      include: contentInclude,
       orderBy: { updatedAt: "desc" }
     });
 
@@ -56,7 +56,21 @@ export class ContentsService {
   }
 
   async detail(userId: string, id: string) {
-    return toContentDetail(await this.getContent(userId, id));
+    const content = await this.prisma.content.findUnique({
+      where: { id },
+      include: contentInclude
+    });
+
+    if (!content) {
+      throw new NotFoundException("content not found");
+    }
+
+    // Allow viewing published content from other users, but own draft/unpublished content
+    if (content.status !== DbContentStatus.published && content.authorId !== userId) {
+      throw new NotFoundException("content not found");
+    }
+
+    return toContentDetail(content);
   }
 
   async versions(userId: string, id: string) {

@@ -20,10 +20,15 @@ import {
 function formatUpdatedAt(value: string) {
   const updatedAt = new Date(value);
   if (Number.isNaN(updatedAt.getTime())) {
-    return "更新时间未知";
+    return "时间未知";
   }
 
   return updatedAt.toLocaleString("zh-CN", { hour12: false });
+}
+
+function formatPublishedAt(value?: string) {
+  if (!value) return "暂未发布";
+  return formatUpdatedAt(value);
 }
 
 function actionLabel(content: ContentSummary, busyId: string | null) {
@@ -46,7 +51,7 @@ export default function ContentPage() {
   const [contents, setContents] = useState<ContentSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [message, setMessage] = useState("后端内容列表正在加载...");
+  const [message, setMessage] = useState("正在加载作品...");
 
   const filteredContents = useMemo(
     () => (statusFilter !== null ? contents.filter((item) => item.status === statusFilter) : contents),
@@ -61,7 +66,7 @@ export default function ContentPage() {
         const response = await getContents();
         if (!cancelled) {
           setContents(response);
-          setMessage(`已从后端加载 ${response.length} 条作品`);
+          setMessage(`已加载 ${response.length} 条作品`);
         }
       } catch (loadError) {
         if (!cancelled) {
@@ -140,102 +145,145 @@ export default function ContentPage() {
   ];
 
   return (
-    <section className="min-h-full bg-[#f6f6f7] px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-[1400px]">
-        <header className="mb-6 flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <p className="text-sm text-slate-500">今日头条创作平台</p>
-            <h1 className="text-2xl font-semibold tracking-normal text-slate-950">作品管理</h1>
-            <p className="mt-1 text-xs font-medium text-slate-400">{message}</p>
-          </div>
-          <Link
-            href="/editor"
-            className="flex items-center gap-2 rounded-full bg-[#ff2442] px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#e91635]"
-          >
-            <Icons.Plus className="h-4 w-4" /> 发布新作品
-          </Link>
-        </header>
-
-        <div className="mb-6 flex w-max max-w-full overflow-x-auto rounded-full bg-slate-100 p-1">
-          {tabs.map((tab) => (
-            <Link
-              key={tab.label}
-              href={tab.value !== null ? `/content?status=${tab.value}` : "/content"}
-              className={`whitespace-nowrap rounded-full px-5 py-2 text-sm font-medium transition ${
-                statusFilter === tab.value ? "bg-white text-[#ff2442] shadow-sm font-semibold" : "text-slate-500 hover:text-slate-900"
-              }`}
-            >
-              {tab.label}
-            </Link>
-          ))}
+    <section className="min-h-full mx-auto max-w-350 px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
+      <header className="mb-6 flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-normal text-slate-950">
+            作品管理
+          </h1>
         </div>
+        <Link
+          href="/editor"
+          className="flex items-center gap-2 rounded-full bg-[#ff2442] px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#e91635]"
+        >
+          <Icons.Plus className="h-4 w-4" /> 发布新作品
+        </Link>
+      </header>
 
-        <div className="flex flex-col overflow-hidden rounded-3xl border border-slate-100 bg-white shadow-sm">
-          <div className="divide-y divide-slate-50">
-            {loading ? (
-            <div className="p-16 text-center text-sm text-slate-400">正在从后端加载作品...</div>
+      <div className="mb-6 flex w-max max-w-full overflow-x-auto rounded-full bg-slate-100 p-1">
+        {tabs.map((tab) => (
+          <Link
+            key={tab.label}
+            href={
+              tab.value !== null ? `/content?status=${tab.value}` : "/content"
+            }
+            className={`whitespace-nowrap rounded-full px-5 py-2 text-sm font-medium transition ${
+              statusFilter === tab.value
+                ? "bg-white text-[#ff2442] shadow-sm font-semibold"
+                : "text-slate-500 hover:text-slate-900"
+            }`}
+          >
+            {tab.label}
+          </Link>
+        ))}
+      </div>
+
+      <div className="flex flex-col overflow-hidden rounded-3xl border border-slate-100 bg-white shadow-sm">
+        <div className="divide-y divide-slate-50">
+          {loading ? (
+            <div className="p-16 text-center text-sm text-slate-400">
+              正在加载作品...
+            </div>
           ) : filteredContents.length === 0 ? (
-            <div className="p-16 text-center text-sm text-slate-400">暂无内容，去新建第一篇作品吧。</div>
+            <div className="p-16 text-center text-sm text-slate-400">
+              暂无内容，去新建第一篇作品吧。
+            </div>
           ) : (
             filteredContents.map((content) => {
               const isRejected = content.status === ContentStatus.Rejected;
               const isPending = content.status === ContentStatus.PendingReview;
               const isDraft = content.status === ContentStatus.Draft;
               const isPublished = content.status === ContentStatus.Published;
-              const isReadyToPublish = content.status === ContentStatus.Approved || content.status === ContentStatus.Updated;
+              const isReadyToPublish =
+                content.status === ContentStatus.Approved ||
+                content.status === ContentStatus.Updated;
+              const metrics = [
+                ["阅读", content.viewCount],
+                ["点赞", content.likeCount],
+                ["收藏", content.collectCount ?? 0]
+              ] as const;
 
               return (
-                <div
+                <article
                   key={content.id}
-                  className={`flex flex-col items-start gap-5 p-5 transition sm:flex-row sm:items-center ${
-                    isRejected ? "bg-[#fff3f5]/50 hover:bg-[#fff3f5]" : "bg-white hover:bg-slate-50/80"
+                  className={`grid gap-4 p-4 transition lg:grid-cols-[112px_minmax(0,1fr)_auto_auto] lg:items-center ${
+                    isRejected
+                      ? "bg-[#fff3f5]/50 hover:bg-[#fff3f5]"
+                      : "bg-white hover:bg-slate-50/80"
                   }`}
                 >
-                  <div className="min-w-0 flex-1">
-                    <div className="mb-2 flex flex-wrap items-center gap-3">
-                      <StatusBadge status={content.status} />
-                      <span className="text-xs font-medium text-slate-400">最后更新：{formatUpdatedAt(content.updatedAt)}</span>
+                  <Link href={`/content/${content.id}`} className="block h-28 overflow-hidden rounded-2xl bg-slate-100 lg:h-24">
+                    {content.coverUrl ? (
+                      <img src={content.coverUrl} alt="" className="h-full w-full object-cover" />
+                    ) : (
+                      <div className="flex h-full w-full items-center justify-center bg-linear-to-br from-rose-50 to-orange-50 text-rose-400">
+                        <Icons.Image className="h-7 w-7" />
+                      </div>
+                    )}
+                  </Link>
+
+                  <div className="min-w-0">
+                    <h3 className="m-0 truncate text-base font-bold text-slate-900">
+                      {content.title || "未命名"}
+                    </h3>
+                    <p className="m-0 mt-1 line-clamp-1 text-sm text-slate-500">
+                      {content.excerpt || "暂无摘要"}
+                    </p>
+                    <p className="m-0 mt-2 text-xs font-medium text-slate-400">
+                      发布时间：{formatPublishedAt(content.publishedAt)}
+                    </p>
+
+                    <div className="mt-3 flex flex-wrap gap-3">
+                      {metrics.map(([label, value]) => (
+                        <span key={label} className="rounded-full bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-500">
+                          {label} <strong className="text-slate-900">{value.toLocaleString()}</strong>
+                        </span>
+                      ))}
                     </div>
-                    <h3 className="m-0 mb-1.5 truncate text-base font-bold text-slate-900">{content.title || "未命名"}</h3>
-                    <p className="m-0 line-clamp-1 text-sm text-slate-500">{content.excerpt || "暂无摘要"}</p>
 
                     {isRejected && (
                       <div className="mt-4 flex items-start gap-3 rounded-xl border border-rose-100 bg-white p-3.5 shadow-sm">
                         <Icons.AlertTriangle className="mt-0.5 h-4 w-4 text-rose-500" />
                         <div>
-                          <span className="mb-0.5 block text-xs font-bold text-rose-700">AI 诊断拦截</span>
-                          <span className="text-xs text-rose-600/80">点击改写会调用后端合规改写接口，并写回数据库。</span>
+                          <span className="mb-0.5 block text-xs font-bold text-rose-700">
+                            需要调整后重新提交
+                          </span>
+                          <span className="text-xs text-rose-600/80">
+                            可以先完成合规改写，再进入审核流程。
+                          </span>
                         </div>
                       </div>
                     )}
                   </div>
 
-                  <div className="hidden w-24 shrink-0 text-right sm:block">
-                    <div className="mb-1 text-[11px] font-bold uppercase tracking-wider text-slate-400">热度引擎</div>
-                    <span className="text-sm font-black text-slate-700">{content.heatScore || 0}</span>
-                  </div>
-
-                  <div className="flex shrink-0 flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-2 justify-start self-start">
                     <Link
                       href={`/content/${content.id}`}
-                      className="rounded-full bg-slate-50 p-2.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
-                      title="查看详情"
+                      className="inline-flex items-center gap-2 rounded-full bg-slate-50 px-4 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
                     >
                       <Icons.Book className="h-4 w-4" />
+                      查看详情
                     </Link>
                     <Link
                       href={`/editor?contentId=${content.id}`}
-                      className="rounded-full bg-slate-50 p-2.5 text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
-                      title={isPublished ? "二次编辑" : "编辑"}
+                      className="inline-flex items-center gap-2 rounded-full bg-slate-50 px-4 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
                     >
                       <Icons.PenTool className="h-4 w-4" />
+                      {isPublished ? "编辑作品" : "编辑作品"}
+                    </Link>
+                    <Link
+                      href={`/editor?contentId=${content.id}`}
+                      className="inline-flex items-center gap-2 rounded-full bg-slate-50 px-4 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+                    >
+                      <Icons.Settings className="h-4 w-4" />
+                      设置权限
                     </Link>
                     <button
                       className={`flex items-center gap-2 rounded-full px-5 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${
                         isRejected
                           ? "bg-[#ff2442] text-white hover:bg-[#e91635] shadow-sm"
-                          : isPending
-                            ? "bg-blue-50 text-blue-600 hover:bg-blue-100"
+                        : isPending
+                            ? "bg-amber-50 text-amber-700 hover:bg-amber-100"
                             : isDraft
                               ? "border border-slate-200 bg-white text-slate-700 hover:border-[#ff2442]/30 hover:text-[#ff2442]"
                               : isReadyToPublish
@@ -246,20 +294,29 @@ export default function ContentPage() {
                       onClick={() => handleLifecycleAction(content)}
                       type="button"
                     >
-                      {isRejected && busyId !== content.id && <Icons.Sparkles className="h-4 w-4" />}
-                      {isDraft && busyId !== content.id && <Icons.Refresh className="h-4 w-4" />}
-                      {isPending && busyId !== content.id && <Icons.Shield className="h-4 w-4" />}
-                      {isReadyToPublish && busyId !== content.id && <Icons.Rocket className="h-4 w-4" />}
-                      {isPublished && busyId !== content.id && <Icons.Trash className="h-4 w-4" />}
+                      {isRejected && busyId !== content.id && (
+                        <Icons.Sparkles className="h-4 w-4" />
+                      )}
+                      {isDraft && busyId !== content.id && (
+                        <Icons.Refresh className="h-4 w-4" />
+                      )}
+                      {isPending && busyId !== content.id && (
+                        <Icons.Shield className="h-4 w-4" />
+                      )}
+                      {isReadyToPublish && busyId !== content.id && (
+                        <Icons.Rocket className="h-4 w-4" />
+                      )}
+                      {isPublished && busyId !== content.id && (
+                        <Icons.Trash className="h-4 w-4" />
+                      )}
                       {actionLabel(content, busyId)}
                     </button>
                   </div>
-                </div>
+                </article>
               );
             })
           )}
         </div>
-      </div>
       </div>
     </section>
   );
