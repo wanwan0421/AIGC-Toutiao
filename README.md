@@ -29,6 +29,13 @@ Backend: `http://localhost:3001/api`
 
 Default seeded account: `creator@example.com` / `123456`.
 
+## Editor Flow
+
+- Editor autosaves drafts to PostgreSQL and also keeps a local offline cache for recovery.
+- The asset manager supports real image/text uploads into the `Asset` table and shows the uploaded list in the editor.
+- The version history panel lets you inspect previous content versions and roll back the current title/body.
+- Direct AI generation can fill the title, body, tags, and image assets from the current brief.
+
 ## Current Scope
 
 This is the first full-stack framework version. It includes the Next.js frontend, NestJS API module boundaries, shared types, Prisma/Redis infrastructure services, the initial PostgreSQL schema, and a runnable backend foundation backed by PostgreSQL through Prisma. Redis is used for sessions, autosave cache, ranking cache, and counters when it is available.

@@ -9,6 +9,7 @@ import type {
   CreativeChatRequest,
   DirectGenerateRequest,
   DirectGenerateResult,
+  AssetSummary,
   OfficialTopicSummary,
   QualityScoreResult,
   SelectionRewriteRequest,
@@ -21,15 +22,25 @@ import type {
 
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
 
+export type ContentVersionSummary = {
+  id: string;
+  contentId: string;
+  version: number;
+  title: string;
+  body: string;
+  snapshot?: Record<string, unknown> | null;
+  createdAt: string;
+};
+
 type AuthSessionResponse = {
   tokenType: string;
   expiresIn: number;
   user: UserProfileSummary;
 };
 
-function buildHeaders(initHeaders?: HeadersInit) {
+function buildHeaders(initHeaders?: HeadersInit, body?: BodyInit | null) {
   const headers = new Headers(initHeaders);
-  if (!headers.has("Content-Type")) {
+  if (!(body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
   return headers;
@@ -41,7 +52,7 @@ function resolveApiUrl(path: string) {
   }
 
   if (typeof window === "undefined") {
-    const serverApiOrigin = (process.env.API_PROXY_TARGET ?? "http://localhost:3001").replace(/\/$/, "");
+    const serverApiOrigin = (process.env.API_PROXY_TARGET ?? "http://127.0.0.1:3001").replace(/\/$/, "");
     return `${serverApiOrigin}${API_BASE_URL}${path}`;
   }
 
@@ -51,7 +62,7 @@ function resolveApiUrl(path: string) {
 export async function apiRequest<T>(path: string, init: RequestInit = {}, needsAuth = false, allowRefresh = true): Promise<T> {
   const response = await fetch(resolveApiUrl(path), {
     ...init,
-    headers: buildHeaders(init.headers),
+    headers: buildHeaders(init.headers, init.body),
     credentials: "include",
     cache: "no-store"
   });
@@ -208,6 +219,44 @@ export async function publishContent(id: string) {
 
 export async function offlineContent(id: string) {
   return apiRequest<ContentSummary>(`/contents/${id}/offline`, { method: "POST" }, true);
+}
+
+export async function getContentVersions(id: string) {
+  return apiRequest<ContentVersionSummary[]>(`/contents/${id}/versions`, {}, true);
+}
+
+export async function getAssets(contentId?: string) {
+  const query = contentId ? `?contentId=${encodeURIComponent(contentId)}` : "";
+  return apiRequest<AssetSummary[]>(`/assets${query}`, {}, true);
+}
+
+export async function uploadAsset(body: { file: File; contentId?: string }) {
+  const formData = new FormData();
+  formData.append("file", body.file);
+  if (body.contentId) {
+    formData.append("contentId", body.contentId);
+  }
+
+  return apiRequest<AssetSummary>(
+    "/assets/upload",
+    {
+      method: "POST",
+      body: formData,
+    },
+    true
+  );
+}
+
+export async function deleteAsset(id: string) {
+  return apiRequest<{ ok: boolean; id: string }>(`/assets/${encodeURIComponent(id)}/delete`, { method: "POST" }, true);
+}
+
+export async function linkAssetToContent(assetId: string, contentId: string) {
+  return apiRequest<{ ok: boolean; contentId: string; asset: AssetSummary }>(
+    `/assets/${assetId}/link/${contentId}`,
+    { method: "POST" },
+    true
+  );
 }
 
 export async function getDraft(contentId: string) {

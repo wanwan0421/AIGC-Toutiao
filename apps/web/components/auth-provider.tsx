@@ -27,7 +27,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     async function syncSession() {
       if (pathname.startsWith("/login")) {
-        if (!cancelled) {
+        if (!cancelled && status !== "authenticated") {
           setProfile(null);
           setStatus("anonymous");
         }

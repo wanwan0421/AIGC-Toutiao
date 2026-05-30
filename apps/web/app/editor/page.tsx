@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ContentStatus, type OfficialTopicSummary } from "@aicp/shared";
 import ReactMarkdown from "react-markdown";
@@ -8,6 +8,8 @@ import remarkGfm from "remark-gfm";
 import {
   attachCreativeConversation,
   autosaveDraft,
+  getAssets,
+  getContentVersions,
   createContent,
   generateCreativeDraft,
   generateCreativeTitles,
@@ -16,10 +18,13 @@ import {
   getContents,
   getDraft,
   getOfficialTopics,
+  uploadAsset,
+  deleteAsset,
   rewriteSelection,
   streamCreativeChat,
   submitReview,
   updateContent,
+  type ContentVersionSummary,
 } from "../../lib/api";
 import {
   BadgeCheck,
@@ -73,6 +78,41 @@ type PrepTab = "brief" | "assets";
 type ImageTarget = "body" | "cover" | "asset";
 type QuickMenu = "topic" | "emoji" | null;
 type PublishTimeMode = "now" | "scheduled";
+type EditorAsset = {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  url: string;
+  auditStatus: "pending" | "approved" | "rejected";
+  source?: string;
+  metadata?: Record<string, unknown>;
+};
+
+type DraftCache = {
+  savedAt: string;
+  contentId: string | null;
+  title: string;
+  body: string;
+  html: string;
+  briefTheme: string;
+  audience: string;
+  style: string;
+  viewpoint: string;
+  selectedTopics: string[];
+  coverPreview: string;
+  generatedAssetIds: string[];
+  selectedLocation: string;
+  selectedCollection: string;
+  attachedFileName: string;
+  contentDeclaration: string;
+  allowCopy: boolean;
+  allowCoCreate: boolean;
+  allowComment: boolean;
+  isOriginal: boolean;
+  visibility: "public" | "friends" | "private";
+  publishTimeMode: PublishTimeMode;
+  scheduledAt: string;
+};
 
 type DraftCard = {
   id: string;
@@ -186,6 +226,52 @@ function compactNumber(value: number) {
   return value.toLocaleString();
 }
 
+function formatVersionTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "时间未知";
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function draftStorageKey(contentId: string | null) {
+  return `editor:draft:${contentId ?? "new"}`;
+}
+
+function readDraftCache(contentId: string | null) {
+  if (typeof window === "undefined") return null;
+
+  const raw = window.localStorage.getItem(draftStorageKey(contentId));
+  if (!raw) return null;
+
+  try {
+    return JSON.parse(raw) as DraftCache;
+  } catch {
+    return null;
+  }
+}
+
+function writeDraftCache(snapshot: DraftCache) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(draftStorageKey(snapshot.contentId), JSON.stringify(snapshot));
+}
+
+function removeDraftCache(contentId: string | null) {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(draftStorageKey(contentId));
+}
+
+function isImageAsset(asset: { mimeType: string }) {
+  return asset.mimeType.startsWith("image/");
+}
+
+function isTextAsset(asset: { mimeType: string }) {
+  return asset.mimeType.startsWith("text/");
+}
+
+function getTextAssetPreview(asset: EditorAsset) {
+  const previewText = asset.metadata?.previewText;
+  return typeof previewText === "string" ? previewText : "";
+}
+
 export default function EditorPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -197,6 +283,7 @@ export default function EditorPage() {
   const pendingEditorHtmlRef = useRef<string | null>(null);
   const saveLockRef = useRef(false);
   const chatStreamLockRef = useRef(false);
+  const draggingAssetRef = useRef<EditorAsset | null>(null);
 
   const [contentId, setContentId] = useState<string | null>(null);
   const [editingStatus, setEditingStatus] = useState<ContentStatus | null>(null);
@@ -206,7 +293,6 @@ export default function EditorPage() {
   const [audience, setAudience] = useState("");
   const [style, setStyle] = useState("");
   const [viewpoint, setViewpoint] = useState("");
-  const [assetNote, setAssetNote] = useState("");
   const [prepTab, setPrepTab] = useState<PrepTab>("brief");
   const [aiMode, setAiMode] = useState<AiMode>("brainstorm");
   const [chatInput, setChatInput] = useState("");
@@ -246,6 +332,14 @@ export default function EditorPage() {
   const [visibility, setVisibility] = useState<"public" | "friends" | "private">("public");
   const [publishTimeMode, setPublishTimeMode] = useState<PublishTimeMode>("now");
   const [scheduledAt, setScheduledAt] = useState("");
+  const [isOnline, setIsOnline] = useState(true);
+  const [uploadedAssets, setUploadedAssets] = useState<EditorAsset[]>([]);
+  const [isUploadingAsset, setIsUploadingAsset] = useState(false);
+  const [textAssetName, setTextAssetName] = useState("创作素材.txt");
+  const [textAssetContent, setTextAssetContent] = useState("");
+  const [contentVersions, setContentVersions] = useState<ContentVersionSummary[]>([]);
+  const [showVersionHistory, setShowVersionHistory] = useState(false);
+  const [showAssetPanel, setShowAssetPanel] = useState<null | "image" | "text">(null);
 
   const latestDraftStateRef = useRef({
     contentId,
@@ -270,6 +364,8 @@ export default function EditorPage() {
   });
 
   const wordCount = useMemo(() => body.replace(/\s/g, "").length, [body]);
+  const imageAssets = useMemo(() => uploadedAssets.filter(isImageAsset), [uploadedAssets]);
+  const textAssets = useMemo(() => uploadedAssets.filter(isTextAsset), [uploadedAssets]);
   const hasSavedDrafts = drafts.length > 0;
   const hasMeaningfulContent = title.trim().length > 0 || body.trim().length > 0;
 
@@ -298,6 +394,222 @@ export default function EditorPage() {
     }
     return cards.slice(0, 3);
   }, [body, coverMode, coverPreview, title, wordCount]);
+
+  function buildDraftCacheSnapshot(): DraftCache {
+    return {
+      savedAt: new Date().toISOString(),
+      contentId,
+      title,
+      body,
+      html: editorRef.current?.innerHTML ?? pendingEditorHtmlRef.current ?? "",
+      briefTheme,
+      audience,
+      style,
+      viewpoint,
+      selectedTopics,
+      coverPreview,
+      generatedAssetIds,
+      selectedLocation,
+      selectedCollection,
+      attachedFileName,
+      contentDeclaration,
+      allowCopy,
+      allowCoCreate,
+      allowComment,
+      isOriginal,
+      visibility,
+      publishTimeMode,
+      scheduledAt,
+    };
+  }
+
+  function collectMaterialNotes() {
+    return [
+      selectedTopics.join("，"),
+      selectedLocation,
+      selectedCollection !== "不加入合集" ? selectedCollection : "",
+      attachedFileName,
+      contentDeclaration,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  function applyDraftCache(snapshot: DraftCache) {
+    setContentId(snapshot.contentId);
+    setTitle(snapshot.title);
+    setBody(snapshot.body);
+    setBriefTheme(snapshot.briefTheme);
+    setAudience(snapshot.audience);
+    setStyle(snapshot.style);
+    setViewpoint(snapshot.viewpoint);
+    setSelectedTopics(snapshot.selectedTopics);
+    setCoverPreview(snapshot.coverPreview);
+    setGeneratedAssetIds(snapshot.generatedAssetIds);
+    setSelectedLocation(snapshot.selectedLocation);
+    setSelectedCollection(snapshot.selectedCollection);
+    setAttachedFileName(snapshot.attachedFileName);
+    setContentDeclaration(snapshot.contentDeclaration);
+    setAllowCopy(snapshot.allowCopy);
+    setAllowCoCreate(snapshot.allowCoCreate);
+    setAllowComment(snapshot.allowComment);
+    setIsOriginal(snapshot.isOriginal);
+    setVisibility(snapshot.visibility);
+    setPublishTimeMode(snapshot.publishTimeMode);
+    setScheduledAt(snapshot.scheduledAt);
+    writeEditorMarkup(snapshot.html, snapshot.body);
+  }
+
+  async function loadAssets(contentScopeId?: string) {
+    try {
+      const items = await getAssets(contentScopeId);
+      setUploadedAssets(items);
+    } catch {
+      setUploadedAssets([]);
+    }
+  }
+
+  async function loadContentVersions(targetContentId: string) {
+    try {
+      const items = await getContentVersions(targetContentId);
+      setContentVersions(items);
+    } catch {
+      setContentVersions([]);
+    }
+  }
+
+  function restoreLocalDraftIfFresh(contentScopeId: string | null, cloudSavedAt?: string) {
+    const snapshot = readDraftCache(contentScopeId);
+    if (!snapshot) return false;
+
+    const localTime = new Date(snapshot.savedAt).getTime();
+    const cloudTime = cloudSavedAt ? new Date(cloudSavedAt).getTime() : 0;
+    if (Number.isFinite(localTime) && localTime >= cloudTime) {
+      applyDraftCache(snapshot);
+      setStatusMessage(contentScopeId ? "已恢复本地离线草稿，内容比云端更新" : "已恢复本地离线草稿");
+      return true;
+    }
+
+    return false;
+  }
+
+  function clearLocalDraft(contentScopeId: string | null) {
+    removeDraftCache(contentScopeId);
+  }
+
+  async function handleAssetUpload(file: File | undefined) {
+    if (!file) return;
+
+    setIsUploadingAsset(true);
+    try {
+      const asset = await uploadAsset({ file, contentId: contentId ?? undefined });
+      setUploadedAssets((items) => [
+        {
+          id: asset.id,
+          fileName: asset.fileName,
+          mimeType: asset.mimeType,
+          url: asset.url,
+          auditStatus: asset.auditStatus,
+          source: asset.source,
+          metadata: asset.metadata,
+        },
+        ...items.filter((item) => item.id !== asset.id),
+      ]);
+      setGeneratedAssetIds((items) => Array.from(new Set([asset.id, ...items])));
+      setAttachedFileName(file.name);
+      setStatusMessage(`已上传素材：${file.name}`);
+      await loadAssets();
+    } catch {
+      setStatusMessage("素材上传失败，请稍后再试");
+    } finally {
+      setIsUploadingAsset(false);
+    }
+  }
+
+  function insertUploadedTextToBody(asset: EditorAsset) {
+    const previewText = getTextAssetPreview(asset);
+    const markdown = previewText.trim() || asset.fileName;
+    insertHtml(markdownToEditorHtml(markdown) || `<p>${escapeHtml(markdown)}</p>`, `文本素材已插入正文：${asset.fileName}`);
+  }
+
+  function insertUploadedImageToBody(asset: EditorAsset) {
+    insertHtml(`<figure><img src="${asset.url}" alt="${escapeHtml(asset.fileName)}" /></figure><p><br /></p>`, `图片素材已插入正文：${asset.fileName}`);
+    if (!coverPreview) {
+      setCoverPreview(asset.url);
+    }
+  }
+
+  function handleAssetDragStart(event: DragEvent<HTMLButtonElement>, asset: EditorAsset) {
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData("application/x-aicp-asset-id", asset.id);
+    event.dataTransfer.setData("text/plain", asset.id);
+    draggingAssetRef.current = asset;
+  }
+
+  function handleEditorDragOver(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleEditorDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const assetId = event.dataTransfer.getData("application/x-aicp-asset-id") || event.dataTransfer.getData("text/plain");
+    const asset =
+      (assetId ? uploadedAssets.find((item) => item.id === assetId) : null) ?? draggingAssetRef.current;
+    if (!asset) return;
+    draggingAssetRef.current = null;
+
+    if (isImageAsset(asset)) {
+      insertUploadedImageToBody(asset);
+      return;
+    }
+
+    if (isTextAsset(asset)) {
+      insertUploadedTextToBody(asset);
+    }
+  }
+
+  async function handleTextAssetUploadFromPanel() {
+    const content = textAssetContent.trim();
+    if (!content) {
+      setStatusMessage("请先输入文本素材内容");
+      return;
+    }
+
+    const fileName = (textAssetName.trim() || "创作素材.md").replace(/\s+/g, " ");
+    const file = new File([content], fileName.endsWith(".md") || fileName.endsWith(".txt") ? fileName : `${fileName}.md`, {
+      type: "text/markdown",
+    });
+    await handleAssetUpload(file);
+    insertHtml(markdownToEditorHtml(content) || `<p>${escapeHtml(content)}</p>`, "文本素材已自动添加到正文");
+  }
+
+  async function rollbackToVersion(version: ContentVersionSummary) {
+    if (!contentId) {
+      setStatusMessage("请先打开一篇作品再回滚版本");
+      return;
+    }
+
+    setIsBusy(true);
+    try {
+      const currentTags = selectedTopics;
+      const currentAssets = generatedAssetIds;
+      await updateContent(contentId, {
+        title: version.title,
+        body: version.body,
+        tags: currentTags,
+        assetIds: currentAssets,
+      });
+      setTitle(version.title);
+      writeEditorHtml(version.body);
+      setStatusMessage(`已回滚到版本 ${version.version}`);
+      await loadContentVersions(contentId);
+    } catch {
+      setStatusMessage("版本回滚失败，请稍后再试");
+    } finally {
+      setIsBusy(false);
+    }
+  }
 
   useEffect(() => {
     void loadInitialDrafts();
@@ -330,6 +642,66 @@ export default function EditorPage() {
     editorRef.current.innerHTML = pendingEditorHtmlRef.current;
     pendingEditorHtmlRef.current = null;
   }, [isLoadingInitial]);
+
+  useEffect(() => {
+    const snapshot = buildDraftCacheSnapshot();
+    writeDraftCache(snapshot);
+  }, [
+    allowCoCreate,
+    allowComment,
+    allowCopy,
+    attachedFileName,
+    briefTheme,
+    body,
+    contentDeclaration,
+    contentId,
+    coverPreview,
+    generatedAssetIds,
+    isOriginal,
+    audience,
+    publishTimeMode,
+    scheduledAt,
+    selectedCollection,
+    selectedLocation,
+    selectedTopics,
+    style,
+    title,
+    viewpoint,
+    visibility,
+  ]);
+
+  useEffect(() => {
+    function handleConnectionChange() {
+      setIsOnline(navigator.onLine);
+    }
+
+    handleConnectionChange();
+    window.addEventListener("online", handleConnectionChange);
+    window.addEventListener("offline", handleConnectionChange);
+    return () => {
+      window.removeEventListener("online", handleConnectionChange);
+      window.removeEventListener("offline", handleConnectionChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!contentId) {
+      return;
+    }
+
+    void loadContentVersions(contentId);
+  }, [contentId]);
+
+  useEffect(() => {
+    void loadAssets();
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void autoSaveDraftToCloud();
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     latestDraftStateRef.current = {
@@ -387,13 +759,6 @@ export default function EditorPage() {
 
     document.addEventListener("selectionchange", handleSelectionChange);
     return () => document.removeEventListener("selectionchange", handleSelectionChange);
-  }, []);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      void autoSaveDraftToCloud();
-    }, 30000);
-    return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -486,10 +851,16 @@ export default function EditorPage() {
 
       draftCards.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
       setDrafts(draftCards);
+      let restored = false;
       if (editingContentId) {
         await restoreDraft(editingContentId, "已打开作品编辑，可在保存后形成更新版本");
+        restored = true;
+      } else {
+        restored = restoreLocalDraftIfFresh(null);
       }
-      setStatusMessage(draftCards[0] ? `检测到 ${draftCards.length} 篇草稿，可按需恢复` : "暂无已保存草稿，可以直接开始创作");
+      if (!restored) {
+        setStatusMessage(draftCards[0] ? `检测到 ${draftCards.length} 篇草稿，可按需恢复` : "暂无已保存草稿，可以直接开始创作");
+      }
     } catch {
       setStatusMessage("草稿加载失败，当前可继续本地编辑");
     } finally {
@@ -511,6 +882,20 @@ export default function EditorPage() {
       const detailAssetIds = detail?.assets.map((asset) => asset.id) ?? [];
       const detailCoverPreview = detail?.coverUrl ?? detail?.assets[0]?.url ?? "";
 
+      const localDraft = readDraftCache(draft.contentId);
+      if (localDraft) {
+        const localTime = new Date(localDraft.savedAt).getTime();
+        const remoteTime = new Date(draft.savedAt).getTime();
+        if (Number.isFinite(localTime) && localTime >= remoteTime) {
+          applyDraftCache(localDraft);
+          setShowDraftList(false);
+          setStatusMessage(message);
+          await loadContentVersions(localDraft.contentId ?? id);
+          await loadAssets();
+          return;
+        }
+      }
+
       setContentId(draft.contentId);
       setEditingStatus(detail?.status ?? ContentStatus.Draft);
       setTitle(draft.title ?? detail?.title ?? "");
@@ -524,9 +909,24 @@ export default function EditorPage() {
       setGeneratedAssetIds(assetIds.length ? assetIds : detailAssetIds);
       setShowDraftList(false);
       setStatusMessage(message);
+      await loadContentVersions(draft.contentId);
+      await loadAssets();
     } catch {
       try {
         const detail = await getContentDetail(id);
+        const localDraft = readDraftCache(detail.id);
+        if (localDraft) {
+          const localTime = new Date(localDraft.savedAt).getTime();
+          if (Number.isFinite(localTime)) {
+            applyDraftCache(localDraft);
+            setShowDraftList(false);
+            setStatusMessage(message);
+            await loadContentVersions(detail.id);
+            await loadAssets();
+            return;
+          }
+        }
+
         setContentId(detail.id);
         setEditingStatus(detail.status);
         setTitle(detail.title ?? "");
@@ -536,6 +936,8 @@ export default function EditorPage() {
         setGeneratedAssetIds(detail.assets.map((asset) => asset.id));
         setShowDraftList(false);
         setStatusMessage(message);
+        await loadContentVersions(detail.id);
+        await loadAssets();
       } catch {
         setStatusMessage("草稿恢复失败，请稍后再试");
       }
@@ -647,7 +1049,13 @@ export default function EditorPage() {
   }
 
   async function autoSaveDraftToCloud() {
-    if (saveLockRef.current || !hasMeaningfulContent) return;
+    const current = latestDraftStateRef.current;
+    if (saveLockRef.current) return;
+    if (!navigator.onLine) {
+      setStatusMessage("当前离线，已保留本地草稿");
+      return;
+    }
+    if (!current.title.trim() && !current.body.trim()) return;
     await persistDraft();
   }
 
@@ -662,7 +1070,7 @@ export default function EditorPage() {
         audience,
         style,
         viewpoint,
-        materialNotes: [assetNote, source === "direct" && chatInput.trim() ? `最终指令：${chatInput.trim()}` : ""]
+        materialNotes: [collectMaterialNotes(), source === "direct" && chatInput.trim() ? `最终指令：${chatInput.trim()}` : ""]
           .filter(Boolean)
           .join("\n"),
       });
@@ -943,12 +1351,22 @@ export default function EditorPage() {
       setStatusMessage("图片素材已加入素材管理");
     };
     reader.readAsDataURL(file);
+    void handleAssetUpload(file);
   }
 
   function handleAttachmentPick(file: File | undefined) {
     if (!file) return;
-    setAttachedFileName(file.name);
-    setStatusMessage(`已选择文件：${file.name}`);
+    void (async () => {
+      const textContent = await file.text().catch(() => "");
+      if (textContent.trim()) {
+        setTextAssetName(file.name);
+        setTextAssetContent(textContent);
+      }
+      await handleAssetUpload(file);
+      if (textContent.trim()) {
+        insertHtml(markdownToEditorHtml(textContent) || `<p>${escapeHtml(textContent)}</p>`, `文本素材已自动添加到正文：${file.name}`);
+      }
+    })();
   }
 
   function insertLink() {
@@ -1030,12 +1448,19 @@ export default function EditorPage() {
           >
             <ChevronLeft size={20} />
           </button>
-          <h1 className="text-2xl font-semibold tracking-normal text-slate-950">发布文章</h1>
+          <h1 className="text-2xl font-semibold tracking-normal text-slate-950">
+            发布文章
+          </h1>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          <span className="px-2 py-2 text-sm text-slate-500">
+          <span className="inline-flex items-center gap-2 px-2 py-2 text-sm text-slate-500">
             {isLoadingInitial ? "正在读取草稿箱" : statusMessage}
+            <span
+              className={`rounded-full px-2 py-1 text-xs font-medium ${isOnline ? "bg-emerald-50 text-emerald-600" : "bg-amber-50 text-amber-700"}`}
+            >
+              {isOnline ? "在线同步" : "离线编辑"}
+            </span>
           </span>
           <button
             type="button"
@@ -1070,7 +1495,9 @@ export default function EditorPage() {
               type="button"
               onClick={() => setPrepTab("brief")}
               className={`rounded-full px-3 py-2 text-sm font-medium transition ${
-                prepTab === "brief" ? "bg-white text-[#ff2442] shadow-sm" : "text-slate-500 hover:text-slate-900"
+                prepTab === "brief"
+                  ? "bg-white text-[#ff2442] shadow-sm"
+                  : "text-slate-500 hover:text-slate-900"
               }`}
             >
               基础需求
@@ -1079,7 +1506,9 @@ export default function EditorPage() {
               type="button"
               onClick={() => setPrepTab("assets")}
               className={`rounded-full px-3 py-2 text-sm font-medium transition ${
-                prepTab === "assets" ? "bg-white text-[#ff2442] shadow-sm" : "text-slate-500 hover:text-slate-900"
+                prepTab === "assets"
+                  ? "bg-white text-[#ff2442] shadow-sm"
+                  : "text-slate-500 hover:text-slate-900"
               }`}
             >
               素材管理
@@ -1088,11 +1517,28 @@ export default function EditorPage() {
 
           {prepTab === "brief" ? (
             <div className="space-y-3">
-              <Field label="主题" origin="请输入创作主题，例如：影评等" value={briefTheme} onChange={setBriefTheme} />
-              <Field label="目标人群" origin="请输入目标读者，例如：忠实读者等" value={audience} onChange={setAudience} />
-              <Field label="风格" origin="请输入文章风格，例如：正式、娱乐等" value={style} onChange={setStyle} />
+              <Field
+                label="主题"
+                origin="请输入创作主题，例如：影评等"
+                value={briefTheme}
+                onChange={setBriefTheme}
+              />
+              <Field
+                label="目标人群"
+                origin="请输入目标读者，例如：忠实读者等"
+                value={audience}
+                onChange={setAudience}
+              />
+              <Field
+                label="风格"
+                origin="请输入文章风格，例如：正式、娱乐等"
+                value={style}
+                onChange={setStyle}
+              />
               <label className="block">
-                <span className="mb-1 block text-sm font-medium text-slate-700">核心观点</span>
+                <span className="mb-1 block text-sm font-medium text-slate-700">
+                  核心观点
+                </span>
                 <textarea
                   value={viewpoint}
                   onChange={(event) => setViewpoint(event.target.value)}
@@ -1103,40 +1549,147 @@ export default function EditorPage() {
               </label>
             </div>
           ) : (
-            <div className="space-y-3">
-              <label className="block">
-                <span className="mb-1 block text-sm font-medium text-slate-700">参考文本 / 关键词</span>
-                <textarea
-                  value={assetNote}
-                  onChange={(event) => setAssetNote(event.target.value)}
-                  placeholder="可参考今日头条热点、新闻摘要、用户评论关键词等素材"
-                  rows={7}
-                  className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-800 outline-none placeholder:text-slate-400 transition focus:border-[#ff2442]/50 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10"
-                />
-              </label>
-              <button
-                type="button"
-                onClick={() => {
-                  setImageTarget("asset");
-                  imageInputRef.current?.click();
-                }}
-                className="flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-[#ff2442]/30 bg-[#fff3f5] px-4 py-4 text-sm font-medium text-[#ff2442]"
-              >
-                <ImagePlus size={18} />
-                上传图片素材
-              </button>
+            <div className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setImageTarget("asset");
+                    imageInputRef.current?.click();
+                  }}
+                  disabled={isUploadingAsset}
+                  className="flex items-center justify-center rounded-2xl border border-slate-200 bg-white p-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-[#ff2442]/25 hover:bg-[#fff8f9] disabled:opacity-60"
+                >
+                  <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                    <span className="grid size-9 place-items-center rounded-xl bg-[#fff3f5] text-[#ff2442]">
+                      <ImagePlus size={18} />
+                    </span>
+                    选择图片
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => attachmentInputRef.current?.click()}
+                  disabled={isUploadingAsset}
+                  className="inline-flex flex-1 items-center justify-center rounded-2xl border border-slate-200 bg-white p-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-[#ff2442]/25 hover:bg-[#fff8f9] disabled:opacity-60"
+                >
+                  <div className="flex items-center gap-2 text-sm font-semibold text-slate-900">
+                    <span className="grid size-9 place-items-center rounded-xl bg-[#fff3f5] text-[#ff2442]">
+                      <FileText size={18} />
+                    </span>
+                    选择文本
+                  </div>
+                </button>
+              </div>
+
+              <div className="space-y-4 rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setShowAssetPanel("image")}
+                      className="text-sm font-semibold text-slate-900 hover:underline"
+                    >
+                      图片库
+                    </button>
+                  </div>
+                </div>
+                {imageAssets.length ? (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {imageAssets.map((asset) => (
+                      <button
+                        key={asset.id}
+                        type="button"
+                        draggable
+                        onDragStart={(event) =>
+                          handleAssetDragStart(event, asset)
+                        }
+                        onDragEnd={() => {
+                          draggingAssetRef.current = null;
+                        }}
+                        onClick={() =>
+                          setGeneratedAssetIds((items) =>
+                            Array.from(new Set([asset.id, ...items])),
+                          )
+                        }
+                        className="group overflow-hidden rounded-2xl border border-white bg-white text-left shadow-sm transition hover:border-[#ff2442]/20 hover:shadow-md"
+                      >
+                        <div className="relative aspect-4/3 overflow-hidden bg-slate-100">
+                          <img
+                            src={asset.url}
+                            alt={asset.fileName}
+                            className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.02]"
+                          />
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-xl bg-white p-4 text-sm text-slate-400">
+                    暂无图片素材，先上传一张图片。
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-4 rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                  <div className="pt-1">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => setShowAssetPanel("text")}
+                        className="text-sm font-semibold text-slate-900 hover:underline"
+                      >
+                        文本库
+                      </button>
+                    </div>
+                  </div>
+                  {textAssets.length ? (
+                    <div className="grid gap-3">
+                      {textAssets.map((asset) => {
+                        return (
+                          <button
+                            key={asset.id}
+                            type="button"
+                            onClick={() => insertUploadedTextToBody(asset)}
+                            className="w-full max-w-full overflow-hidden rounded-2xl border border-white bg-white p-3 text-left shadow-sm transition hover:border-[#ff2442]/20 hover:shadow-md"
+                          >
+                            <div className="flex items-start gap-3">
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-medium text-slate-900">
+                                  {asset.fileName}
+                                </p>
+                              </div>
+                              <span className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-medium text-slate-500">
+                                点击插入正文
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="rounded-xl bg-white p-4 text-sm text-slate-400">
+                      暂无文本素材，上传 markdown 或 txt 文件后会在这里显示。
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           )}
 
-          <button
-            type="button"
-            onClick={() => createAiDraft("brief")}
-            disabled={isBusy}
-            className="mt-5 flex w-full items-center justify-center gap-2 rounded-2xl bg-[#ff2442] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#e91635] disabled:opacity-60"
-          >
-            <Wand2 size={18} />
-            AI 一键生成初稿
-          </button>
+          {prepTab === "brief" ? (
+            <button
+              type="button"
+              onClick={() => createAiDraft("brief")}
+              disabled={isBusy}
+              className="mt-5 flex w-full items-center justify-center gap-2 rounded-2xl bg-[#ff2442] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#e91635] disabled:opacity-60"
+            >
+              <Wand2 size={18} />
+              AI 一键生成初稿
+            </button>
+          ) : null}
         </aside>
 
         <main className="space-y-5">
@@ -1144,7 +1697,9 @@ export default function EditorPage() {
             <section className="rounded-3xl border border-[#ff2442]/10 bg-white p-5 shadow-sm">
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <h2 className="mt-1 text-lg font-semibold text-slate-950">继续编辑已保存草稿</h2>
+                  <h2 className="mt-1 text-lg font-semibold text-slate-950">
+                    继续编辑已保存草稿
+                  </h2>
                 </div>
                 <button
                   type="button"
@@ -1163,15 +1718,26 @@ export default function EditorPage() {
                       type="button"
                       onClick={() => restoreDraft(draft.id)}
                       className={`group rounded-2xl border p-4 text-left transition hover:-translate-y-0.5 hover:border-[#ff2442]/30 hover:shadow-md ${
-                        draft.id === contentId ? "border-[#ff2442]/30 bg-[#fff6f7]" : "border-slate-100 bg-slate-50"
+                        draft.id === contentId
+                          ? "border-[#ff2442]/30 bg-[#fff6f7]"
+                          : "border-slate-100 bg-slate-50"
                       }`}
                     >
                       <div className="mb-2 flex items-center justify-between gap-3">
-                        <h3 className="line-clamp-1 font-semibold text-slate-950">{draft.title || "未命名草稿"}</h3>
-                        <ChevronRight className="shrink-0 text-slate-400 transition group-hover:text-[#ff2442]" size={18} />
+                        <h3 className="line-clamp-1 font-semibold text-slate-950">
+                          {draft.title || "未命名草稿"}
+                        </h3>
+                        <ChevronRight
+                          className="shrink-0 text-slate-400 transition group-hover:text-[#ff2442]"
+                          size={18}
+                        />
                       </div>
-                      <p className="line-clamp-2 text-sm leading-6 text-slate-500">{draft.body || "草稿正文暂未填写"}</p>
-                      <p className="mt-3 text-xs text-slate-400">更新于 {formatDraftTime(draft.updatedAt)}</p>
+                      <p className="line-clamp-2 text-sm leading-6 text-slate-500">
+                        {draft.body || "草稿正文暂未填写"}
+                      </p>
+                      <p className="mt-3 text-xs text-slate-400">
+                        更新于 {formatDraftTime(draft.updatedAt)}
+                      </p>
                     </button>
                   ))}
                 </div>
@@ -1190,17 +1756,57 @@ export default function EditorPage() {
 
           <section className="rounded-3xl bg-white p-5 shadow-sm sm:p-7">
             <div className="mb-4 flex flex-wrap items-center gap-2 border-b border-slate-100 pb-4">
-              <ToolbarButton label="撤销" onClick={() => runCommand("undo")} icon={<Undo2 size={17} />} />
-              <ToolbarButton label="重做" onClick={() => runCommand("redo")} icon={<Redo2 size={17} />} />
+              <ToolbarButton
+                label="撤销"
+                onClick={() => runCommand("undo")}
+                icon={<Undo2 size={17} />}
+              />
+              <ToolbarButton
+                label="重做"
+                onClick={() => runCommand("redo")}
+                icon={<Redo2 size={17} />}
+              />
               <span className="mx-1 h-6 w-px bg-slate-200" />
-              <ToolbarButton label="标题" onClick={() => runCommand("formatBlock", "h2")} icon={<Heading1 size={17} />} />
-              <ToolbarButton label="加粗" onClick={() => runCommand("bold")} icon={<Bold size={17} />} />
-              <ToolbarButton label="斜体" onClick={() => runCommand("italic")} icon={<Italic size={17} />} />
-              <ToolbarButton label="引用" onClick={() => runCommand("formatBlock", "blockquote")} icon={<Quote size={17} />} />
-              <ToolbarButton label="无序列表" onClick={() => runCommand("insertUnorderedList")} icon={<List size={17} />} />
-              <ToolbarButton label="有序列表" onClick={() => runCommand("insertOrderedList")} icon={<ListOrdered size={17} />} />
-              <ToolbarButton label="删除线" onClick={() => runCommand("strikeThrough")} icon={<Strikethrough size={17} />} />
-              <ToolbarButton label="代码" onClick={() => runCommand("formatBlock", "pre")} icon={<Code2 size={17} />} />
+              <ToolbarButton
+                label="标题"
+                onClick={() => runCommand("formatBlock", "h2")}
+                icon={<Heading1 size={17} />}
+              />
+              <ToolbarButton
+                label="加粗"
+                onClick={() => runCommand("bold")}
+                icon={<Bold size={17} />}
+              />
+              <ToolbarButton
+                label="斜体"
+                onClick={() => runCommand("italic")}
+                icon={<Italic size={17} />}
+              />
+              <ToolbarButton
+                label="引用"
+                onClick={() => runCommand("formatBlock", "blockquote")}
+                icon={<Quote size={17} />}
+              />
+              <ToolbarButton
+                label="无序列表"
+                onClick={() => runCommand("insertUnorderedList")}
+                icon={<List size={17} />}
+              />
+              <ToolbarButton
+                label="有序列表"
+                onClick={() => runCommand("insertOrderedList")}
+                icon={<ListOrdered size={17} />}
+              />
+              <ToolbarButton
+                label="删除线"
+                onClick={() => runCommand("strikeThrough")}
+                icon={<Strikethrough size={17} />}
+              />
+              <ToolbarButton
+                label="代码"
+                onClick={() => runCommand("formatBlock", "pre")}
+                icon={<Code2 size={17} />}
+              />
               <ToolbarButton
                 label="图片"
                 onClick={() => {
@@ -1209,10 +1815,26 @@ export default function EditorPage() {
                 }}
                 icon={<ImagePlus size={17} />}
               />
-              <ToolbarButton label="链接" onClick={insertLink} icon={<Link2 size={17} />} />
-              <ToolbarButton label="表格" onClick={insertTable} icon={<Table2 size={17} />} />
-              <ToolbarButton label="清除格式" onClick={() => runCommand("removeFormat")} icon={<X size={17} />} />
-              <ToolbarButton label="删除选区或末尾内容" onClick={deleteSelectionOrLastBlock} icon={<Trash2 size={17} />} />
+              <ToolbarButton
+                label="链接"
+                onClick={insertLink}
+                icon={<Link2 size={17} />}
+              />
+              <ToolbarButton
+                label="表格"
+                onClick={insertTable}
+                icon={<Table2 size={17} />}
+              />
+              <ToolbarButton
+                label="清除格式"
+                onClick={() => runCommand("removeFormat")}
+                icon={<X size={17} />}
+              />
+              <ToolbarButton
+                label="删除选区或末尾内容"
+                onClick={deleteSelectionOrLastBlock}
+                icon={<Trash2 size={17} />}
+              />
             </div>
 
             <div className="flex items-center gap-3 border-b border-slate-100 py-3">
@@ -1238,7 +1860,9 @@ export default function EditorPage() {
             {showTitleCandidates && titleCandidates.length ? (
               <div className="mb-4 rounded-2xl border border-[#ff2442]/10 bg-[#fff7f8] p-3">
                 <div className="mb-2 flex items-center justify-between">
-                  <span className="text-sm font-semibold text-slate-900">AI 标题候选</span>
+                  <span className="text-sm font-semibold text-slate-900">
+                    AI 标题候选
+                  </span>
                   <button
                     type="button"
                     onClick={() => setShowTitleCandidates(false)}
@@ -1260,8 +1884,12 @@ export default function EditorPage() {
                       }}
                       className="w-full rounded-xl bg-white px-3 py-2 text-left transition hover:bg-[#fff0f3]"
                     >
-                      <span className="block text-sm font-medium text-slate-950">{candidate.title}</span>
-                      <span className="mt-1 block text-xs leading-5 text-slate-500">{candidate.reason}</span>
+                      <span className="block text-sm font-medium text-slate-950">
+                        {candidate.title}
+                      </span>
+                      <span className="mt-1 block text-xs leading-5 text-slate-500">
+                        {candidate.reason}
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -1274,9 +1902,18 @@ export default function EditorPage() {
                   className="absolute z-20 flex items-center gap-1 rounded-full border border-slate-100 bg-white p-1 shadow-lg"
                   style={{ top: selectionMenu.top, left: selectionMenu.left }}
                 >
-                  <MiniAiButton label="润色" onClick={() => void transformSelection("polish")} />
-                  <MiniAiButton label="扩写" onClick={() => void transformSelection("expand")} />
-                  <MiniAiButton label="改变风格" onClick={() => void transformSelection("tone")} />
+                  <MiniAiButton
+                    label="润色"
+                    onClick={() => void transformSelection("polish")}
+                  />
+                  <MiniAiButton
+                    label="扩写"
+                    onClick={() => void transformSelection("expand")}
+                  />
+                  <MiniAiButton
+                    label="改变风格"
+                    onClick={() => void transformSelection("tone")}
+                  />
                 </div>
               ) : null}
 
@@ -1285,23 +1922,100 @@ export default function EditorPage() {
                 contentEditable
                 suppressContentEditableWarning
                 onInput={handleEditorInput}
+                onDragOver={handleEditorDragOver}
+                onDrop={handleEditorDrop}
                 onFocus={cacheSelectionRange}
                 onMouseUp={updateSelectionMenu}
                 onKeyUp={updateSelectionMenu}
-                onBlur={() => window.setTimeout(() => setSelectionMenu(emptySelectionMenu), 120)}
+                onBlur={() =>
+                  window.setTimeout(
+                    () => setSelectionMenu(emptySelectionMenu),
+                    120,
+                  )
+                }
                 className="min-h-105 w-full text-[16px] leading-8 text-slate-800 outline-none empty:before:pointer-events-none empty:before:text-slate-300 empty:before:content-[attr(data-placeholder)] [&_a]:text-[#ff2442] [&_blockquote]:my-4 [&_blockquote]:border-l-4 [&_blockquote]:border-[#ff2442]/30 [&_blockquote]:bg-[#fff7f8] [&_blockquote]:px-4 [&_blockquote]:py-2 [&_figure]:my-5 [&_h2]:my-4 [&_h2]:text-xl [&_h2]:font-semibold [&_img]:max-h-96 [&_img]:w-full [&_img]:rounded-2xl [&_img]:object-cover [&_li]:my-1 [&_ol]:my-4 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-3 [&_pre]:my-4 [&_pre]:rounded-2xl [&_pre]:bg-slate-950 [&_pre]:p-4 [&_pre]:text-sm [&_pre]:text-white [&_table]:my-4 [&_table]:w-full [&_table]:overflow-hidden [&_table]:rounded-2xl [&_table]:border [&_table]:border-slate-200 [&_td]:border [&_td]:border-slate-200 [&_td]:px-3 [&_td]:py-2 [&_th]:border [&_th]:border-slate-200 [&_th]:bg-slate-50 [&_th]:px-3 [&_th]:py-2 [&_ul]:my-4 [&_ul]:list-disc [&_ul]:pl-6"
                 data-placeholder="输入正文描述，真诚有价值的分享予人温暖。输入 / 唤醒 AI 伴写能力。"
               />
 
               {showSlashMenu ? (
                 <div className="absolute left-6 top-24 z-10 w-72 rounded-2xl border border-slate-100 bg-white p-2 shadow-xl">
-                  <SlashAction label="AI 续写" desc="沿着当前段落继续写下去" onClick={() => insertSlashAction("continue")} />
-                  <SlashAction label="润色表达" desc="让这段内容更顺、更像人话" onClick={() => insertSlashAction("polish")} />
-                  <SlashAction label="改变语气" desc="切换为轻松、专业或种草风" onClick={() => insertSlashAction("tone")} />
-                  <SlashAction label="插入配图建议" desc="给当前位置补一段图片方向" onClick={() => insertSlashAction("image")} />
+                  <SlashAction
+                    label="AI 续写"
+                    desc="沿着当前段落继续写下去"
+                    onClick={() => insertSlashAction("continue")}
+                  />
+                  <SlashAction
+                    label="润色表达"
+                    desc="让这段内容更顺、更像人话"
+                    onClick={() => insertSlashAction("polish")}
+                  />
+                  <SlashAction
+                    label="改变语气"
+                    desc="切换为轻松、专业或种草风"
+                    onClick={() => insertSlashAction("tone")}
+                  />
+                  <SlashAction
+                    label="插入配图建议"
+                    desc="给当前位置补一段图片方向"
+                    onClick={() => insertSlashAction("image")}
+                  />
                 </div>
               ) : null}
             </div>
+
+            {contentVersions.length ? (
+              <section className="mt-4 rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-900">
+                      版本记录
+                    </h3>
+                    <p className="mt-1 text-xs text-slate-500">
+                      版本回滚会把正文和标题恢复到所选版本，并保留当前标签和素材。
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowVersionHistory((value) => !value)}
+                    className="rounded-full bg-white px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm"
+                  >
+                    {showVersionHistory
+                      ? "收起"
+                      : `共 ${contentVersions.length} 版`}
+                  </button>
+                </div>
+                {showVersionHistory ? (
+                  <div className="grid gap-2">
+                    {contentVersions.slice(0, 6).map((version) => (
+                      <div
+                        key={version.id}
+                        className="flex items-start justify-between gap-3 rounded-xl bg-white p-3 shadow-sm"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-slate-900">
+                            V{version.version} · {version.title}
+                          </p>
+                          <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-500">
+                            {version.body}
+                          </p>
+                          <p className="mt-2 text-xs text-slate-400">
+                            {formatVersionTime(version.createdAt)}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void rollbackToVersion(version)}
+                          disabled={isBusy || contentId !== version.contentId}
+                          className="shrink-0 rounded-full border border-[#ff2442]/20 bg-[#fff3f5] px-3 py-1.5 text-xs font-semibold text-[#ff2442] transition hover:bg-[#ffe7eb] disabled:opacity-60"
+                        >
+                          回滚
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
 
             <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-2">
@@ -1318,21 +2032,39 @@ export default function EditorPage() {
                     </button>
                   ))
                 ) : (
-                  <span className="rounded-full bg-slate-100 px-3 py-1.5 text-sm text-slate-400">暂无话题标签</span>
+                  <span className="rounded-full bg-slate-100 px-3 py-1.5 text-sm text-slate-400">
+                    暂无话题标签
+                  </span>
                 )}
               </div>
               <span className="text-sm text-slate-400">{wordCount}/3000</span>
             </div>
 
             <div className="relative mt-4 flex flex-wrap items-center gap-2">
-              <PillButton icon={<Hash size={16} />} label="话题" active={quickMenu === "topic"} onClick={() => setQuickMenu((value) => (value === "topic" ? null : "topic"))} />
-              <PillButton icon={<Smile size={16} />} label="表情" active={quickMenu === "emoji"} onClick={() => setQuickMenu((value) => (value === "emoji" ? null : "emoji"))} />
+              <PillButton
+                icon={<Hash size={16} />}
+                label="话题"
+                active={quickMenu === "topic"}
+                onClick={() =>
+                  setQuickMenu((value) => (value === "topic" ? null : "topic"))
+                }
+              />
+              <PillButton
+                icon={<Smile size={16} />}
+                label="表情"
+                active={quickMenu === "emoji"}
+                onClick={() =>
+                  setQuickMenu((value) => (value === "emoji" ? null : "emoji"))
+                }
+              />
 
               {quickMenu ? (
                 <div className="absolute left-0 top-12 z-20 w-80 rounded-2xl border border-slate-100 bg-white p-3 shadow-xl">
                   {quickMenu === "topic" ? (
                     <div className="space-y-3">
-                      <p className="text-xs font-medium text-slate-400">添加话题作为发布标签，不会出现在正文里。</p>
+                      <p className="text-xs font-medium text-slate-400">
+                        添加话题作为发布标签，不会出现在正文里。
+                      </p>
                       <div className="flex flex-wrap gap-2">
                         {hotTopics.slice(0, 5).map((topic) => (
                           <button
@@ -1345,13 +2077,17 @@ export default function EditorPage() {
                           </button>
                         ))}
                         {!topicsLoading && !hotTopics.length ? (
-                          <span className="text-xs text-slate-400">暂无热门话题</span>
+                          <span className="text-xs text-slate-400">
+                            暂无热门话题
+                          </span>
                         ) : null}
                       </div>
                       <div className="flex gap-2">
                         <input
                           value={customTopicInput}
-                          onChange={(event) => setCustomTopicInput(event.target.value)}
+                          onChange={(event) =>
+                            setCustomTopicInput(event.target.value)
+                          }
                           onKeyDown={(event) => {
                             if (event.key === "Enter") {
                               event.preventDefault();
@@ -1394,7 +2130,10 @@ export default function EditorPage() {
           <section className="rounded-3xl bg-white p-5 shadow-sm sm:p-7">
             <div className="mb-5 flex items-center justify-between">
               <h2 className="text-lg font-semibold">热门话题</h2>
-              <button type="button" className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-[#ff2442]">
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-[#ff2442]"
+              >
                 更多
                 <ChevronRight size={16} />
               </button>
@@ -1408,15 +2147,23 @@ export default function EditorPage() {
                   onClick={() => addTopicToArticle(item.title)}
                 >
                   {item.coverUrl ? (
-                    <img src={item.coverUrl} alt="" className="size-14 rounded-xl object-cover" />
+                    <img
+                      src={item.coverUrl}
+                      alt=""
+                      className="size-14 rounded-xl object-cover"
+                    />
                   ) : (
                     <div className="grid size-14 place-items-center rounded-xl bg-[#fff3f5] text-[#ff2442]">
                       <Hash size={20} />
                     </div>
                   )}
                   <div className="min-w-0 flex-1">
-                    <h3 className="line-clamp-1 font-semibold">#{item.title}</h3>
-                    <p className="mt-1 text-sm text-slate-500">热度 {compactNumber(item.heatScore)}</p>
+                    <h3 className="line-clamp-1 font-semibold">
+                      #{item.title}
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-500">
+                      热度 {compactNumber(item.heatScore)}
+                    </p>
                   </div>
                   <ChevronRight size={18} className="text-slate-400" />
                 </button>
@@ -1437,7 +2184,10 @@ export default function EditorPage() {
           <section className="rounded-3xl bg-white p-5 shadow-sm sm:p-7">
             <div className="mb-5 flex items-center justify-between">
               <h2 className="text-lg font-semibold">内容设置</h2>
-              <button type="button" className="inline-flex items-center gap-1 text-sm text-slate-500">
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 text-sm text-slate-500"
+              >
                 收起
                 <ChevronDown size={16} />
               </button>
@@ -1446,8 +2196,16 @@ export default function EditorPage() {
             <SettingRow label="展示封面">
               <div className="space-y-3">
                 <div className="flex flex-wrap gap-4">
-                  <RadioLabel active={coverMode === "single"} label="单图" onClick={() => setCoverMode("single")} />
-                  <RadioLabel active={coverMode === "none"} label="无封面" onClick={() => setCoverMode("none")} />
+                  <RadioLabel
+                    active={coverMode === "single"}
+                    label="单图"
+                    onClick={() => setCoverMode("single")}
+                  />
+                  <RadioLabel
+                    active={coverMode === "none"}
+                    label="无封面"
+                    onClick={() => setCoverMode("none")}
+                  />
                 </div>
                 {coverMode !== "none" ? (
                   <div className="flex flex-wrap items-center gap-4">
@@ -1460,7 +2218,11 @@ export default function EditorPage() {
                       className="grid size-32 place-items-center overflow-hidden rounded-2xl border border-dashed border-slate-200 bg-slate-50 text-slate-400 transition hover:border-[#ff2442]/40 hover:bg-[#fff3f5] hover:text-[#ff2442]"
                     >
                       {coverPreview ? (
-                        <img src={coverPreview} alt="封面预览" className="h-full w-full object-cover" />
+                        <img
+                          src={coverPreview}
+                          alt="封面预览"
+                          className="h-full w-full object-cover"
+                        />
                       ) : (
                         <ImagePlus size={28} />
                       )}
@@ -1474,18 +2236,29 @@ export default function EditorPage() {
             </SettingRow>
 
             <SettingRow label="原创声明">
-              <Toggle checked={isOriginal} onChange={setIsOriginal} label="声明原创内容" />
+              <Toggle
+                checked={isOriginal}
+                onChange={setIsOriginal}
+                label="声明原创内容"
+              />
             </SettingRow>
           </section>
 
           <section className="rounded-3xl bg-white p-5 shadow-sm sm:p-7">
             <div className="mb-5 flex items-center justify-between">
               <h2 className="text-lg font-semibold">添加组件</h2>
-              <span className="text-sm text-slate-400">组件会作为发布附加信息保存</span>
+              <span className="text-sm text-slate-400">
+                组件会作为发布附加信息保存
+              </span>
             </div>
             <div className="grid gap-3 md:grid-cols-2">
               <div className="relative">
-                <ComponentButton icon={<MapPin size={18} />} label={selectedLocation || "添加位置"} value={selectedLocation ? "已选择" : "根据定位推荐附近地址"} onClick={requestNearbyLocations} />
+                <ComponentButton
+                  icon={<MapPin size={18} />}
+                  label={selectedLocation || "添加位置"}
+                  value={selectedLocation ? "已选择" : "根据定位推荐附近地址"}
+                  onClick={requestNearbyLocations}
+                />
                 {showLocationPicker ? (
                   <PickerPanel title="附近地址">
                     {locationOptions.map((item) => (
@@ -1505,7 +2278,12 @@ export default function EditorPage() {
               </div>
 
               <div className="relative">
-                <ComponentButton icon={<FolderOpen size={18} />} label="加入合集" value={selectedCollection} onClick={() => setShowCollectionPicker((value) => !value)} />
+                <ComponentButton
+                  icon={<FolderOpen size={18} />}
+                  label="加入合集"
+                  value={selectedCollection}
+                  onClick={() => setShowCollectionPicker((value) => !value)}
+                />
                 {showCollectionPicker ? (
                   <PickerPanel title="选择合集">
                     {collectionOptions.map((item) => (
@@ -1532,7 +2310,12 @@ export default function EditorPage() {
               />
 
               <div className="relative">
-                <ComponentButton icon={<BadgeCheck size={18} />} label="内容类型声明" value={contentDeclaration} onClick={() => setShowDeclarationPicker((value) => !value)} />
+                <ComponentButton
+                  icon={<BadgeCheck size={18} />}
+                  label="内容类型声明"
+                  value={contentDeclaration}
+                  onClick={() => setShowDeclarationPicker((value) => !value)}
+                />
                 {showDeclarationPicker ? (
                   <PickerPanel title="内容类型">
                     {declarationOptions.map((item) => (
@@ -1556,15 +2339,33 @@ export default function EditorPage() {
           <section className="rounded-3xl bg-white p-5 shadow-sm sm:p-7">
             <div className="mb-5 flex items-center justify-between">
               <h2 className="text-lg font-semibold">更多设置</h2>
-              <button type="button" className="inline-flex items-center gap-1 text-sm text-slate-500">
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 text-sm text-slate-500"
+              >
                 收起
                 <ChevronDown size={16} />
               </button>
             </div>
             <div className="grid gap-3 md:grid-cols-3">
-              <ToggleTile icon={<Users size={18} />} label="允许协同创作" checked={allowCoCreate} onChange={setAllowCoCreate} />
-              <ToggleTile icon={<Copy size={18} />} label="允许正文复制" checked={allowCopy} onChange={setAllowCopy} />
-              <ToggleTile icon={<MessageCircle size={18} />} label="允许评论互动" checked={allowComment} onChange={setAllowComment} />
+              <ToggleTile
+                icon={<Users size={18} />}
+                label="允许协同创作"
+                checked={allowCoCreate}
+                onChange={setAllowCoCreate}
+              />
+              <ToggleTile
+                icon={<Copy size={18} />}
+                label="允许正文复制"
+                checked={allowCopy}
+                onChange={setAllowCopy}
+              />
+              <ToggleTile
+                icon={<MessageCircle size={18} />}
+                label="允许评论互动"
+                checked={allowComment}
+                onChange={setAllowComment}
+              />
             </div>
           </section>
 
@@ -1572,18 +2373,42 @@ export default function EditorPage() {
             <h2 className="mb-5 text-lg font-semibold">发布设置</h2>
             <div className="space-y-5">
               <div>
-                <p className="mb-3 text-sm font-semibold text-slate-700">谁可以看</p>
+                <p className="mb-3 text-sm font-semibold text-slate-700">
+                  谁可以看
+                </p>
                 <div className="grid gap-3 md:grid-cols-3">
-                  <PublishOption active={visibility === "public"} label="公开" onClick={() => setVisibility("public")} />
-                  <PublishOption active={visibility === "friends"} label="好友可见" onClick={() => setVisibility("friends")} />
-                  <PublishOption active={visibility === "private"} label="仅自己可见" onClick={() => setVisibility("private")} />
+                  <PublishOption
+                    active={visibility === "public"}
+                    label="公开"
+                    onClick={() => setVisibility("public")}
+                  />
+                  <PublishOption
+                    active={visibility === "friends"}
+                    label="好友可见"
+                    onClick={() => setVisibility("friends")}
+                  />
+                  <PublishOption
+                    active={visibility === "private"}
+                    label="仅自己可见"
+                    onClick={() => setVisibility("private")}
+                  />
                 </div>
               </div>
               <div>
-                <p className="mb-3 text-sm font-semibold text-slate-700">发布时间</p>
+                <p className="mb-3 text-sm font-semibold text-slate-700">
+                  发布时间
+                </p>
                 <div className="grid gap-3 md:grid-cols-2">
-                  <PublishOption active={publishTimeMode === "now"} label="立即发布" onClick={() => setPublishTimeMode("now")} />
-                  <PublishOption active={publishTimeMode === "scheduled"} label="定时发布" onClick={() => setPublishTimeMode("scheduled")} />
+                  <PublishOption
+                    active={publishTimeMode === "now"}
+                    label="立即发布"
+                    onClick={() => setPublishTimeMode("now")}
+                  />
+                  <PublishOption
+                    active={publishTimeMode === "scheduled"}
+                    label="定时发布"
+                    onClick={() => setPublishTimeMode("scheduled")}
+                  />
                 </div>
                 {publishTimeMode === "scheduled" ? (
                   <input
@@ -1630,7 +2455,9 @@ export default function EditorPage() {
                 type="button"
                 onClick={() => setAiMode("brainstorm")}
                 className={`rounded-full px-3 py-2 text-sm font-medium transition ${
-                  aiMode === "brainstorm" ? "bg-white text-[#ff2442] shadow-sm" : "text-slate-500 hover:text-slate-900"
+                  aiMode === "brainstorm"
+                    ? "bg-white text-[#ff2442] shadow-sm"
+                    : "text-slate-500 hover:text-slate-900"
                 }`}
               >
                 碰撞思路
@@ -1639,7 +2466,9 @@ export default function EditorPage() {
                 type="button"
                 onClick={() => setAiMode("direct")}
                 className={`rounded-full px-3 py-2 text-sm font-medium transition ${
-                  aiMode === "direct" ? "bg-white text-[#ff2442] shadow-sm" : "text-slate-500 hover:text-slate-900"
+                  aiMode === "direct"
+                    ? "bg-white text-[#ff2442] shadow-sm"
+                    : "text-slate-500 hover:text-slate-900"
                 }`}
               >
                 直接生成
@@ -1681,12 +2510,18 @@ export default function EditorPage() {
                             </ReactMarkdown>
                           </div>
                         ) : (
-                          <p className="whitespace-pre-wrap">{message.content}</p>
+                          <p className="whitespace-pre-wrap">
+                            {message.content}
+                          </p>
                         )}
-                        {message.role === "assistant" && message.insertable && message.content.trim() ? (
+                        {message.role === "assistant" &&
+                        message.insertable &&
+                        message.content.trim() ? (
                           <button
                             type="button"
-                            onClick={() => insertAssistantMessage(message.content)}
+                            onClick={() =>
+                              insertAssistantMessage(message.content)
+                            }
                             className="mt-3 inline-flex items-center gap-1 rounded-full bg-[#ff2442] px-3 py-1 text-xs font-medium text-white transition hover:bg-[#e91635]"
                           >
                             <Copy size={13} />
@@ -1700,7 +2535,8 @@ export default function EditorPage() {
               </div>
             ) : (
               <div className="rounded-2xl bg-[#fff3f5] p-4 text-sm leading-6 text-[#9f1239]">
-                输入确定好的主题或思路，AI 会直接把完整图文放入中央主编辑区，不在右侧堆长文本。
+                输入确定好的主题或思路，AI
+                会直接把完整图文放入中央主编辑区，不在右侧堆长文本。
               </div>
             )}
 
@@ -1709,7 +2545,11 @@ export default function EditorPage() {
                 value={chatInput}
                 onChange={(event) => setChatInput(event.target.value)}
                 rows={4}
-                placeholder={aiMode === "brainstorm" ? "输入你的疑问，和 AI 一起拆角度..." : "输入最终主题，AI 将生成完整图文..."}
+                placeholder={
+                  aiMode === "brainstorm"
+                    ? "输入你的疑问，和 AI 一起拆角度..."
+                    : "输入最终主题，AI 将生成完整图文..."
+                }
                 className="w-full resize-none bg-transparent p-2 text-sm text-slate-800 outline-none placeholder:text-slate-400"
               />
               <button
@@ -1725,7 +2565,11 @@ export default function EditorPage() {
                 className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-[#ff2442] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#e91635] disabled:opacity-60"
               >
                 <Sparkles size={16} />
-                {isChatStreaming ? "AI 输出中..." : aiMode === "direct" ? "生成到编辑区" : "发送给 AI"}
+                {isChatStreaming
+                  ? "AI 输出中..."
+                  : aiMode === "direct"
+                    ? "生成到编辑区"
+                    : "发送给 AI"}
               </button>
             </div>
           </section>
@@ -1744,15 +2588,23 @@ export default function EditorPage() {
                     if (card.action.includes("标题")) {
                       void generateSmartTitles();
                     } else if (card.action.includes("结构")) {
-                      insertHtml("<p><strong>补充结构：</strong>场景痛点 - 实用方法 - 读者行动建议。</p>", "已插入结构建议");
+                      insertHtml(
+                        "<p><strong>补充结构：</strong>场景痛点 - 实用方法 - 读者行动建议。</p>",
+                        "已插入结构建议",
+                      );
                     } else {
-                      insertHtml("<p><strong>文生图提示词：</strong>夏日通勤穿搭，清爽自然光，浅色衬衫，城市街角，真实摄影质感。</p>", "已插入配图提示词");
+                      insertHtml(
+                        "<p><strong>文生图提示词：</strong>夏日通勤穿搭，清爽自然光，浅色衬衫，城市街角，真实摄影质感。</p>",
+                        "已插入配图提示词",
+                      );
                     }
                   }}
                   className="w-full rounded-2xl border border-slate-100 bg-slate-50 p-4 text-left transition hover:border-[#ff2442]/20 hover:bg-[#fff3f5]"
                 >
                   <h3 className="font-semibold text-slate-900">{card.title}</h3>
-                  <p className="mt-1 text-sm leading-6 text-slate-500">{card.desc}</p>
+                  <p className="mt-1 text-sm leading-6 text-slate-500">
+                    {card.desc}
+                  </p>
                   <span className="mt-3 inline-flex rounded-full bg-white px-3 py-1 text-xs font-medium text-[#ff2442]">
                     {card.action}
                   </span>
@@ -1776,12 +2628,104 @@ export default function EditorPage() {
       <input
         ref={attachmentInputRef}
         type="file"
+        accept=".txt,.md,text/plain,text/markdown"
         className="hidden"
         onChange={(event) => {
           handleAttachmentPick(event.target.files?.[0]);
           event.currentTarget.value = "";
         }}
       />
+
+      {showAssetPanel ? (
+        <div className="fixed inset-0 z-50 flex items-start justify-center pt-20">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setShowAssetPanel(null)} />
+          <div className="relative z-10 w-full max-w-4xl rounded-3xl border border-slate-100 bg-white p-6 shadow-sm">
+            <div className="mb-4 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <h3 className="text-lg font-semibold text-slate-900">{showAssetPanel === "image" ? "图片库" : "文本库"}</h3>
+                <span className="text-sm text-slate-400">可管理、预览与插入素材</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (showAssetPanel === "image") {
+                      setImageTarget("asset");
+                      imageInputRef.current?.click();
+                    } else {
+                      attachmentInputRef.current?.click();
+                    }
+                  }}
+                  className="inline-flex items-center gap-2 rounded-2xl bg-[#ff2442] px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-[#e91635]"
+                >
+                  <ImagePlus size={16} />
+                  添加素材
+                </button>
+                <button type="button" onClick={() => setShowAssetPanel(null)} className="rounded-full p-2 text-slate-500 hover:bg-slate-50">
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2 max-h-[60vh] overflow-y-auto">
+              {(showAssetPanel === "image" ? imageAssets : textAssets).map((asset) => (
+                <div key={asset.id} className="group flex items-start gap-3 rounded-2xl border border-slate-100 bg-white p-3 shadow-sm">
+                  {showAssetPanel === "image" ? (
+                    <div className="relative aspect-4/3 w-32 overflow-hidden rounded-xl bg-slate-50">
+                      <img src={asset.url} alt={asset.fileName} className="h-full w-full object-cover transition duration-200 group-hover:scale-[1.02]" />
+                    </div>
+                  ) : (
+                    <div className="grid h-20 w-28 place-items-center rounded-lg bg-slate-50 text-slate-400">
+                      <FileText size={24} />
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-medium text-slate-900">{asset.fileName}</p>
+                    <p className="mt-1 text-xs text-slate-500">{asset.mimeType}</p>
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (showAssetPanel === "image") {
+                            setGeneratedAssetIds((items) => Array.from(new Set([asset.id, ...items])));
+                            setStatusMessage("图片已加入已选素材");
+                          } else {
+                            insertUploadedTextToBody(asset);
+                          }
+                        }}
+                        className="inline-flex items-center gap-2 rounded-full bg-[#fff3f5] px-3 py-1 text-sm text-[#ff2442]"
+                      >
+                        插入
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!confirm("确认删除该素材吗？此操作不可恢复。")) return;
+                          try {
+                            await deleteAsset(asset.id);
+                            await loadAssets();
+                            setStatusMessage("素材已删除");
+                          } catch (err) {
+                            // 显示后端/网络错误信息以便排查
+                            // eslint-disable-next-line no-console
+                            console.error(err);
+                            const msg = err instanceof Error ? err.message : "删除失败，请稍后再试";
+                            setStatusMessage(msg);
+                          }
+                        }}
+                        className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-600"
+                      >
+                        删除
+                      </button>
+                      <a href={asset.url} target="_blank" rel="noreferrer" className="ml-auto text-xs text-slate-400 hover:underline">预览</a>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

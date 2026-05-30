@@ -1,5 +1,5 @@
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
-const apiProxyTarget = (process.env.API_PROXY_TARGET ?? "http://localhost:3001").replace(/\/$/, "");
+const apiProxyTarget = (process.env.API_PROXY_TARGET ?? "http://127.0.0.1:3001").replace(/\/$/, "");
 const apiOrigin = /^https?:\/\//i.test(apiBaseUrl) ? new URL(apiBaseUrl).origin : null;
 const isDev = process.env.NODE_ENV !== "production";
 
