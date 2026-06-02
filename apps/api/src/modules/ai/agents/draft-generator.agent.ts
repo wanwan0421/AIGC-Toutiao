@@ -16,35 +16,35 @@ export class DraftGeneratorAgent {
 
   async run(input: DirectGenerateRequest): Promise<DirectGenerateResult> {
     const startedAt = Date.now();
+    // 获取提示词模板并渲染
     const { prompt, model } = await this.prompts.render(
       AI_PROMPT_NAMES.directGenerate,
-      input as unknown as Record<string, unknown>,
-      `你是今日头条图文创作助手。请根据用户提供的前置需求生成结构完整、表达丰富的图文草稿。
-
-主题：{{theme}}
-目标人群：{{audience}}
-风格：{{style}}
-核心观点：{{viewpoint}}
-素材参考：{{materialNotes}}
-
-只返回 JSON，字段必须包含：
-title, titleCandidates, bodyMarkdown, tags, coverSuggestion, imagePrompts, outline。`
+      input as unknown as Record<string, unknown>
     );
 
+    // 调LLM接口获取结果，要求必须是 JSON 格式
     const content = await this.modelClient.complete({
       model,
       temperature: 0.75,
       messages: [
-        { role: "system", content: "你是一个严格输出 JSON 的中文图文创作智能体。" },
+        {
+          role: "system",
+          content: "你是一个严格输出 JSON 的中文图文创作智能体，不要输出推理过程或多余说明。",
+        },
         { role: "user", content: prompt },
       ],
     });
-    const parsed = content ? parseJsonObject<DirectGenerateResult>(content) : null;
+
+    console.log("获取到原始输出", { content });
+
+    // 解析结果并规范化为预期格式，必要时进行修正
+    const parsed = parseJsonObject<DirectGenerateResult>(content);
     if (!parsed) {
       throw new Error("direct_generate returned invalid JSON");
     }
     const result = this.normalize(parsed);
 
+    // 记录调用日志
     await this.logs.log({
       scene: AI_PROMPT_NAMES.directGenerate,
       model: this.modelClient.modelName(model),

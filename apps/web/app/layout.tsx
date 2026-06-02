@@ -7,11 +7,11 @@ import { TopHeader } from "../components/top-header";
 
 export const metadata: Metadata = {
   title: "今日头条创作服务平台",
-  description: "AI creator production and distribution platform"
+  description: "AI 创作者辅助生产与分发平台",
 };
 
 export default function RootLayout({
-  children
+  children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {

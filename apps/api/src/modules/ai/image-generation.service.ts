@@ -39,6 +39,7 @@ export class ImageGenerationService {
     };
   }
 
+  // 根据创作初稿中的图片提示词生成图片，并存储到数据库，关联到内容
   async generateForDraft(input: {
     userId?: string;
     contentId?: string;

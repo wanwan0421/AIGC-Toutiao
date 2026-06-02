@@ -5,6 +5,9 @@ export const AI_PROMPT_NAMES = {
   selectionPolish: "selection_polish",
   selectionExpand: "selection_expand",
   selectionTone: "selection_tone",
+  safetyReview: "safety_review",
+  qualityScore: "quality_score",
+  complianceRewrite: "compliance_rewrite",
 } as const;
 
 type SelectionAction = "polish" | "expand" | "tone";

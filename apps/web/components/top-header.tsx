@@ -24,17 +24,13 @@ export function TopHeader() {
     }
   }
 
-  if (pathname === "/login") {
-    return null;
-  }
-
-  if (status === "loading") {
+  if (pathname === "/login" || status === "loading") {
     return null;
   }
 
   return (
     <header className="sticky top-0 z-50 flex h-16 items-center border-b border-slate-200/70 bg-white/95 px-6 backdrop-blur-md">
-      <Link href="/dashboard" className="flex min-w-0 items-center gap-2 font-bold text-[24px] text-[#ff2442] transition hover:text-rose-600">
+      <Link href="/dashboard" className="flex min-w-0 items-center gap-2 text-[24px] font-bold text-[#ff2442] transition hover:text-rose-600">
         <span className="whitespace-nowrap">今日头条创作服务平台</span>
       </Link>
       <div className="ml-auto flex items-center gap-4">

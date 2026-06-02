@@ -6,6 +6,7 @@ import { MemoryService } from "./memory.service";
 export class ContextBuilderService {
   constructor(private readonly memoryService: MemoryService) {}
 
+  // 构建创作助手对话的上下文，包括解析用户输入、获取对话历史、整理当前状态等，为后续的 AI 处理提供全面的信息支持
   async buildCreativeChatContext(request: CreativeChatRequest) {
     const userId = await this.resolveUserId(request.userId);
     const contentId = request.contentId ?? "new-content";

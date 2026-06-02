@@ -143,7 +143,7 @@ export default async function RankingsPage() {
             <div className="mt-4 grid gap-3">
               {topics.map((topic) => (
                 <Link
-                  href={`/rankings?keyword=${encodeURIComponent(topic.title)}`}
+                  href={`/topics/${encodeURIComponent(topic.title)}`}
                   key={topic.id}
                   className="flex gap-3 rounded-xl bg-slate-50 p-3 transition hover:bg-rose-50"
                 >

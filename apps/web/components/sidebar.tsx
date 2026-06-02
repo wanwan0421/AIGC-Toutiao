@@ -1,7 +1,9 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useAuth } from "./auth-provider";
 import { Icons } from "./icons";
 
@@ -10,69 +12,76 @@ const navItems = [
   { href: "/editor", label: "创作中心", icon: <Icons.PenTool className="h-5 w-5" /> },
   { href: "/content", label: "作品管理", icon: <Icons.Book className="h-5 w-5" /> },
   { href: "/analytics", label: "数据中心", icon: <Icons.Chart className="h-5 w-5" /> },
-  { href: "/growth", label: "成长指南", icon: <Icons.Compass className="h-5 w-5" /> }
+  { href: "/prompts", label: "Prompt 管理", icon: <Icons.Sparkles className="h-5 w-5" /> },
+  { href: "/growth", label: "成长指南", icon: <Icons.Compass className="h-5 w-5" /> },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
   const { status } = useAuth();
-  const isEditor = pathname === "/editor";
   const isLogin = pathname === "/login";
+  const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    if (pathname.startsWith("/editor")) {
+      setCollapsed(true);
+      return;
+    }
+    setCollapsed(window.localStorage.getItem("aicp:sidebar-collapsed") === "1");
+  }, [pathname]);
+
+  function toggleCollapsed() {
+    setCollapsed((value) => {
+      const next = !value;
+      window.localStorage.setItem("aicp:sidebar-collapsed", next ? "1" : "0");
+      return next;
+    });
+  }
 
   if (isLogin || status !== "authenticated") return null;
 
-  if (isEditor) {
-    return (
-      <aside className="hidden h-screen w-16 shrink-0 flex-col transition-all md:flex">
-        <nav className="mt-6 flex-1 space-y-3 px-2">
-          {navItems.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              title={item.label}
-              className={`flex justify-center rounded-xl p-2.5 transition-all ${
-                pathname === item.href ? "bg-white/10 text-[#ff3b30]" : "text-slate-500 hover:bg-white/5 hover:text-slate-800"
-              }`}
-            >
-              {item.icon}
-            </Link>
-          ))}
-        </nav>
-      </aside>
-    );
-  }
-
   return (
-    <aside className="hidden h-screen w-63 shrink-0 flex-col transition-all md:flex">
-      <div className="px-5 pt-4">
+    <aside className={`hidden h-full shrink-0 flex-col border-r border-slate-100 bg-white transition-all md:flex ${collapsed ? "w-20" : "w-64"}`}>
+      <div className="px-4 pt-4">
         <Link
           href="/editor"
-          className="flex h-12 items-center justify-center gap-2 rounded-full bg-[#ff3b30] text-[16px] font-semibold text-white shadow-sm transition hover:bg-[#e6352b]"
+          title="发布作品"
+          className={`flex h-12 items-center justify-center gap-2 rounded-full bg-[#ff3b30] text-[15px] font-semibold text-white shadow-sm transition hover:bg-[#e6352b] ${collapsed ? "px-0" : "px-5"}`}
         >
           <Icons.Plus className="h-4 w-4" />
-          发布作品
+          {collapsed ? null : <span>发布作品</span>}
         </Link>
       </div>
 
       <nav className="mt-5 flex-1 space-y-2 overflow-y-auto px-4">
         {navItems.map((item) => {
-          const active = pathname === item.href;
+          const active = pathname === item.href || (item.href !== "/dashboard" && pathname.startsWith(`${item.href}/`));
           return (
             <Link
               key={item.href}
               href={item.href}
-              className={`flex items-center gap-3 rounded-2xl px-4 py-3 text-[16px] transition-all ${
-                active ? "bg-[#fff3f5] font-semibold text-[#ff3b30]" : "text-slate-500 hover:bg-slate-50 hover:text-slate-950"
-              }`}
+              title={item.label}
+              className={`flex items-center rounded-2xl px-4 py-3 text-[15px] transition-all ${
+                collapsed ? "justify-center" : "gap-3"
+              } ${active ? "bg-[#fff3f5] font-semibold text-[#ff3b30]" : "text-slate-500 hover:bg-slate-50 hover:text-slate-950"}`}
             >
               <span className={active ? "text-[#ff3b30]" : "text-slate-400"}>{item.icon}</span>
-              {item.label}
+              {collapsed ? null : <span className="truncate">{item.label}</span>}
             </Link>
           );
         })}
       </nav>
 
-      <div className="border-t border-slate-100 p-5" />
+      <div className={`border-t border-slate-100 p-4 ${collapsed ? "flex justify-center" : "flex justify-end"}`}>
+        <button
+          type="button"
+          onClick={toggleCollapsed}
+          className="grid size-10 place-items-center rounded-full text-slate-400 transition hover:bg-slate-50 hover:text-[#ff3b30]"
+          title={collapsed ? "展开侧边栏" : "收起侧边栏"}
+        >
+          {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+        </button>
+      </div>
     </aside>
   );
 }

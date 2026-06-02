@@ -18,39 +18,35 @@ export class SelectionRewriterAgent {
     const startedAt = Date.now();
     const { prompt, model } = await this.prompts.render(
       selectionPromptName(input.action),
-      input as unknown as Record<string, unknown>,
-      `你是中文图文编辑助手。请对选中文本执行 {{action}}。
-
-选中文本：{{selectedText}}
-周边上下文：{{surroundingContext}}
-目标语气：{{tone}}
-
-只返回 JSON：{"replacement":"替换后的文本"}`
+      input as unknown as Record<string, unknown>
     );
 
     const content = await this.modelClient.complete({
       model,
       temperature: 0.55,
       messages: [
-        { role: "system", content: "你只改写用户选中的文本，不额外解释，并严格返回 JSON。" },
+        {
+          role: "system",
+          content: "你只改写用户选中的文本，不额外解释，并严格返回 JSON。",
+        },
         { role: "user", content: prompt },
       ],
     });
-    const parsed = content ? parseJsonObject<SelectionRewriteResult>(content) : null;
+
+    const parsed = parseJsonObject<SelectionRewriteResult>(content);
     if (!parsed?.replacement) {
       throw new Error("selection rewrite returned invalid replacement");
     }
-    const result = parsed;
 
     await this.logs.log({
       scene: selectionPromptName(input.action),
       model: this.modelClient.modelName(model),
       inputSummary: input.selectedText.slice(0, 120),
-      output: result,
+      output: parsed,
       latencyMs: Date.now() - startedAt,
       success: true,
     });
 
-    return result;
+    return parsed;
   }
 }

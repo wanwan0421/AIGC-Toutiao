@@ -8,6 +8,7 @@ import { Icons } from "../../components/icons";
 import { StatusBadge } from "../../components/status-badge";
 import {
   approveContent,
+  deleteContent,
   getContentDetail,
   getContents,
   offlineContent,
@@ -114,12 +115,12 @@ export default function ContentPage() {
         const response = await submitReview(content.id);
         setMessage(
           response.audit.passed
-            ? `草稿已提交审核，质量分 ${response.quality.total}`
-            : `草稿审核未通过，质量分 ${response.quality.total}`
+            ? "草稿已提交审核，审核通过后将生成质量分"
+            : `草稿审核未通过：${response.audit.reasons.join("；")}`
         );
       } else if (content.status === ContentStatus.PendingReview) {
-        await approveContent(content.id);
-        setMessage(`「${content.title}」已通过审核`);
+        const approved = await approveContent(content.id);
+        setMessage(`「${content.title}」已通过审核，质量分 ${approved.qualityScore}`);
       } else if (content.status === ContentStatus.Approved || content.status === ContentStatus.Updated) {
         await publishContent(content.id);
         setMessage(`「${content.title}」已发布`);
@@ -131,6 +132,21 @@ export default function ContentPage() {
       await refreshContents();
     } catch (actionError) {
       setMessage(actionError instanceof Error ? `操作失败：${actionError.message}` : "操作失败");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleDeleteContent(content: ContentSummary) {
+    const ok = window.confirm(`确定删除「${content.title || "未命名作品"}」吗？删除后不可恢复。`);
+    if (!ok) return;
+    setBusyId(content.id);
+    try {
+      await deleteContent(content.id);
+      setContents((items) => items.filter((item) => item.id !== content.id));
+      setMessage(`已删除「${content.title || "未命名作品"}」`);
+    } catch (deleteError) {
+      setMessage(deleteError instanceof Error ? `删除失败：${deleteError.message}` : "删除失败");
     } finally {
       setBusyId(null);
     }
@@ -310,6 +326,15 @@ export default function ContentPage() {
                         <Icons.Trash className="h-4 w-4" />
                       )}
                       {actionLabel(content, busyId)}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busyId === content.id}
+                      onClick={() => void handleDeleteContent(content)}
+                      className="inline-flex items-center gap-2 rounded-full bg-rose-50 px-4 py-2 text-sm font-medium text-rose-600 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <Icons.Trash className="h-4 w-4" />
+                      删除
                     </button>
                   </div>
                 </article>

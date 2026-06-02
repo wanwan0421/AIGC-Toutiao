@@ -473,7 +473,7 @@ export default function DashboardPage() {
                 {topicCards.map((topic) => (
                   <Link
                     key={topic.id}
-                    href={`/rankings?keyword=${encodeURIComponent(topic.title)}`}
+                    href={`/topics/${encodeURIComponent(topic.title)}`}
                     className="flex gap-3 rounded-xl bg-slate-50 p-3 transition hover:bg-rose-50"
                   >
                     {topic.coverUrl ? (

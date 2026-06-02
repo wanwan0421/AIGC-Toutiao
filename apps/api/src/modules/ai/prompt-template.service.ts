@@ -6,7 +6,7 @@ import { PrismaService } from "../../infra/prisma/prisma.service";
 export class PromptTemplateService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async render(scene: string, variables: Record<string, unknown>, fallbackTemplate: string) {
+  async render(scene: string, variables: Record<string, unknown>, fallbackTemplate = "") {
     const exactPrompt = await this.prisma.promptTemplate
       .findFirst({
         where: {
@@ -49,14 +49,17 @@ export class PromptTemplateService {
   }
 
   private mapScene(scene: string) {
-    if (scene.includes("audit")) return PromptScene.audit;
-    if (scene.includes("score")) return PromptScene.score;
-    if (scene.includes("rewrite") || scene.includes("selection")) return PromptScene.rewrite;
+    if (scene.includes("audit") || scene.includes("safety") || scene.includes("review")) return PromptScene.audit;
+    if (scene.includes("score") || scene.includes("quality")) return PromptScene.score;
+    if (scene.includes("rewrite") || scene.includes("selection") || scene.includes("compliance")) return PromptScene.rewrite;
     return PromptScene.generate;
   }
 
   private canUseSceneFallback(scene: string) {
-    return ["generate", "audit", "score", "rewrite"].includes(scene);
+    return (
+      ["generate", "audit", "score", "rewrite"].includes(scene) ||
+      /(audit|safety|review|score|quality|rewrite|selection|compliance)/.test(scene)
+    );
   }
 
   private interpolate(template: string, variables: Record<string, unknown>) {

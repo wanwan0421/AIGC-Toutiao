@@ -97,6 +97,11 @@ export interface OfficialTopicSummary {
   coverUrl?: string;
 }
 
+export interface TopicDetail {
+  topic: OfficialTopicSummary;
+  items: ContentSummary[];
+}
+
 export interface AssetSummary {
   id: string;
   fileName: string;
@@ -213,6 +218,12 @@ export interface SelectionRewriteRequest {
 
 export interface SelectionRewriteResult {
   replacement: string;
+}
+
+export interface ComplianceRewriteResult {
+  title: string;
+  body: string;
+  reasons: string[];
 }
 
 export interface AuditResult {

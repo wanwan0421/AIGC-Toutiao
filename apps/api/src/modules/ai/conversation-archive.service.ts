@@ -43,6 +43,7 @@ export class ConversationArchiveService {
     return this.prisma as unknown as AiArchiveStore;
   }
 
+  // 确保存在一个活跃的对话，如果提供了 contentId 则尝试找到对应的对话并更新标题，否则创建一个新的对话，并返回该对话的最新状态
   async ensureActiveConversation(input: {
     conversationId: string;
     userId: string;

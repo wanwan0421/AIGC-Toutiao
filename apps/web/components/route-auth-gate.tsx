@@ -11,18 +11,16 @@ export function RouteAuthGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { status } = useAuth();
+  const isPublicRoute = publicRoutes.some((route) => pathname === route || pathname.startsWith(`${route}/`));
 
   useEffect(() => {
-    if (publicRoutes.some((route) => pathname === route || pathname.startsWith(`${route}/`))) {
-      return;
-    }
-
+    if (isPublicRoute) return;
     if (status === "anonymous") {
       router.replace("/login");
     }
-  }, [pathname, router, status]);
+  }, [isPublicRoute, router, status]);
 
-  if (!publicRoutes.some((route) => pathname === route || pathname.startsWith(`${route}/`))) {
+  if (!isPublicRoute) {
     if (status === "loading") {
       return <LoadingShell title="正在确认登录状态..." />;
     }

@@ -1,16 +1,15 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { Injectable, NotFoundException } from "@nestjs/common";
 import { ContentStatus as ApiContentStatus } from "@aicp/shared";
 import { ContentStatus as DbContentStatus, Prisma } from "@prisma/client";
-import { buildAuditResult, buildQualityScore } from "../../common/business-rules";
-import { toContentDetail, toContentSummary, toDbAuditRiskLevel, toDbContentStatus } from "../../common/prisma-mappers";
+import { toContentDetail, toContentSummary, toDbContentStatus } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 
 const contentInclude = {
   author: true,
   assets: {
     include: { asset: true },
-    orderBy: { sortOrder: "asc" as const }
-  }
+    orderBy: { sortOrder: "asc" as const },
+  },
 };
 
 @Injectable()
@@ -21,10 +20,10 @@ export class ContentsService {
     const items = await this.prisma.content.findMany({
       where: {
         authorId: userId,
-        ...(status ? { status: toDbContentStatus(status) } : {})
+        ...(status ? { status: toDbContentStatus(status) } : {}),
       },
       include: contentInclude,
-      orderBy: { updatedAt: "desc" }
+      orderBy: { updatedAt: "desc" },
     });
 
     return items.map(toContentSummary);
@@ -44,12 +43,12 @@ export class ContentsService {
           ? {
               createMany: {
                 data: body.assetIds.map((assetId, index) => ({ assetId, sortOrder: index })),
-                skipDuplicates: true
-              }
+                skipDuplicates: true,
+              },
             }
-          : undefined
+          : undefined,
       },
-      include: contentInclude
+      include: contentInclude,
     });
 
     return toContentDetail(content);
@@ -58,14 +57,13 @@ export class ContentsService {
   async detail(userId: string, id: string) {
     const content = await this.prisma.content.findUnique({
       where: { id },
-      include: contentInclude
+      include: contentInclude,
     });
 
     if (!content) {
       throw new NotFoundException("content not found");
     }
 
-    // Allow viewing published content from other users, but own draft/unpublished content
     if (content.status !== DbContentStatus.published && content.authorId !== userId) {
       throw new NotFoundException("content not found");
     }
@@ -77,7 +75,7 @@ export class ContentsService {
     await this.assertContentExists(userId, id);
     return this.prisma.contentVersion.findMany({
       where: { contentId: id },
-      orderBy: { version: "desc" }
+      orderBy: { version: "desc" },
     });
   }
 
@@ -91,7 +89,7 @@ export class ContentsService {
       body: body.body,
       excerpt: body.body !== undefined ? nextBody.slice(0, 72) : undefined,
       tags: body.tags,
-      status: current.status === DbContentStatus.published ? DbContentStatus.updated : undefined
+      status: current.status === DbContentStatus.published ? DbContentStatus.updated : undefined,
     };
 
     if (body.assetIds !== undefined) {
@@ -99,7 +97,7 @@ export class ContentsService {
       if (body.assetIds.length > 0) {
         await this.prisma.contentAsset.createMany({
           data: body.assetIds.map((assetId, index) => ({ contentId: id, assetId, sortOrder: index })),
-          skipDuplicates: true
+          skipDuplicates: true,
         });
       }
     }
@@ -107,104 +105,60 @@ export class ContentsService {
     const updated = await this.prisma.content.update({
       where: { id },
       data,
-      include: contentInclude
+      include: contentInclude,
     });
 
     return toContentDetail(updated);
   }
 
-  async submitReview(userId: string, id: string) {
-    const content = await this.getContent(userId, id);
-    const audit = buildAuditResult(content.title, content.body);
-    const quality = buildQualityScore(content.title, content.body);
+  async delete(userId: string, id: string) {
+    await this.assertContentExists(userId, id);
 
-    const updated = await this.prisma.$transaction(async (tx) => {
-      await tx.auditRecord.create({
-        data: {
-          contentId: id,
-          passed: audit.passed,
-          riskLevel: toDbAuditRiskLevel(audit.riskLevel),
-          riskTypes: audit.riskTypes,
-          reasons: audit.reasons,
-          rawResponse: audit as unknown as Prisma.InputJsonValue
-        }
+    await this.prisma.$transaction(async (tx) => {
+      await tx.draft.deleteMany({ where: { contentId: id } });
+      await tx.contentAsset.deleteMany({ where: { contentId: id } });
+      await tx.contentVersion.deleteMany({ where: { contentId: id } });
+      await tx.auditRecord.deleteMany({ where: { contentId: id } });
+      await tx.qualityScore.deleteMany({ where: { contentId: id } });
+      await tx.userActionEvent.deleteMany({ where: { contentId: id } });
+      await tx.aiConversation.updateMany({
+        where: { contentId: id },
+        data: { contentId: null },
       });
-
-      await tx.qualityScore.create({
-        data: {
-          contentId: id,
-          total: quality.total,
-          dimensions: quality.dimensions as unknown as Prisma.InputJsonValue,
-          reason: quality.reason,
-          rawResponse: quality as unknown as Prisma.InputJsonValue
-        }
-      });
-
-      return tx.content.update({
-        where: { id },
-        data: {
-          qualityScore: quality.total,
-          status: audit.passed ? DbContentStatus.pending_review : DbContentStatus.rejected
-        },
-        include: { author: true }
-      });
+      await tx.content.delete({ where: { id } });
     });
 
-    return {
-      content: toContentSummary(updated),
-      audit,
-      quality
-    };
+    return { ok: true, id };
   }
 
-  async approve(userId: string, id: string) {
-    const content = await this.getContent(userId, id);
-    if (content.status !== DbContentStatus.pending_review) {
-      throw new BadRequestException("only pending_review content can be approved");
-    }
-
-    const updated = await this.prisma.content.update({
-      where: { id },
-      data: { status: DbContentStatus.approved },
-      include: { author: true }
+  async rollback(userId: string, id: string, version: number) {
+    const current = await this.getContent(userId, id);
+    const target = await this.prisma.contentVersion.findFirst({
+      where: { contentId: id, version },
     });
-
-    return toContentSummary(updated);
-  }
-
-  async publish(userId: string, id: string) {
-    const content = await this.getContent(userId, id);
-    if (content.status !== DbContentStatus.approved && content.status !== DbContentStatus.updated) {
-      throw new BadRequestException("content must be approved before publish");
+    if (!target) {
+      throw new NotFoundException("content version not found");
     }
 
+    await this.createVersion(current.id, current.title, current.body);
     const updated = await this.prisma.content.update({
       where: { id },
       data: {
-        status: DbContentStatus.published,
-        publishedAt: new Date()
+        title: target.title,
+        body: target.body,
+        excerpt: target.body.slice(0, 72),
+        status: current.status === DbContentStatus.published ? DbContentStatus.updated : current.status,
       },
-      include: { author: true }
+      include: contentInclude,
     });
 
-    return toContentSummary(updated);
-  }
-
-  async offline(userId: string, id: string) {
-    await this.assertContentExists(userId, id);
-    const updated = await this.prisma.content.update({
-      where: { id },
-      data: { status: DbContentStatus.offline },
-      include: { author: true }
-    });
-
-    return toContentSummary(updated);
+    return toContentDetail(updated);
   }
 
   private async getContent(userId: string, id: string) {
     const content = await this.prisma.content.findUnique({
       where: { id },
-      include: contentInclude
+      include: contentInclude,
     });
 
     if (!content || content.authorId !== userId) {
@@ -224,7 +178,7 @@ export class ContentsService {
   private async createVersion(contentId: string, title: string, body: string) {
     const aggregate = await this.prisma.contentVersion.aggregate({
       where: { contentId },
-      _max: { version: true }
+      _max: { version: true },
     });
     const version = (aggregate._max.version ?? 0) + 1;
 
@@ -234,8 +188,8 @@ export class ContentsService {
         version,
         title,
         body,
-        snapshot: { title, body }
-      }
+        snapshot: { title, body },
+      },
     });
   }
 }

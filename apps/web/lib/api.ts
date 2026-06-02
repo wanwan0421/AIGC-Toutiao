@@ -11,9 +11,11 @@ import type {
   DirectGenerateResult,
   AssetSummary,
   OfficialTopicSummary,
+  PromptScene,
   QualityScoreResult,
   SelectionRewriteRequest,
   SelectionRewriteResult,
+  TopicDetail,
   TitleGenerateRequest,
   TitleGenerateResult,
   UpdateUserProfileRequest,
@@ -30,6 +32,22 @@ export type ContentVersionSummary = {
   body: string;
   snapshot?: Record<string, unknown> | null;
   createdAt: string;
+};
+
+export type PromptTemplateSummary = {
+  id: string;
+  creatorId?: string | null;
+  name: string;
+  scene: PromptScene;
+  template: string;
+  variables?: unknown;
+  model?: string | null;
+  modelOptions?: unknown;
+  version: number;
+  status: string;
+  usageCount: number;
+  createdAt: string;
+  updatedAt: string;
 };
 
 type AuthSessionResponse = {
@@ -175,6 +193,11 @@ export async function getOfficialTopics(limit = 8): Promise<OfficialTopicSummary
   return response.items;
 }
 
+export async function getTopicDetail(title: string, limit = 30): Promise<TopicDetail> {
+  return apiRequest<TopicDetail>(`/rankings/topics/${encodeURIComponent(title)}?limit=${limit}`);
+}
+
+// 内容详情接口会包含用户的草稿信息，用户点击后就可以把之前的草稿内容恢复到编辑器中，避免用户在编辑过程中丢失之前的修改内容
 export async function getContentDetail(id: string): Promise<ContentDetail> {
   return apiRequest<ContentDetail>(`/contents/${id}`, {}, true);
 }
@@ -201,8 +224,17 @@ export async function updateContent(id: string, body: { title?: string; body?: s
   );
 }
 
+export async function deleteContent(id: string) {
+  return apiRequest<{ ok: boolean; id: string }>(`/contents/${id}`, { method: "DELETE" }, true);
+}
+
 export async function submitReview(id: string) {
-  return apiRequest<{ content: ContentSummary; audit: AuditResult; quality: QualityScoreResult }>(
+  return apiRequest<{
+    content: ContentSummary;
+    audit: AuditResult;
+    quality: QualityScoreResult | null;
+    rewrite: { title: string; body: string; reasons: string[] } | null;
+  }>(
     `/contents/${id}/submit-review`,
     { method: "POST" },
     true
@@ -223,6 +255,10 @@ export async function offlineContent(id: string) {
 
 export async function getContentVersions(id: string) {
   return apiRequest<ContentVersionSummary[]>(`/contents/${id}/versions`, {}, true);
+}
+
+export async function rollbackContentVersion(id: string, version: number) {
+  return apiRequest<ContentDetail>(`/contents/${id}/versions/${version}/rollback`, { method: "POST" }, true);
 }
 
 export async function getAssets(contentId?: string) {
@@ -255,6 +291,50 @@ export async function linkAssetToContent(assetId: string, contentId: string) {
   return apiRequest<{ ok: boolean; contentId: string; asset: AssetSummary }>(
     `/assets/${assetId}/link/${contentId}`,
     { method: "POST" },
+    true
+  );
+}
+
+export async function getPrompts(scene?: PromptScene) {
+  const query = scene ? `?scene=${encodeURIComponent(scene)}` : "";
+  return apiRequest<PromptTemplateSummary[]>(`/prompts${query}`, {}, true);
+}
+
+export async function createPrompt(body: {
+  name: string;
+  scene: PromptScene;
+  template: string;
+  variables?: string[];
+  model?: string;
+  modelOptions?: Record<string, unknown>;
+}) {
+  return apiRequest<PromptTemplateSummary>(
+    "/prompts",
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+    true
+  );
+}
+
+export async function updatePrompt(
+  id: string,
+  body: Partial<{
+    name: string;
+    template: string;
+    variables: string[];
+    model: string;
+    modelOptions: Record<string, unknown>;
+    status: "active" | "draft" | "disabled";
+  }>
+) {
+  return apiRequest<PromptTemplateSummary>(
+    `/prompts/${id}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    },
     true
   );
 }
@@ -423,6 +503,7 @@ export async function getCreativeConversations(contentId: string) {
   );
 }
 
+// 将 conversation 关联到内容上，主要用于用户在编辑过程中进行了聊天交互但还没有保存草稿的场景，此时会先创建一个内容记录，然后把之前的 conversation 关联到这个内容上，避免用户在编辑过程中丢失之前的聊天记录
 export async function attachCreativeConversation(conversationId: string, contentId: string) {
   return apiRequest<{ ok: boolean; conversationId: string; contentId: string }>(
     `/ai/creative/conversations/${conversationId}/attach`,

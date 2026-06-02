@@ -10,36 +10,36 @@ import type {
 } from "@aicp/shared";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
-import { AiService } from "./ai.service";
+import { ContentWorkflowEngine } from "../workflow/content-workflow.engine";
 
 @UseGuards(AuthGuard)
 @Controller("ai")
 export class AiController {
-  constructor(private readonly aiService: AiService) {}
+  constructor(private readonly workflow: ContentWorkflowEngine) {}
 
   @Post("generate")
   generate(@CurrentUser() user: UserProfileSummary, @Body() body: AiGenerateRequest & { audience?: string }) {
-    return this.aiService.generate({ ...body, userId: user.id });
+    return this.workflow.generate({ ...body, userId: user.id });
   }
 
   @Post("audit")
   audit(@Body() body: { title: string; body: string }) {
-    return this.aiService.audit(body);
+    return this.workflow.auditText(body);
   }
 
   @Post("score")
   score(@Body() body: { title: string; body: string }) {
-    return this.aiService.score(body);
+    return this.workflow.scoreText(body);
   }
 
   @Post("rewrite")
   rewrite(@Body() body: { title: string; body: string; reasons?: string[] }) {
-    return this.aiService.rewrite(body);
+    return this.workflow.rewriteText(body);
   }
 
   @Get("logs")
   logs() {
-    return this.aiService.logs();
+    return this.workflow.logs();
   }
 
   @Post("creative/chat/stream")
@@ -54,7 +54,7 @@ export class AiController {
     response.flushHeaders?.();
 
     try {
-      for await (const event of this.aiService.streamCreativeChat({ ...body, userId: user.id })) {
+      for await (const event of this.workflow.streamCreativeChat({ ...body, userId: user.id })) {
         response.write(`event: ${event.type}\n`);
         response.write(`data: ${JSON.stringify(event.data)}\n\n`);
       }
@@ -68,28 +68,28 @@ export class AiController {
 
   @Post("creative/direct-generate")
   directGenerate(@CurrentUser() user: UserProfileSummary, @Body() body: DirectGenerateRequest) {
-    return this.aiService.directGenerate({ ...body, userId: user.id });
+    return this.workflow.directGenerate({ ...body, userId: user.id });
   }
 
   @Post("creative/titles")
   generateTitles(@Body() body: TitleGenerateRequest) {
-    return this.aiService.generateTitles(body);
+    return this.workflow.generateTitles(body);
   }
 
   @Post("creative/selection/rewrite")
   rewriteSelection(@Body() body: SelectionRewriteRequest) {
-    return this.aiService.rewriteSelection(body);
+    return this.workflow.rewriteSelection(body);
   }
 
   @Get("creative/image/config")
   creativeImageConfigStatus() {
-    return this.aiService.creativeImageConfigStatus();
+    return this.workflow.creativeImageConfigStatus();
   }
 
   @Get("creative/conversations")
   creativeConversations(@CurrentUser() user: UserProfileSummary, @Query("contentId") contentId?: string) {
     if (!contentId) return [];
-    return this.aiService.creativeConversations(contentId, user.id);
+    return this.workflow.creativeConversations(contentId, user.id);
   }
 
   @Patch("creative/conversations/:id/attach")
@@ -98,6 +98,7 @@ export class AiController {
     @Param("id") id: string,
     @Body() body: { contentId: string }
   ) {
-    return this.aiService.attachCreativeConversation(id, { ...body, userId: user.id });
+    return this.workflow.attachCreativeConversation(id, { ...body, userId: user.id });
   }
+
 }

@@ -105,7 +105,7 @@ export class ModelClientService {
             const delta = this.extractDelta(payload, eventType);
             if (delta) yield delta;
           } catch {
-            // Ignore malformed provider stream fragments.
+            // Provider stream fragments may be split across packets.
           }
         }
       }
@@ -254,5 +254,4 @@ export class ModelClientService {
 
     return "";
   }
-
 }

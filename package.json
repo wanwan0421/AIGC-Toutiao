@@ -18,5 +18,11 @@
     "db:migrate": "npm run prisma -w @aicp/api -- migrate dev --name init",
     "db:seed": "npm run prisma -w @aicp/api -- db seed",
     "db:studio": "npm run prisma -w @aicp/api -- studio"
+  },
+  "dependencies": {
+    "dompurify": "^3.4.7"
+  },
+  "devDependencies": {
+    "@types/dompurify": "^3.0.5"
   }
 }

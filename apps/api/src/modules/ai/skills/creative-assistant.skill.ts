@@ -29,6 +29,7 @@ export class CreativeAssistantSkill {
     return this.selectionRewriter.run(request);
   }
 
+  // 流式创作助手：构建上下文、归档对话，并把模型增量输出转发给前端。
   async *streamChat(request: CreativeChatRequest) {
     const startedAt = Date.now();
     const context = await this.contextBuilder.buildCreativeChatContext(request);
@@ -64,6 +65,7 @@ export class CreativeAssistantSkill {
       },
     };
 
+    // 将模型流式增量原样转发给调用方。
     for await (const delta of this.ideaAssistant.stream({
       message: request.message,
       currentTitle: context.currentTitle,
@@ -79,6 +81,7 @@ export class CreativeAssistantSkill {
       };
     }
 
+    // 同步短期记忆，便于下一轮上下文构建。
     await this.memory.appendShortTermMessages(
       {
         userId: context.userId,
@@ -91,6 +94,7 @@ export class CreativeAssistantSkill {
       ]
     );
 
+    // 归档 AI 回复，保证对话历史可追溯。
     await this.conversations.appendMessage({
       id: assistantMessageId,
       conversationId,
@@ -98,6 +102,7 @@ export class CreativeAssistantSkill {
       content: assistantContent,
     });
 
+    // 记录本次 AI 调用，供后续分析与排障使用。
     await this.logs.log({
       scene: AI_PROMPT_NAMES.creativeChat,
       model: "creative-assistant-skill",

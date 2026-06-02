@@ -84,11 +84,12 @@ export function toAssetSummary(asset: AssetLike): AssetSummary {
 }
 
 export function toContentSummary(content: ContentLike): ContentSummary {
+  const coverAsset = content.assets?.find((item) => item.asset.mimeType.startsWith("image/"))?.asset ?? content.assets?.[0]?.asset;
   return {
     id: content.id,
     title: content.title,
     excerpt: content.excerpt ?? content.body.slice(0, 72),
-    coverUrl: content.assets?.[0]?.asset.url,
+    coverUrl: coverAsset?.url,
     status: toApiContentStatus(content.status),
     author: {
       id: content.author.id,
