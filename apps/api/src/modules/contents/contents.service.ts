@@ -12,6 +12,20 @@ const contentInclude = {
   },
 };
 
+type ContentWriteBody = {
+  title?: string;
+  body?: string;
+  bodyHtml?: string | null;
+  bodyJson?: Record<string, unknown> | null;
+  tags?: string[];
+  assetIds?: string[];
+};
+
+function toJsonInput(value: Record<string, unknown> | null | undefined) {
+  if (value === undefined) return undefined;
+  return value === null ? Prisma.JsonNull : (value as Prisma.InputJsonValue);
+}
+
 @Injectable()
 export class ContentsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -29,13 +43,15 @@ export class ContentsService {
     return items.map(toContentSummary);
   }
 
-  async create(userId: string, body: { title?: string; body?: string; tags?: string[]; assetIds?: string[] }) {
+  async create(userId: string, body: ContentWriteBody) {
     const contentBody = body.body?.trim() ?? "";
     const content = await this.prisma.content.create({
       data: {
         authorId: userId,
         title: body.title?.trim() || "未命名草稿",
         body: contentBody,
+        bodyHtml: body.bodyHtml ?? null,
+        bodyJson: toJsonInput(body.bodyJson),
         excerpt: contentBody.slice(0, 72),
         status: DbContentStatus.draft,
         tags: body.tags ?? [],
@@ -79,14 +95,16 @@ export class ContentsService {
     });
   }
 
-  async update(userId: string, id: string, body: { title?: string; body?: string; tags?: string[]; assetIds?: string[] }) {
+  async update(userId: string, id: string, body: ContentWriteBody) {
     const current = await this.getContent(userId, id);
-    await this.createVersion(current.id, current.title, current.body);
+    await this.createVersion(current.id, current.title, current.body, current.bodyHtml, current.bodyJson);
 
     const nextBody = body.body ?? current.body;
     const data: Prisma.ContentUpdateInput = {
       title: body.title !== undefined ? body.title.trim() || current.title : undefined,
       body: body.body,
+      bodyHtml: body.bodyHtml === undefined ? undefined : body.bodyHtml,
+      bodyJson: toJsonInput(body.bodyJson),
       excerpt: body.body !== undefined ? nextBody.slice(0, 72) : undefined,
       tags: body.tags,
       status: current.status === DbContentStatus.published ? DbContentStatus.updated : undefined,
@@ -140,12 +158,18 @@ export class ContentsService {
       throw new NotFoundException("content version not found");
     }
 
-    await this.createVersion(current.id, current.title, current.body);
+    await this.createVersion(current.id, current.title, current.body, current.bodyHtml, current.bodyJson);
     const updated = await this.prisma.content.update({
       where: { id },
       data: {
         title: target.title,
         body: target.body,
+        bodyHtml: target.bodyHtml,
+        bodyJson: toJsonInput(
+          target.bodyJson && typeof target.bodyJson === "object" && !Array.isArray(target.bodyJson)
+            ? (target.bodyJson as Record<string, unknown>)
+            : null
+        ),
         excerpt: target.body.slice(0, 72),
         status: current.status === DbContentStatus.published ? DbContentStatus.updated : current.status,
       },
@@ -175,7 +199,13 @@ export class ContentsService {
     }
   }
 
-  private async createVersion(contentId: string, title: string, body: string) {
+  private async createVersion(
+    contentId: string,
+    title: string,
+    body: string,
+    bodyHtml?: string | null,
+    bodyJson?: Prisma.JsonValue | null
+  ) {
     const aggregate = await this.prisma.contentVersion.aggregate({
       where: { contentId },
       _max: { version: true },
@@ -188,7 +218,13 @@ export class ContentsService {
         version,
         title,
         body,
-        snapshot: { title, body },
+        bodyHtml,
+        bodyJson: toJsonInput(
+          bodyJson && typeof bodyJson === "object" && !Array.isArray(bodyJson)
+            ? (bodyJson as Record<string, unknown>)
+            : null
+        ),
+        snapshot: { title, body, bodyHtml, bodyJson },
       },
     });
   }

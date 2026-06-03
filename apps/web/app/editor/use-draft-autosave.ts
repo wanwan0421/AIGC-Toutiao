@@ -7,25 +7,26 @@ export type EditorDraftCache = {
   savedAt: string;
   contentId: string | null;
   title: string;
+  // Plain text is the semantic source for AI, review, scoring, search, and counters.
   body: string;
+  // HTML is a readonly rendering cache for preview/detail fallback.
   html: string;
+  // JSON is the editable Tiptap document shape used to restore rich text structure.
+  json: Record<string, unknown> | null;
   briefTheme: string;
   audience: string;
   style: string;
   viewpoint: string;
-  materialNotes: string;
   selectedTopics: string[];
   coverPreview: string;
   coverMode: "single" | "triple" | "none";
   assetIds: string[];
-  selectedLocation: string;
   publishTimeMode: "now" | "scheduled";
   scheduledAt: string;
   visibility: "public" | "followers" | "private";
   allowCopy: boolean;
   originalStatement: boolean;
   contentStatement: string;
-  enabledComponents: string[];
 };
 
 type UseDraftAutosaveOptions = {
@@ -135,6 +136,7 @@ export function useDraftAutosave(options: UseDraftAutosaveOptions) {
         body: data.body,
         payload: {
           html: data.html,
+          json: data.json,
           tags: data.selectedTopics,
           coverPreview: data.coverPreview,
           coverMode: data.coverMode,
@@ -143,15 +145,12 @@ export function useDraftAutosave(options: UseDraftAutosaveOptions) {
           audience: data.audience,
           style: data.style,
           viewpoint: data.viewpoint,
-          materialNotes: data.materialNotes,
-          selectedLocation: data.selectedLocation,
           publishTimeMode: data.publishTimeMode,
           scheduledAt: data.scheduledAt,
           visibility: data.visibility,
           allowCopy: data.allowCopy,
           originalStatement: data.originalStatement,
           contentStatement: data.contentStatement,
-          enabledComponents: data.enabledComponents,
         },
         clientHash: String(Date.now()),
       });

@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
-import { AssetAuditStatus, Prisma } from "@prisma/client";
+import { AssetAuditStatus } from "@prisma/client";
 import type { GeneratedImageAsset } from "@aicp/shared";
 import { randomUUID } from "node:crypto";
 import { PrismaService } from "../../infra/prisma/prisma.service";
@@ -12,12 +12,10 @@ type ImagePrompt = {
 @Injectable()
 export class ImageGenerationService {
   private readonly logger = new Logger(ImageGenerationService.name);
-  private readonly apiKey = process.env.ARK_IMAGE_API_KEY ?? process.env.ARK_API_KEY;
-  private readonly apiUrl = this.resolveApiUrl(
-    process.env.ARK_IMAGE_API_URL ?? process.env.ARK_IMAGE_BASE_URL ?? "https://ark.cn-beijing.volces.com/api/v3"
-  );
-  private readonly model = process.env.ARK_IMAGE_MODEL_ID ?? process.env.ARK_IMAGE_MODEL;
-  private readonly imageSize = process.env.ARK_IMAGE_SIZE ?? "1024x1024";
+  private readonly apiKey = process.env.ARK_API_KEY;
+  private readonly apiUrl = process.env.ARK_IMAGE_API_URL ?? "https://ark.cn-beijing.volces.com/api/v3/images/generations";
+  private readonly model = process.env.ARK_IMAGE_MODEL;
+  private readonly imageSize = process.env.ARK_IMAGE_SIZE ?? "4704x3520";
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -39,7 +37,7 @@ export class ImageGenerationService {
     };
   }
 
-  // 根据创作初稿中的图片提示词生成图片，并存储到数据库，关联到内容
+  // 根据创作初稿中的图片提示词生成图片，并把生成结果挂到素材库。
   async generateForDraft(input: {
     userId?: string;
     contentId?: string;
@@ -71,6 +69,21 @@ export class ImageGenerationService {
     return { coverAsset, imageAssets };
   }
 
+  async generateSingleImage(input: {
+    userId?: string;
+    contentId?: string;
+    position?: string;
+    prompt: string;
+  }) {
+    const userId = await this.resolveUserId(input.userId);
+    return this.generateAndStore({
+      userId,
+      contentId: input.contentId,
+      position: input.position ?? "正文配图",
+      prompt: input.prompt,
+    });
+  }
+
   private async generateAndStore(input: {
     userId: string;
     contentId?: string;
@@ -91,8 +104,7 @@ export class ImageGenerationService {
           position: input.position,
           model: this.model,
           provider: "volcengine-ark",
-          raw: output.raw,
-        } as Prisma.InputJsonValue,
+        },
       },
     });
 
@@ -139,7 +151,8 @@ export class ImageGenerationService {
     });
 
     if (!response.ok) {
-      throw new Error(`Ark image generation failed: ${response.status}`);
+      const errorText = await response.text().catch(() => "");
+      throw new Error(`Ark image generation failed: ${response.status} - ${errorText}`);
     }
 
     const payload = (await response.json()) as Record<string, unknown>;
@@ -148,10 +161,7 @@ export class ImageGenerationService {
       throw new Error("Ark image generation response did not contain an image URL or base64 payload");
     }
 
-    return {
-      ...image,
-      raw: payload,
-    };
+    return image;
   }
 
   private extractImage(payload: Record<string, unknown>) {
@@ -192,14 +202,6 @@ export class ImageGenerationService {
     return null;
   }
 
-  private resolveApiUrl(rawUrl: string) {
-    const normalized = rawUrl.replace(/\/$/, "");
-    if (/\/images\/generations$/i.test(normalized)) {
-      return normalized;
-    }
-    return `${normalized}/images/generations`;
-  }
-
   private async resolveUserId(userId?: string) {
     if (userId) return userId;
     throw new BadRequestException("authenticated user is required for image generation");
@@ -231,5 +233,10 @@ export class ImageGenerationService {
     if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
     if (extension === "webp") return "image/webp";
     return "image/png";
+  }
+
+  private describeImageUrl(url: string) {
+    if (url.startsWith("data:")) return `data URL (${url.length} chars)`;
+    return url.length > 140 ? `${url.slice(0, 140)}...` : url;
   }
 }

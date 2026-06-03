@@ -11,7 +11,7 @@ type ScoreInput = {
 export class ContentQualitySkill {
   constructor(private readonly qualityScoring: QualityScoringAgent) {}
 
-  // 内容质量评分用于分发/推荐参考，不参与审核是否通过的判断。
+  // 质量评分是分发/推荐参考，不参与安全审核是否通过的判断。
   score(input: ScoreInput): Promise<QualityScoreResult> {
     return this.qualityScoring.run(input);
   }

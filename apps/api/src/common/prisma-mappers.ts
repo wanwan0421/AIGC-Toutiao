@@ -23,6 +23,8 @@ type ContentLike = {
   id: string;
   title: string;
   body: string;
+  bodyHtml?: string | null;
+  bodyJson?: unknown;
   excerpt: string | null;
   status: DbContentStatus;
   tags: string[];
@@ -107,9 +109,16 @@ export function toContentSummary(content: ContentLike): ContentSummary {
 }
 
 export function toContentDetail(content: ContentLike & { assets: ContentAssetLike[] }): ContentDetail {
+  const bodyJson =
+    content.bodyJson && typeof content.bodyJson === "object" && !Array.isArray(content.bodyJson)
+      ? (content.bodyJson as Record<string, unknown>)
+      : null;
+
   return {
     ...toContentSummary(content),
     body: content.body,
+    bodyHtml: content.bodyHtml ?? null,
+    bodyJson,
     tags: content.tags,
     assets: content.assets.map((item) => toAssetSummary(item.asset))
   };

@@ -1,45 +1,71 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, Res, UseGuards } from "@nestjs/common";
 import type { Response } from "express";
-import type {
-  AiGenerateRequest,
-  CreativeChatRequest,
-  DirectGenerateRequest,
-  SelectionRewriteRequest,
-  TitleGenerateRequest,
-  UserProfileSummary
+import {
+  AiJobType,
+  type AiJobEvent,
+  type CreativeChatRequest,
+  type DirectGenerateRequest,
+  type SelectionRewriteRequest,
+  type TitleGenerateRequest,
+  type UserProfileSummary
 } from "@aicp/shared";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { ContentWorkflowEngine } from "../workflow/content-workflow.engine";
+import { WorkflowJobService } from "../workflow/workflow-job.service";
 
 @UseGuards(AuthGuard)
 @Controller("ai")
 export class AiController {
-  constructor(private readonly workflow: ContentWorkflowEngine) {}
-
-  @Post("generate")
-  generate(@CurrentUser() user: UserProfileSummary, @Body() body: AiGenerateRequest & { audience?: string }) {
-    return this.workflow.generate({ ...body, userId: user.id });
-  }
-
-  @Post("audit")
-  audit(@Body() body: { title: string; body: string }) {
-    return this.workflow.auditText(body);
-  }
-
-  @Post("score")
-  score(@Body() body: { title: string; body: string }) {
-    return this.workflow.scoreText(body);
-  }
-
-  @Post("rewrite")
-  rewrite(@Body() body: { title: string; body: string; reasons?: string[] }) {
-    return this.workflow.rewriteText(body);
-  }
+  constructor(
+    private readonly workflow: ContentWorkflowEngine,
+    private readonly jobs: WorkflowJobService
+  ) {}
 
   @Get("logs")
   logs() {
     return this.workflow.logs();
+  }
+
+  @Post("jobs")
+  startJob(
+    @CurrentUser() user: UserProfileSummary,
+    @Body() body: { type: AiJobType; payload?: Record<string, unknown>; contentId?: string }
+  ) {
+    return this.jobs.create({
+      userId: user.id,
+      type: body.type,
+      payload: body.payload ?? {},
+      contentId: body.contentId,
+    });
+  }
+
+  @Get("jobs/:id/events")
+  async streamJobEvents(@CurrentUser() user: UserProfileSummary, @Param("id") id: string, @Res() response: Response) {
+    response.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    response.setHeader("Cache-Control", "no-cache, no-transform");
+    response.setHeader("Connection", "keep-alive");
+    response.flushHeaders?.();
+
+    try {
+      for await (const event of this.jobs.stream(user.id, id)) {
+        this.writeSse(response, event);
+      }
+    } catch (error) {
+      this.writeSse(response, { type: "error", data: { message: (error as Error).message } });
+    } finally {
+      response.end();
+    }
+  }
+
+  @Get("jobs/:id")
+  getJob(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
+    return this.jobs.get(user.id, id);
+  }
+
+  @Post("jobs/:id/cancel")
+  cancelJob(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
+    return this.jobs.cancel(user.id, id);
   }
 
   @Post("creative/chat/stream")
@@ -69,6 +95,29 @@ export class AiController {
   @Post("creative/direct-generate")
   directGenerate(@CurrentUser() user: UserProfileSummary, @Body() body: DirectGenerateRequest) {
     return this.workflow.directGenerate({ ...body, userId: user.id });
+  }
+
+  @Post("creative/direct-generate/jobs")
+  startDirectGenerateJob(@CurrentUser() user: UserProfileSummary, @Body() body: DirectGenerateRequest) {
+    return this.jobs.create({
+      userId: user.id,
+      type: AiJobType.CreativeDirectGenerate,
+      payload: { ...body, userId: user.id },
+      contentId: body.contentId,
+    });
+  }
+
+  @Post("creative/image/jobs")
+  startCreativeImageJob(
+    @CurrentUser() user: UserProfileSummary,
+    @Body() body: { contentId?: string; position?: string; prompt: string }
+  ) {
+    return this.jobs.create({
+      userId: user.id,
+      type: AiJobType.CreativeImageGenerate,
+      payload: body,
+      contentId: body.contentId,
+    });
   }
 
   @Post("creative/titles")
@@ -101,4 +150,8 @@ export class AiController {
     return this.workflow.attachCreativeConversation(id, { ...body, userId: user.id });
   }
 
+  private writeSse(response: Response, event: AiJobEvent) {
+    response.write(`event: ${event.type}\n`);
+    response.write(`data: ${JSON.stringify(event.data)}\n\n`);
+  }
 }

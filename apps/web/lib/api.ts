@@ -1,18 +1,17 @@
 import type {
-  AiGenerateRequest,
-  AiGenerateResult,
-  AuditResult,
+  AiJobEvent,
+  AiJobSnapshot,
+  AiJobStartRequest,
+  AiJobType,
   ContentDetail,
   ContentSummary,
   CreativeChatDone,
   CreativeConversationSummary,
   CreativeChatRequest,
   DirectGenerateRequest,
-  DirectGenerateResult,
   AssetSummary,
   OfficialTopicSummary,
   PromptScene,
-  QualityScoreResult,
   SelectionRewriteRequest,
   SelectionRewriteResult,
   TopicDetail,
@@ -30,6 +29,8 @@ export type ContentVersionSummary = {
   version: number;
   title: string;
   body: string;
+  bodyHtml?: string | null;
+  bodyJson?: Record<string, unknown> | null;
   snapshot?: Record<string, unknown> | null;
   createdAt: string;
 };
@@ -202,7 +203,16 @@ export async function getContentDetail(id: string): Promise<ContentDetail> {
   return apiRequest<ContentDetail>(`/contents/${id}`, {}, true);
 }
 
-export async function createContent(body: { title?: string; body?: string; tags?: string[]; assetIds?: string[] }) {
+type ContentWriteBody = {
+  title?: string;
+  body?: string;
+  bodyHtml?: string | null;
+  bodyJson?: Record<string, unknown> | null;
+  tags?: string[];
+  assetIds?: string[];
+};
+
+export async function createContent(body: ContentWriteBody) {
   return apiRequest<ContentDetail>(
     "/contents",
     {
@@ -213,7 +223,7 @@ export async function createContent(body: { title?: string; body?: string; tags?
   );
 }
 
-export async function updateContent(id: string, body: { title?: string; body?: string; tags?: string[]; assetIds?: string[] }) {
+export async function updateContent(id: string, body: ContentWriteBody) {
   return apiRequest<ContentDetail>(
     `/contents/${id}`,
     {
@@ -226,23 +236,6 @@ export async function updateContent(id: string, body: { title?: string; body?: s
 
 export async function deleteContent(id: string) {
   return apiRequest<{ ok: boolean; id: string }>(`/contents/${id}`, { method: "DELETE" }, true);
-}
-
-export async function submitReview(id: string) {
-  return apiRequest<{
-    content: ContentSummary;
-    audit: AuditResult;
-    quality: QualityScoreResult | null;
-    rewrite: { title: string; body: string; reasons: string[] } | null;
-  }>(
-    `/contents/${id}/submit-review`,
-    { method: "POST" },
-    true
-  );
-}
-
-export async function approveContent(id: string) {
-  return apiRequest<ContentSummary>(`/contents/${id}/approve`, { method: "POST" }, true);
 }
 
 export async function publishContent(id: string) {
@@ -348,6 +341,7 @@ export async function getDraft(contentId: string) {
     body?: string;
     payload?: {
       html?: string;
+      json?: Record<string, unknown>;
       coverPreview?: string;
       tags?: string[];
       [key: string]: unknown;
@@ -372,9 +366,9 @@ export async function autosaveDraft(
   );
 }
 
-export async function generateDraft(body: AiGenerateRequest & { audience?: string }) {
-  return apiRequest<AiGenerateResult>(
-    "/ai/generate",
+export async function startAiJob(body: AiJobStartRequest) {
+  return apiRequest<AiJobSnapshot>(
+    "/ai/jobs",
     {
       method: "POST",
       body: JSON.stringify(body)
@@ -383,15 +377,53 @@ export async function generateDraft(body: AiGenerateRequest & { audience?: strin
   );
 }
 
-export async function generateCreativeDraft(body: DirectGenerateRequest) {
-  return apiRequest<DirectGenerateResult>(
-    "/ai/creative/direct-generate",
+export async function getAiJob(id: string) {
+  return apiRequest<AiJobSnapshot>(`/ai/jobs/${encodeURIComponent(id)}`, {}, true);
+}
+
+export async function cancelAiJob(id: string) {
+  return apiRequest<AiJobSnapshot>(`/ai/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" }, true);
+}
+
+export async function startCreativeDraftJob(body: DirectGenerateRequest) {
+  return apiRequest<AiJobSnapshot>(
+    "/ai/creative/direct-generate/jobs",
     {
       method: "POST",
       body: JSON.stringify(body)
     },
     true
   );
+}
+
+export async function startCreativeImageJob(body: { contentId?: string; position?: string; prompt: string }) {
+  return apiRequest<AiJobSnapshot>(
+    "/ai/creative/image/jobs",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    true
+  );
+}
+
+export async function startSubmitReviewJob(id: string) {
+  return apiRequest<AiJobSnapshot>(`/contents/${id}/submit-review/jobs`, { method: "POST" }, true);
+}
+
+export async function startApproveContentJob(id: string) {
+  return apiRequest<AiJobSnapshot>(`/contents/${id}/approve/jobs`, { method: "POST" }, true);
+}
+
+export async function startModerationRunJob(contentId: string) {
+  return apiRequest<AiJobSnapshot>(`/moderation/contents/${contentId}/run/jobs`, { method: "POST" }, true);
+}
+
+export async function startComplianceRewriteJob(body: { title: string; body: string; reasons?: string[] }) {
+  return startAiJob({
+    type: "compliance_rewrite" as AiJobType,
+    payload: body
+  });
 }
 
 export async function generateCreativeTitles(body: TitleGenerateRequest) {
@@ -438,6 +470,88 @@ export async function streamCreativeChat(
   }
 ) {
   return streamCreativeChatOnce(body, handlers, true);
+}
+
+export async function streamAiJobEvents(
+  jobId: string,
+  handlers: {
+    onEvent?: (event: AiJobEvent) => void;
+    onSnapshot?: (job: AiJobSnapshot) => void;
+    onProgress?: (data: Record<string, unknown>) => void;
+    onPartial?: (data: Record<string, unknown>) => void;
+    onWarning?: (message: string, data: Record<string, unknown>) => void;
+    onDone?: (job: AiJobSnapshot, result: unknown) => void;
+    onError?: (message: string, job?: AiJobSnapshot) => void;
+  },
+  signal?: AbortSignal
+) {
+  return streamAiJobEventsOnce(jobId, handlers, signal, true);
+}
+
+async function streamAiJobEventsOnce(
+  jobId: string,
+  handlers: {
+    onEvent?: (event: AiJobEvent) => void;
+    onSnapshot?: (job: AiJobSnapshot) => void;
+    onProgress?: (data: Record<string, unknown>) => void;
+    onPartial?: (data: Record<string, unknown>) => void;
+    onWarning?: (message: string, data: Record<string, unknown>) => void;
+    onDone?: (job: AiJobSnapshot, result: unknown) => void;
+    onError?: (message: string, job?: AiJobSnapshot) => void;
+  },
+  signal: AbortSignal | undefined,
+  allowRefresh: boolean
+) {
+  const response = await fetch(resolveApiUrl(`/ai/jobs/${encodeURIComponent(jobId)}/events`), {
+    method: "GET",
+    credentials: "include",
+    cache: "no-store",
+    signal
+  });
+
+  if (response.status === 401 && allowRefresh) {
+    await refreshAccessToken();
+    return streamAiJobEventsOnce(jobId, handlers, signal, false);
+  }
+
+  if (!response.ok || !response.body) {
+    throw new Error(`AI job stream failed: ${response.status}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() ?? "";
+
+    for (const eventBlock of events) {
+      const event = parseSseEvent(eventBlock) as AiJobEvent | null;
+      if (!event) continue;
+      handlers.onEvent?.(event);
+      const data = event.data ?? {};
+      const job = data.job as AiJobSnapshot | undefined;
+
+      if (event.type === "snapshot" && job) {
+        handlers.onSnapshot?.(job);
+      } else if (event.type === "progress") {
+        handlers.onProgress?.(data);
+      } else if (event.type === "partial") {
+        handlers.onPartial?.(data);
+      } else if (event.type === "warning") {
+        handlers.onWarning?.(typeof data.message === "string" ? data.message : "AI 任务出现非致命问题", data);
+      } else if (event.type === "done" && job) {
+        handlers.onDone?.(job, data.result);
+      } else if (event.type === "error") {
+        handlers.onError?.(typeof data.message === "string" ? data.message : "AI 任务失败", job);
+      }
+    }
+  }
 }
 
 async function streamCreativeChatOnce(
@@ -526,39 +640,6 @@ function parseSseEvent(block: string) {
   } catch {
     return null;
   }
-}
-
-export async function auditText(body: { title: string; body: string }) {
-  return apiRequest<AuditResult>(
-    "/ai/audit",
-    {
-      method: "POST",
-      body: JSON.stringify(body)
-    },
-    true
-  );
-}
-
-export async function scoreText(body: { title: string; body: string }) {
-  return apiRequest<QualityScoreResult>(
-    "/ai/score",
-    {
-      method: "POST",
-      body: JSON.stringify(body)
-    },
-    true
-  );
-}
-
-export async function rewriteText(body: { title: string; body: string; reasons?: string[] }) {
-  return apiRequest<{ title: string; body: string; reasons: string[] }>(
-    "/ai/rewrite",
-    {
-      method: "POST",
-      body: JSON.stringify(body)
-    },
-    true
-  );
 }
 
 export async function trackAnalytics(body: {

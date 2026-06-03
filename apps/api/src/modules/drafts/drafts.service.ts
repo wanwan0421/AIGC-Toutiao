@@ -55,6 +55,8 @@ export class DraftsService {
       title: content.title,
       body: content.body,
       payload: {
+        html: content.bodyHtml,
+        json: content.bodyJson,
         tags: content.tags,
         generatedAssetIds: content.assets.map((item) => item.assetId),
         coverPreview: content.assets[0]?.asset.url,

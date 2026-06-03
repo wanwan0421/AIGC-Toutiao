@@ -2,7 +2,17 @@
 
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ContentStatus, type AssetSummary, type OfficialTopicSummary } from "@aicp/shared";
+import {
+  ContentStatus,
+  type AuditResult,
+  type AssetSummary,
+  type ContentApprovalResult,
+  type ContentSummary,
+  type DirectGenerateResult,
+  type GeneratedImageAsset,
+  type OfficialTopicSummary,
+  type QualityScoreResult,
+} from "@aicp/shared";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -10,7 +20,6 @@ import {
   createContent,
   deleteAsset,
   deleteContent,
-  generateCreativeDraft,
   generateCreativeTitles,
   getAssets,
   getContentDetail,
@@ -19,31 +28,33 @@ import {
   getCreativeImageConfigStatus,
   getDraft,
   getOfficialTopics,
+  publishContent,
   rewriteSelection,
+  startApproveContentJob,
+  startCreativeDraftJob,
+  startCreativeImageJob,
+  startSubmitReviewJob,
   streamCreativeChat,
-  submitReview,
   updateContent,
   uploadAsset,
 } from "../../lib/api";
+import { useAiJob } from "../../lib/use-ai-job";
 import { useDraftAutosave, type EditorDraftCache } from "./use-draft-autosave";
 import {
+  RichTextEditor,
+  RichTextRenderer,
+  type RichTextEditorHandle,
+  type RichTextInitialContent,
+  type RichTextSelection,
+  type RichTextValue,
+} from "./rich-text-editor";
+import {
   BadgeCheck,
-  Bold,
-  CalendarClock,
-  ChevronDown,
-  Code2,
   Copy,
-  FileCheck2,
   FileText,
-  FolderOpen,
   Hash,
   ImagePlus,
-  Italic,
-  Link2,
-  List,
-  MapPin,
   MessageCircle,
-  Quote,
   Rocket,
   ShieldCheck,
   Smile,
@@ -53,7 +64,6 @@ import {
   Wand2,
   X,
 } from "lucide-react";
-import DOMPurify  from "dompurify";
 
 type AiMode = "brainstorm" | "direct";
 type PrepTab = "brief" | "assets";
@@ -62,7 +72,6 @@ type QuickMenu = "topic" | "emoji" | null;
 type UploadIntent = "library" | "insert" | "cover";
 type CoverMode = "single" | "triple" | "none";
 type Visibility = "public" | "followers" | "private";
-type LocationStatus = "idle" | "loading" | "ready" | "error";
 
 type DraftCache = EditorDraftCache;
 
@@ -86,6 +95,11 @@ type ReviewRewrite = {
   reasons: string[];
 } | null;
 
+type ReviewResultState = {
+  content: ContentSummary;
+  audit: AuditResult;
+} | null;
+
 type SelectionMenuState = {
   top: number;
   left: number;
@@ -107,22 +121,9 @@ const defaultIdeas = [
 ];
 
 const emojiSuggestions = ["😊", "✨", "🔥", "👍", "💡", "📌", "🌿", "🎵"];
-// 定位失败或用户拒绝授权时使用的演示兜底地点，不代表真实实时位置。
-const nearbyLocations = ["南京师范大学仙林校区", "仙林中心", "羊山公园", "南京大学仙林校区", "金鹰湖滨天地"];
-
-const componentOptions = [
-  { key: "collection", label: "加入合集", desc: "适合系列化内容，方便连续阅读" },
-  { key: "live", label: "关联直播预告", desc: "发布时展示直播入口" },
-  { key: "route", label: "添加路线", desc: "适合旅行、探店、城市攻略" },
-  { key: "people", label: "标记地点或朋友", desc: "补充地点与协作信息" },
-  { key: "file", label: "选择文件", desc: "关联可下载资料或附件" },
-  { key: "group", label: "选择群聊", desc: "发布后引导读者进入讨论" },
-];
-
 const contentStatements = ["无声明", "取材网络", "个人观点，仅供参考", "引用 AI", "健康医疗分享，仅供参考"];
 const editableDraftStatuses = new Set<ContentStatus>([ContentStatus.Draft, ContentStatus.Updated, ContentStatus.Rejected]);
 const tonePresets = ["专业严谨", "亲和口语", "种草安利", "克制客观", "活泼轻松"];
-const selectionHighlightName = "aicp-editor-selection";
 
 function escapeHtml(value: string) {
   return value
@@ -215,6 +216,49 @@ function textAssetPreview(asset: AssetSummary) {
   return typeof preview === "string" ? preview : asset.fileName;
 }
 
+function normalizeTopicName(value: string) {
+  return value.trim().replace(/^#+/, "").replace(/\s+/g, "");
+}
+
+function normalizeTopicList(values: string[]) {
+  return Array.from(
+    new Set(values.map(normalizeTopicName).filter((item) => item.length > 0)),
+  );
+}
+
+function compactTopicMatchText(value: string) {
+  return value.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+}
+
+function topicMatchScore(topicTitle: string, source: string) {
+  const topic = compactTopicMatchText(normalizeTopicName(topicTitle));
+  const text = compactTopicMatchText(source);
+  if (!topic || !text) return 0;
+  if (text.includes(topic)) return 1000 + topic.length;
+
+  const topicChars = Array.from(new Set(Array.from(topic)));
+  const overlap = topicChars.filter((char) => text.includes(char)).length;
+  return overlap ? overlap / topicChars.length : 0;
+}
+
+const contentStatusLabels: Record<ContentStatus, string> = {
+  [ContentStatus.Draft]: "草稿",
+  [ContentStatus.PendingReview]: "安全审核通过",
+  [ContentStatus.Approved]: "已完成质量评估",
+  [ContentStatus.Rejected]: "安全审核未通过",
+  [ContentStatus.Published]: "已发布",
+  [ContentStatus.Updated]: "已更新，待发布",
+  [ContentStatus.Offline]: "已下线",
+};
+
+const qualityDimensionLabels: Record<keyof QualityScoreResult["dimensions"], string> = {
+  structure: "结构完整",
+  clarity: "表达清晰",
+  value: "内容价值",
+  attraction: "吸引力",
+  compliance: "合规性",
+};
+
 function nonEmptyText(value: string | null | undefined, fallback: string) {
   return value && value.trim() ? value : fallback;
 }
@@ -236,6 +280,11 @@ function payloadBoolean(payload: Record<string, unknown>, key: string, fallback:
 function payloadStringArray(payload: Record<string, unknown>, key: string, fallback: string[]) {
   const value = payload[key];
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : fallback;
+}
+
+function payloadJson(payload: Record<string, unknown>, key: string) {
+  const value = payload[key];
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
 function payloadCoverMode(payload: Record<string, unknown>, fallback: CoverMode): CoverMode {
@@ -287,7 +336,8 @@ function snapshotFromCloudDraft(draft: CloudDraft, detail: ContentDetailForDraft
     contentId: draft.contentId,
     title: draft.title ?? detail.title,
     body,
-    html: resolveEditorHtml(body, payloadString(payload, "html"), detail.assets),
+    html: resolveEditorHtml(body, payloadString(payload, "html", detail.bodyHtml ?? ""), detail.assets),
+    json: payloadJson(payload, "json") ?? detail.bodyJson ?? null,
     assetPreviews: detail.assets,
     selectedTopics: payloadStringArray(payload, "tags", detail.tags),
     coverPreview: payloadString(payload, "coverPreview", detail.coverUrl ?? ""),
@@ -297,26 +347,23 @@ function snapshotFromCloudDraft(draft: CloudDraft, detail: ContentDetailForDraft
     audience: payloadString(payload, "audience"),
     style: payloadString(payload, "style"),
     viewpoint: payloadString(payload, "viewpoint"),
-    materialNotes: payloadString(payload, "materialNotes"),
-    selectedLocation: payloadString(payload, "selectedLocation"),
     publishTimeMode: payloadPublishTimeMode(payload),
     scheduledAt: payloadString(payload, "scheduledAt"),
     visibility: payloadVisibility(payload),
     allowCopy: payloadBoolean(payload, "allowCopy", true),
     originalStatement: payloadBoolean(payload, "originalStatement", false),
     contentStatement: payloadString(payload, "contentStatement", "无声明"),
-    enabledComponents: payloadStringArray(payload, "enabledComponents", []),
   };
 }
 
 export default function EditorPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { runJob } = useAiJob();
   const editingContentId = searchParams.get("contentId");
-  const editorRef = useRef<HTMLDivElement | null>(null);
+  const editorRef = useRef<RichTextEditorHandle | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const textInputRef = useRef<HTMLInputElement | null>(null);
-  const selectionRangeRef = useRef<Range | null>(null);
   const streamLockRef = useRef(false);
   const editorReadyRef = useRef(false);
   const skipNextEditorInitRef = useRef<string | null>(null);
@@ -337,7 +384,6 @@ export default function EditorPage() {
   const [audience, setAudience] = useState("");
   const [style, setStyle] = useState("");
   const [viewpoint, setViewpoint] = useState("");
-  const [materialNotes, setMaterialNotes] = useState("");
   const [prepTab, setPrepTab] = useState<PrepTab>("brief");
   const [aiMode, setAiMode] = useState<AiMode>("brainstorm");
   const [chatInput, setChatInput] = useState("");
@@ -362,8 +408,6 @@ export default function EditorPage() {
   const [coverPreview, setCoverPreview] = useState("");
   const [coverMode, setCoverMode] = useState<CoverMode>("single");
   const [assetIds, setAssetIds] = useState<string[]>([]);
-  const [selectedLocation, setSelectedLocation] = useState("");
-  const [showLocationPicker, setShowLocationPicker] = useState(false);
   const [publishTimeMode, setPublishTimeMode] =
     useState<PublishTimeMode>("now");
   const [scheduledAt, setScheduledAt] = useState("");
@@ -371,28 +415,58 @@ export default function EditorPage() {
   const [allowCopy, setAllowCopy] = useState(true);
   const [originalStatement, setOriginalStatement] = useState(false);
   const [contentStatement, setContentStatement] = useState("无声明");
-  const [enabledComponents, setEnabledComponents] = useState<string[]>([]);
   const [assets, setAssets] = useState<AssetSummary[]>([]);
   const [assetPanel, setAssetPanel] = useState<null | "image" | "text">(null);
   const [isUploadingAsset, setIsUploadingAsset] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [previewHtml, setPreviewHtml] = useState("");
+  const [lastContentSummary, setLastContentSummary] = useState<ContentSummary | null>(null);
+  const [reviewResult, setReviewResult] = useState<ReviewResultState>(null);
   const [reviewRewrite, setReviewRewrite] = useState<ReviewRewrite>(null);
+  const [qualityResult, setQualityResult] = useState<QualityScoreResult | null>(null);
   const [imageConfig, setImageConfig] = useState<{
     configured: boolean;
     missing: string[];
   } | null>(null);
-  const [locationStatus, setLocationStatus] = useState<LocationStatus>("idle");
-  const [currentLocationOption, setCurrentLocationOption] = useState("");
-  const [locationError, setLocationError] = useState("");
 
   const imageAssets = useMemo(() => assets.filter(isImageAsset), [assets]);
   const textAssets = useMemo(() => assets.filter(isTextAsset), [assets]);
   const wordCount = useMemo(() => body.replace(/\s/g, "").length, [body]);
-  const hasMeaningfulContent = Boolean(
-    title.trim() || body.trim() || editorRef.current?.textContent?.trim(),
+  const selectedTopicNameSet = useMemo(
+    () => new Set(normalizeTopicList(selectedTopics)),
+    [selectedTopics],
   );
+  const recommendedTopics = useMemo(() => {
+    const source = [title, body, briefTheme, viewpoint].join("\n");
+    const hasSource = Boolean(compactTopicMatchText(source));
+    const candidates = hotTopics.filter(
+      (topic) => !selectedTopicNameSet.has(normalizeTopicName(topic.title)),
+    );
+
+    if (!hasSource) return candidates.slice(0, 6);
+
+    return candidates
+      .map((topic) => ({
+        topic,
+        score: topicMatchScore(topic.title, source),
+      }))
+      .filter((item) => item.score > 0)
+      .sort(
+        (left, right) =>
+          right.score - left.score ||
+          right.topic.heatScore - left.topic.heatScore ||
+          right.topic.contentCount - left.topic.contentCount,
+      )
+      .map((item) => item.topic)
+      .slice(0, 6);
+  }, [body, briefTheme, hotTopics, selectedTopicNameSet, title, viewpoint]);
+  const canRunQualityReview = editingStatus === ContentStatus.PendingReview;
+  const canPublishContent =
+    editingStatus === ContentStatus.Approved ||
+    editingStatus === ContentStatus.Updated;
   const [editorHtmlContent, setEditorHtmlContent] = useState(""); // 当 editorRef 还没挂载时，把 HTML 存在状态里
+  const [editorJsonContent, setEditorJsonContent] = useState<Record<string, unknown> | null>(null);
+  const [editorResetKey, setEditorResetKey] = useState(0);
   snapshotRef.current = snapshot;
 
   const {
@@ -408,7 +482,7 @@ export default function EditorPage() {
     snapshotRef,
     draftStorageKey,
     ensureContentForDraft,
-    isMeaningful: (data) => Boolean(data.title.trim() || data.body.trim() || editorRef.current?.textContent?.trim()),
+    isMeaningful: (data) => Boolean(data.title.trim() || data.body.trim() || editorRef.current?.getText().trim()),
     onStatus: setStatusMessage,
     onCloudSaved: loadDraftCards,
   });
@@ -462,12 +536,10 @@ export default function EditorPage() {
     coverMode,
     coverPreview,
     editorHtmlContent,
-    enabledComponents,
-    materialNotes,
+    editorJsonContent,
     originalStatement,
     publishTimeMode,
     scheduledAt,
-    selectedLocation,
     selectedTopics,
     scheduleCloudAutosave,
     scheduleLocalDraftSave,
@@ -478,12 +550,16 @@ export default function EditorPage() {
   ]);
 
   function editorHtml() {
-    return editorRef.current?.innerHTML ?? editorHtmlContent;
+    return editorRef.current?.getHTML() ?? editorHtmlContent;
   }
 
   function editorText() {
-    const domText = editorRef.current?.textContent?.trim();
+    const domText = editorRef.current?.getText().trim();
     return domText || bodyRef.current.trim();
+  }
+
+  function editorJson() {
+    return (editorRef.current?.getJSON() as Record<string, unknown> | undefined) ?? editorJsonContent;
   }
 
   function snapshot(): DraftCache {
@@ -495,23 +571,21 @@ export default function EditorPage() {
       title,
       body: currentBody,
       html: currentHtml.trim() ? currentHtml : textToEditorHtml(currentBody),
+      json: editorJson(),
       briefTheme,
       audience,
       style,
       viewpoint,
-      materialNotes,
       selectedTopics,
       coverPreview,
       coverMode,
       assetIds,
-      selectedLocation,
       publishTimeMode,
       scheduledAt,
       visibility,
       allowCopy,
       originalStatement,
       contentStatement,
-      enabledComponents,
     };
   }
 
@@ -530,63 +604,34 @@ export default function EditorPage() {
     setAudience(data.audience ?? "");
     setStyle(data.style ?? "");
     setViewpoint(data.viewpoint ?? "");
-    setMaterialNotes(data.materialNotes ?? "");
-    setSelectedTopics(data.selectedTopics ?? []);
+    setSelectedTopics(normalizeTopicList(data.selectedTopics ?? []));
     setCoverPreview(data.coverPreview ?? "");
     setCoverMode(data.coverMode ?? "single");
     setAssetIds(data.assetIds ?? []);
-    setSelectedLocation(data.selectedLocation ?? "");
     setPublishTimeMode(data.publishTimeMode ?? "now");
     setScheduledAt(data.scheduledAt ?? "");
     setVisibility(data.visibility ?? "public");
     setAllowCopy(data.allowCopy ?? true);
     setOriginalStatement(data.originalStatement ?? false);
     setContentStatement(data.contentStatement ?? "无声明");
-    setEnabledComponents(data.enabledComponents ?? []);
-    writeEditorMarkup(nextHtml, nextBody);
+    writeEditorContent({ html: nextHtml, json: data.json ?? null, text: nextBody });
   }
 
-  // body 是正文真源；html 只负责编辑器富文本外观。ref 未挂载时先放进 state，等待下次渲染回填。
-  function writeEditorMarkup(html: string, nextBody?: string) {
+  function writeEditorContent(content: RichTextInitialContent) {
+    const html = content.html ?? "";
+    const json = (content.json && typeof content.json === "object" ? content.json : null) as Record<string, unknown> | null;
+    const nextText = content.text ?? textFromHtml(html);
     setEditorHtmlContent(html);
-    if (editorRef.current) {
-      editorRef.current.innerHTML = html;
-    }
-    const nextText = nextBody ?? editorRef.current?.textContent ?? textFromHtml(html);
+    setEditorJsonContent(json);
+    setEditorResetKey((value) => value + 1);
+    editorRef.current?.setContent(content);
     bodyRef.current = nextText;
     setBody(nextText);
   }
 
-  // 在组件渲染时，对存在 state 里的富文本进行彻底消毒
-  const safeHtmlContent = useMemo(() => {
-    if (!editorHtmlContent) return "";
-
-    // DOMPurify 会自动过滤掉 <script>、onclick、onerror 等危险属性
-    // 只保留 <b>, <i>, <p>, <img> 等安全的排版标签
-    return DOMPurify.sanitize(editorHtmlContent, {
-      ALLOWED_TAGS: [
-        "b",
-        "i",
-        "em",
-        "strong",
-        "a",
-        "p",
-        "br",
-        "ul",
-        "li",
-        "ol",
-        "h1",
-        "h2",
-        "h3",
-        "blockquote",
-        "code",
-        "img",
-        "figure",
-        "figcaption",
-      ],
-      ALLOWED_ATTR: ["href", "src", "alt", "class"], // 严格限制允许的属性
-    });
-  }, [editorHtmlContent]);
+  function writeEditorMarkup(html: string, nextBody?: string) {
+    writeEditorContent({ html, json: null, text: nextBody ?? textFromHtml(html) });
+  }
 
   async function openDraftCard(draftId: string) {
     editorReadyRef.current = false;
@@ -595,16 +640,18 @@ export default function EditorPage() {
     try {
       const detail = await getContentDetail(draftId);
       setEditingStatus(detail.status);
+      setLastContentSummary(detail);
       setContentId(detail.id);
       setTitle(detail.title);
-      setSelectedTopics(detail.tags);
+      setSelectedTopics(normalizeTopicList(detail.tags));
       setAssetIds(detail.assets.map((item) => item.id));
       setCoverPreview(detail.coverUrl ?? "");
       setCoverMode(detail.coverUrl ? "single" : "none");
-      writeEditorMarkup(
-        contentToEditorHtml(detail.body, detail.assets),
-        detail.body,
-      );
+      writeEditorContent({
+        html: detail.bodyHtml || contentToEditorHtml(detail.body, detail.assets),
+        json: detail.bodyJson ?? null,
+        text: detail.body,
+      });
 
       const [draft, conversations] = await Promise.all([
         getDraft(detail.id).catch(() => null),
@@ -654,15 +701,17 @@ export default function EditorPage() {
         // 先从后端数据库里面获取数据，避免本地草稿数据过旧导致用户丢失修改内容
         const detail = await getContentDetail(editingContentId);
         setEditingStatus(detail.status);
+        setLastContentSummary(detail);
         setTitle(detail.title);
-        setSelectedTopics(detail.tags);
+        setSelectedTopics(normalizeTopicList(detail.tags));
         setAssetIds(detail.assets.map((item) => item.id));
         setCoverPreview(detail.coverUrl ?? "");
         setCoverMode(detail.coverUrl ? "single" : "none");
-        writeEditorMarkup(
-          contentToEditorHtml(detail.body, detail.assets),
-          detail.body,
-        );
+        writeEditorContent({
+          html: detail.bodyHtml || contentToEditorHtml(detail.body, detail.assets),
+          json: detail.bodyJson ?? null,
+          text: detail.body,
+        });
 
         // 再获取草稿数据
         const [draft, conversations] = await Promise.all([
@@ -722,13 +771,15 @@ export default function EditorPage() {
     setAssetIds([]);
     setCoverPreview("");
     setCoverMode("single");
-    setSelectedLocation("");
     setConversationId(undefined);
     setChatMessages([]);
     setShowPreview(false);
     setPreviewHtml("");
+    setLastContentSummary(null);
+    setReviewResult(null);
     setReviewRewrite(null);
-    writeEditorMarkup("", "");
+    setQualityResult(null);
+    writeEditorContent({ html: "", json: null, text: "" });
   }
 
   async function loadDraftCards() {
@@ -802,17 +853,21 @@ export default function EditorPage() {
     const payload = {
       title: title.trim() || "未命名草稿",
       body: nextBody,
+      bodyHtml: editorHtml(),
+      bodyJson: editorJson(),
       tags: selectedTopics,
       assetIds,
     };
     if (contentId) {
       const updated = await updateContent(contentId, payload);
       setEditingStatus(updated.status);
+      setLastContentSummary(updated);
       return updated;
     }
     const created = await createContent(payload);
     setContentId(created.id);
     setEditingStatus(created.status);
+    setLastContentSummary(created);
     if (conversationId) {
       await attachCreativeConversation(conversationId, created.id).catch(
         () => undefined,
@@ -829,6 +884,8 @@ export default function EditorPage() {
     const created = await createContent({
       title: data.title.trim() || "未命名草稿",
       body: data.body,
+      bodyHtml: data.html,
+      bodyJson: data.json,
       tags: data.selectedTopics,
       assetIds: data.assetIds,
     });
@@ -852,12 +909,13 @@ export default function EditorPage() {
 
   // 在编辑过程中，用户可能会频繁地进行文本输入、格式调整、插入素材等操作。
   // 现在交给 useDraftAutosave 做 800ms 本地防抖、3s 云端防抖和 30s 轮询兜底，避免过多网络请求。
-  function syncBodyFromEditor(message?: string, options?: { syncHtml?: boolean }) {
-    const html = editorHtml();
-    const text = editorRef.current?.textContent ?? textFromHtml(html);
-    if (options?.syncHtml) {
-      setEditorHtmlContent(html);
-    }
+  function syncBodyFromEditor(message?: string) {
+    const value = editorRef.current?.getValue();
+    const html = value?.html ?? editorHtml();
+    const text = value?.text ?? editorText();
+    const json = (value?.json as Record<string, unknown> | undefined) ?? editorJsonContent;
+    setEditorHtmlContent(html);
+    setEditorJsonContent(json);
     bodyRef.current = text;
     setBody(text);
     scheduleLocalDraftSave();
@@ -870,89 +928,19 @@ export default function EditorPage() {
     );
   }
 
-  function highlightRegistry() {
-    if (typeof window === "undefined" || typeof CSS === "undefined") return null;
-    const registry = (CSS as unknown as {
-      highlights?: {
-        set: (name: string, highlight: unknown) => void;
-        delete: (name: string) => void;
-      };
-    }).highlights;
-    const HighlightCtor = (window as typeof window & {
-      Highlight?: new (...ranges: Range[]) => unknown;
-    }).Highlight;
-    return registry && HighlightCtor ? { registry, HighlightCtor } : null;
-  }
-
-  function paintSelectionHighlight(range: Range) {
-    const api = highlightRegistry();
-    if (!api) return;
-    api.registry.set(selectionHighlightName, new api.HighlightCtor(range.cloneRange()));
-  }
-
-  function clearSelectionHighlight() {
-    highlightRegistry()?.registry.delete(selectionHighlightName);
+  function syncRichTextValue(value: RichTextValue, message?: string) {
+    setEditorHtmlContent(value.html);
+    setEditorJsonContent(value.json as Record<string, unknown>);
+    bodyRef.current = value.text;
+    setBody(value.text);
+    scheduleLocalDraftSave();
+    scheduleCloudAutosave();
+    if (message) setStatusMessage(message);
   }
 
   function clearSelectionState() {
-    clearSelectionHighlight();
     setSelectionMenu(null);
     setToneMenuOpen(false);
-  }
-
-  useEffect(() => {
-    const styleId = "aicp-editor-selection-highlight-style";
-    if (!document.getElementById(styleId)) {
-      const styleElement = document.createElement("style");
-      styleElement.id = styleId;
-      styleElement.textContent = `::highlight(${selectionHighlightName}) { background: rgba(255, 36, 66, 0.18); color: inherit; }`;
-      document.head.appendChild(styleElement);
-    }
-
-    return () => clearSelectionHighlight();
-  }, []);
-
-  function cacheSelection(showMenu = true) {
-    const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0 || !editorRef.current) {
-      clearSelectionState();
-      return;
-    }
-    const range = selection.getRangeAt(0);
-    const text = selection.toString().trim();
-    if (!editorRef.current.contains(range.commonAncestorContainer) || !text) {
-      clearSelectionState();
-      return;
-    }
-    selectionRangeRef.current = range.cloneRange();
-    paintSelectionHighlight(selectionRangeRef.current);
-    if (!showMenu) return;
-    setToneMenuOpen(false);
-    const rect = range.getBoundingClientRect();
-    setSelectionMenu({
-      top: Math.max(rect.top - 48, 72),
-      left: rect.left + rect.width / 2,
-      text,
-    });
-  }
-
-  function restoreSelection() {
-    const selection = window.getSelection();
-    const editor = editorRef.current;
-    if (!selection || !editor) return;
-    editor.focus();
-    selection.removeAllRanges();
-    if (
-      selectionRangeRef.current &&
-      editor.contains(selectionRangeRef.current.commonAncestorContainer)
-    ) {
-      selection.addRange(selectionRangeRef.current);
-      return;
-    }
-    const range = document.createRange();
-    range.selectNodeContents(editor);
-    range.collapse(false);
-    selection.addRange(range);
   }
 
   function insertHtml(html: string, message: string) {
@@ -961,9 +949,8 @@ export default function EditorPage() {
       setStatusMessage(message);
       return;
     }
-    restoreSelection();
-    document.execCommand("insertHTML", false, html);
-    syncBodyFromEditor(message, { syncHtml: true });
+    editorRef.current.insertHTML(html);
+    syncBodyFromEditor(message);
     clearSelectionState();
   }
 
@@ -973,22 +960,13 @@ export default function EditorPage() {
       setStatusMessage(message);
       return;
     }
-    restoreSelection();
-    document.execCommand("insertText", false, text);
-    syncBodyFromEditor(message, { syncHtml: true });
-    clearSelectionState();
-  }
-
-  function runCommand(command: string, value?: string) {
-    restoreSelection();
-    document.execCommand(command, false, value);
-    syncBodyFromEditor("已应用编辑格式", { syncHtml: true });
+    editorRef.current.insertText(text);
+    syncBodyFromEditor(message);
     clearSelectionState();
   }
 
   function openImageUpload(intent: UploadIntent) {
     uploadIntentRef.current = intent;
-    if (intent === "insert") cacheSelection(false);
     imageInputRef.current?.click();
   }
 
@@ -1011,56 +989,64 @@ export default function EditorPage() {
     setIsBusy(true);
     setStatusMessage("AI 正在生成结构化图文...");
     try {
-      const result = await generateCreativeDraft({
-        contentId: contentId ?? undefined,
-        theme,
-        audience,
-        style,
-        viewpoint,
-        materialNotes: [
-          materialNotes,
-          selectedTopics.join(" "),
-          selectedLocation,
-        ]
-          .filter(Boolean)
-          .join("\n"),
-      });
-      setTitle(result.title);
-      setSelectedTopics(
-        Array.from(
-          new Set(
-            result.tags.map((tag) => (tag.startsWith("#") ? tag : `#${tag}`)),
-          ),
-        ),
-      );
-      setTitleCandidates(result.titleCandidates);
-      setShowTitleCandidates(Boolean(result.titleCandidates.length));
+      const generatedAssetIds: string[] = [];
+      const draftJob = await runJob(
+        () =>
+          startCreativeDraftJob({
+            contentId: contentId ?? undefined,
+            theme,
+            audience,
+            style,
+            viewpoint,
+          }),
+        {
+          onProgress: (data) => {
+            if (typeof data.message === "string") setStatusMessage(data.message);
+          },
+          onPartial: (data) => {
+            if (data.kind === "draft") {
+              const result = data.value as DirectGenerateResult;
+              setTitle(result.title);
+              setSelectedTopics(normalizeTopicList(result.tags));
+              setTitleCandidates(result.titleCandidates);
+              setShowTitleCandidates(Boolean(result.titleCandidates.length));
+              writeEditorMarkup(markdownToEditorHtml(result.bodyMarkdown), result.bodyMarkdown);
+              setChatInput("");
+              setStatusMessage("AI 初稿已填充，正在生成图片...");
+            }
 
-      const imageHtml = result.imageAssets
-        .map(
-          (asset) =>
-            `<figure><img src="${asset.url}" alt="${escapeHtml(asset.position)}" /><figcaption>${escapeHtml(asset.position)}</figcaption></figure>`,
-        )
-        .join("");
-      const suggestion = result.imageAssets.length
-        ? ""
-        : `\n\n## 配图建议\n${result.imagePrompts.map((item) => `- ${item.position}：${item.prompt}`).join("\n")}`;
-      const html = `${markdownToEditorHtml(`${result.bodyMarkdown}${suggestion}`)}${imageHtml}`;
-      writeEditorMarkup(html, result.bodyMarkdown);
-      const nextAssetIds = [
-        result.coverAsset?.id,
-        ...result.imageAssets.map((item) => item.id),
-      ].filter((id): id is string => Boolean(id));
-      setAssetIds(nextAssetIds);
-      setCoverPreview(
-        result.coverAsset?.url ?? result.imageAssets[0]?.url ?? coverPreview,
+            if (data.kind === "imageAsset") {
+              const value = data.value as { asset?: GeneratedImageAsset; cover?: boolean };
+              const asset = value.asset;
+              if (!asset) return;
+              generatedAssetIds.push(asset.id);
+              setAssets((items) => [asset, ...items.filter((item) => item.id !== asset.id)]);
+              setAssetIds((items) => Array.from(new Set([...generatedAssetIds, ...items])));
+              if (value.cover) {
+                setCoverPreview(asset.url);
+              } else {
+                const figure = `<figure><img src="${asset.url}" alt="${escapeHtml(asset.position)}" /><figcaption>${escapeHtml(asset.position)}</figcaption></figure>`;
+                writeEditorMarkup(`${editorHtml()}${figure}`);
+              }
+            }
+          },
+          onWarning: (message) => setStatusMessage(message),
+          onDone: (_job, result) => {
+            const generated = result as DirectGenerateResult;
+            const ids = [
+              generated.coverAsset?.id,
+              ...(generated.imageAssets ?? []).map((item) => item.id),
+            ].filter((id): id is string => Boolean(id));
+            if (ids.length) setAssetIds((items) => Array.from(new Set([...ids, ...items])));
+            if (generated.coverAsset?.url) setCoverPreview(generated.coverAsset.url);
+            setStatusMessage(ids.length ? "AI 初稿和图片已填充到编辑区" : "AI 初稿已填充，图片稍后可单独生成");
+          },
+          onError: (message) => setStatusMessage(`AI 生成失败：${message}`),
+        },
       );
-      setStatusMessage(
-        result.imageAssets.length
-          ? "AI 初稿和真实图片已填充到编辑区"
-          : "AI 初稿已填充，图片模型未返回真实图片",
-      );
-      setChatInput("");
+      if (draftJob.status !== "succeeded") {
+        throw new Error(draftJob.errorMessage ?? "AI 生成失败");
+      }
       await loadAssets();
     } catch (error) {
       setStatusMessage(
@@ -1073,6 +1059,7 @@ export default function EditorPage() {
     }
   }
 
+  // AI 生成封面图，优先使用创作简报的主题，如果没有则使用正文前40字作为主题，生成后加入素材库并设置为封面预览
   async function generateCoverImage() {
     const currentBody = editorText();
     const theme = title || briefTheme || currentBody.slice(0, 40);
@@ -1083,22 +1070,45 @@ export default function EditorPage() {
     setIsBusy(true);
     setStatusMessage("AI 正在生成封面图...");
     try {
-      const result = await generateCreativeDraft({
-        contentId: contentId ?? undefined,
-        theme,
-        audience,
-        style,
-        viewpoint:
-          "生成一张适合今日头条信息流展示的封面图，画面主体清晰，留出标题文字空间。",
-        materialNotes: `当前标题：${title}\n当前正文：${currentBody.slice(0, 1200)}`,
-      });
-      const asset = result.coverAsset ?? result.imageAssets[0];
-      if (!asset) {
+      const generated = { asset: null as GeneratedImageAsset | null };
+      const imageJob = await runJob(
+        () =>
+          startCreativeImageJob({
+            contentId: contentId ?? undefined,
+            position: "封面",
+            prompt: [
+              `主题：${theme}`,
+              "用途：今日头条信息流封面图，画面主体清晰，留出标题文字空间。",
+              `当前标题：${title}`,
+              `当前正文：${currentBody.slice(0, 1200)}`,
+            ].join("\n"),
+          }),
+        {
+          onProgress: (data) => {
+            if (typeof data.message === "string") setStatusMessage(data.message);
+          },
+          onPartial: (data) => {
+            if (data.kind !== "imageAsset") return;
+            const value = data.value as { asset?: GeneratedImageAsset };
+            if (value.asset) generated.asset = value.asset;
+          },
+          onDone: (_job, result) => {
+            const value = result as { asset?: GeneratedImageAsset };
+            if (value.asset) generated.asset = value.asset;
+          },
+          onError: (message) => setStatusMessage(`AI 封面生成失败：${message}`),
+        },
+      );
+      if (imageJob.status !== "succeeded") {
+        throw new Error(imageJob.errorMessage ?? "AI 封面生成失败");
+      }
+      const finalAsset = generated.asset;
+      if (!finalAsset) {
         setStatusMessage("图片模型暂未返回封面图");
         return;
       }
-      setCoverPreview(asset.url);
-      setAssetIds((items) => Array.from(new Set([asset.id, ...items])));
+      setCoverPreview(finalAsset.url);
+      setAssetIds((items) => Array.from(new Set([finalAsset.id, ...items])));
       await loadAssets();
       setStatusMessage("AI 封面图已生成，并加入素材库");
     } catch (error) {
@@ -1113,28 +1123,46 @@ export default function EditorPage() {
   }
 
   async function generateInlineImageFromText(prompt: string) {
-    const theme = title || briefTheme || "正文配图";
     setIsBusy(true);
     setStatusMessage("AI 正在生成正文配图...");
     try {
-      const result = await generateCreativeDraft({
-        contentId: contentId ?? undefined,
-        theme,
-        audience,
-        style,
-        viewpoint: "生成一张可插入正文的配图，不要覆盖正文内容。",
-        materialNotes: `配图需求：${prompt}\n当前正文：${editorText().slice(0, 1000)}`,
-      });
-      const asset = result.imageAssets[0] ?? result.coverAsset;
-      if (!asset) {
+      const generated = { asset: null as GeneratedImageAsset | null };
+      const imageJob = await runJob(
+        () =>
+          startCreativeImageJob({
+            contentId: contentId ?? undefined,
+            position: "正文配图",
+            prompt: `配图需求：${prompt}\n当前标题：${title || briefTheme || "正文配图"}\n当前正文：${editorText().slice(0, 1000)}`,
+          }),
+        {
+          onProgress: (data) => {
+            if (typeof data.message === "string") setStatusMessage(data.message);
+          },
+          onPartial: (data) => {
+            if (data.kind !== "imageAsset") return;
+            const value = data.value as { asset?: GeneratedImageAsset };
+            if (value.asset) generated.asset = value.asset;
+          },
+          onDone: (_job, result) => {
+            const value = result as { asset?: GeneratedImageAsset };
+            if (value.asset) generated.asset = value.asset;
+          },
+          onError: (message) => setStatusMessage(`AI 配图生成失败：${message}`),
+        },
+      );
+      if (imageJob.status !== "succeeded") {
+        throw new Error(imageJob.errorMessage ?? "AI 配图生成失败");
+      }
+      const finalAsset = generated.asset;
+      if (!finalAsset) {
         setStatusMessage("图片模型暂未返回正文配图");
         return;
       }
       setAssets((items) => [
-        asset,
-        ...items.filter((item) => item.id !== asset.id),
+        finalAsset,
+        ...items.filter((item) => item.id !== finalAsset.id),
       ]);
-      insertAsset(asset);
+      insertAsset(finalAsset);
       setStatusMessage("AI 正文配图已生成并插入");
     } catch (error) {
       setStatusMessage(
@@ -1235,15 +1263,11 @@ export default function EditorPage() {
   }
 
   async function rewriteSelected(action: "polish" | "expand" | "tone", toneOverride?: string) {
-    const selectedText =
-      selectionRangeRef.current?.toString().trim() ||
-      window.getSelection()?.toString().trim() ||
-      "";
+    const selectedText = editorRef.current?.getSelectedText() || "";
     if (!selectedText) {
       setStatusMessage("请先选中需要 AI 处理的文字");
       return;
     }
-    const range = selectionRangeRef.current?.cloneRange() ?? null;
     setIsBusy(true);
     try {
       const tone = toneOverride?.trim();
@@ -1253,13 +1277,8 @@ export default function EditorPage() {
         surroundingContext: editorText(),
         tone: action === "tone" ? tone || "亲和口语" : undefined,
       });
-      if (range) {
-        const currentSelection = window.getSelection();
-        currentSelection?.removeAllRanges();
-        currentSelection?.addRange(range);
-      }
-      document.execCommand("insertText", false, result.replacement);
-      syncBodyFromEditor("AI 已处理选中内容", { syncHtml: true });
+      editorRef.current?.replaceSelection(result.replacement);
+      syncBodyFromEditor("AI 已处理选中内容");
       clearSelectionState();
     } catch (error) {
       setStatusMessage(
@@ -1315,10 +1334,8 @@ export default function EditorPage() {
   function insertAsset(asset: AssetSummary) {
     setAssetIds((items) => Array.from(new Set([asset.id, ...items])));
     if (isImageAsset(asset)) {
-      insertHtml(
-        `<figure><img src="${asset.url}" alt="${escapeHtml(asset.fileName)}" /><figcaption>${escapeHtml(asset.fileName)}</figcaption></figure><p><br /></p>`,
-        "图片素材已插入正文",
-      );
+      editorRef.current?.insertImage(asset.url, asset.fileName);
+      syncBodyFromEditor("图片素材已插入正文");
       if (!coverPreview) setCoverPreview(asset.url);
       return;
     }
@@ -1336,19 +1353,6 @@ export default function EditorPage() {
     event.dataTransfer.effectAllowed = "copy";
     event.dataTransfer.setData("application/x-aicp-asset-id", asset.id);
     draggedAssetRef.current = asset;
-  }
-
-  function onEditorDrop(event: DragEvent<HTMLDivElement>) {
-    event.preventDefault();
-    const assetId = event.dataTransfer.getData("application/x-aicp-asset-id");
-    const asset =
-      assets.find((item) => item.id === assetId) ?? draggedAssetRef.current;
-    const range = document.caretRangeFromPoint?.(event.clientX, event.clientY);
-    if (range && editorRef.current?.contains(range.commonAncestorContainer)) {
-      selectionRangeRef.current = range;
-    }
-    if (asset) insertAsset(asset);
-    draggedAssetRef.current = null;
   }
 
   async function removeAsset(asset: AssetSummary) {
@@ -1380,25 +1384,137 @@ export default function EditorPage() {
   async function submitForReview() {
     setIsBusy(true);
     setReviewRewrite(null);
+    setStatusMessage("正在保存内容，准备内容审核...");
     try {
       const saved = await persistContent();
-      // 提交审核
-      const reviewed = await submitReview(saved.id);
+      setStatusMessage("内容已保存，正在内容审核...");
+      const reviewJob = await runJob(
+        () => startSubmitReviewJob(saved.id),
+        {
+          onProgress: (data) => {
+            if (typeof data.message === "string") {
+              setStatusMessage(data.message);
+            } else if (typeof data.currentStep === "string") {
+              setStatusMessage(data.currentStep);
+            }
+          },
+          onPartial: (data) => {
+            if (data.kind === "audit") setStatusMessage("审核结果已生成，正在更新作品状态");
+          },
+          onError: (message) => setStatusMessage(`内容审核失败：${message}`),
+        },
+      );
+      if (reviewJob.status !== "succeeded" || !reviewJob.result) {
+        throw new Error(reviewJob.errorMessage ?? "内容审核失败");
+      }
+      const reviewed = reviewJob.result as {
+        content: ContentSummary;
+        audit: AuditResult;
+        quality: null;
+        rewrite: ReviewRewrite;
+      };
       setEditingStatus(reviewed.content.status);
+      setLastContentSummary(reviewed.content);
+      setReviewResult({ content: reviewed.content, audit: reviewed.audit });
+      setQualityResult(null);
       if (reviewed.rewrite && !reviewed.audit.passed) {
         setReviewRewrite(reviewed.rewrite);
       }
+      if (reviewed.audit.passed) setShowPreview(false);
       setStatusMessage(
         reviewed.audit.passed
-          ? "已提交审核，请在作品管理中完成平台审核"
+          ? "安全审核通过，可继续进行质量评估与打分"
           : `审核未通过：${reviewed.audit.reasons.join("；")}`,
       );
       await loadDraftCards();
     } catch (error) {
       setStatusMessage(
         error instanceof Error
-          ? `提交审核失败：${error.message}`
-          : "提交审核失败",
+          ? `内容审核失败：${error.message}`
+          : "内容审核失败",
+      );
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function runQualityAssessment() {
+    const targetId = contentId ?? lastContentSummary?.id;
+    if (!targetId) {
+      setStatusMessage("请先保存并内容审核后，再进行质量评估");
+      return;
+    }
+    if (!canRunQualityReview) {
+      setStatusMessage("只有内容审核通过、处于待平台审核的内容才能进行质量评估");
+      return;
+    }
+
+    setIsBusy(true);
+    setStatusMessage("正在进行质量评估与打分...");
+    try {
+      const job = await runJob(
+        () => startApproveContentJob(targetId),
+        {
+          onProgress: (data) => {
+            if (typeof data.message === "string") setStatusMessage(data.message);
+          },
+          onPartial: (data) => {
+            if (data.kind === "quality") {
+              setQualityResult(data.value as QualityScoreResult);
+              setStatusMessage("质量评估已生成，正在更新作品状态");
+            }
+            if (data.kind === "content") {
+              const content = data.value as ContentSummary;
+              setLastContentSummary(content);
+              setEditingStatus(content.status);
+            }
+          },
+          onError: (message) => setStatusMessage(`质量评估失败：${message}`),
+        },
+      );
+      if (job.status !== "succeeded" || !job.result) {
+        throw new Error(job.errorMessage ?? "质量评估失败");
+      }
+
+      const approved = job.result as ContentApprovalResult;
+      setLastContentSummary(approved.content);
+      setEditingStatus(approved.content.status);
+      setQualityResult(approved.quality);
+      setStatusMessage(`质量评估完成，综合得分 ${approved.quality.total}`);
+    } catch (error) {
+      setStatusMessage(
+        error instanceof Error
+          ? `质量评估失败：${error.message}`
+          : "质量评估失败",
+      );
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function publishCurrentContent() {
+    const targetId = contentId ?? lastContentSummary?.id;
+    if (!targetId) {
+      setStatusMessage("请先保存内容后再发布");
+      return;
+    }
+    if (!canPublishContent) {
+      setStatusMessage("内容需要完成质量评估并审核通过后才能发布");
+      return;
+    }
+
+    setIsBusy(true);
+    setStatusMessage("正在发布内容...");
+    try {
+      const published = await publishContent(targetId);
+      setLastContentSummary(published);
+      setEditingStatus(published.status);
+      setStatusMessage("内容已发布");
+    } catch (error) {
+      setStatusMessage(
+        error instanceof Error
+          ? `发布失败：${error.message}`
+          : "发布失败",
       );
     } finally {
       setIsBusy(false);
@@ -1413,55 +1529,23 @@ export default function EditorPage() {
     setReviewRewrite(null);
   }
 
-  function formatCurrentLocation(coords: GeolocationCoordinates) {
-    return `当前位置（${coords.latitude.toFixed(5)}, ${coords.longitude.toFixed(5)}）`;
-  }
-
-  function requestCurrentLocation() {
-    if (typeof navigator === "undefined" || !navigator.geolocation) {
-      setLocationStatus("error");
-      setLocationError("浏览器不支持定位，已展示示例地点");
-      return;
-    }
-
-    setLocationStatus("loading");
-    setLocationError("");
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        setCurrentLocationOption(formatCurrentLocation(position.coords));
-        setLocationStatus("ready");
-      },
-      (error) => {
-        setLocationStatus("error");
-        setLocationError(error.message || "定位失败，已展示示例地点");
-      },
-      { enableHighAccuracy: false, timeout: 8000, maximumAge: 5 * 60 * 1000 },
-    );
-  }
-
-  function openLocationPicker() {
-    setShowLocationPicker((value) => {
-      const next = !value;
-      if (next && (locationStatus === "idle" || locationStatus === "error")) {
-        requestCurrentLocation();
-      }
-      return next;
-    });
-  }
-
   function addTopic(topic: string) {
-    const name = topic.trim().replace(/^#+/, "");
+    const name = normalizeTopicName(topic);
     if (!name) return;
-    setSelectedTopics((items) => Array.from(new Set([...items, `#${name}`])));
+    setSelectedTopics((items) => normalizeTopicList([...items, name]));
+    const tagText = `#${name}`;
+    if (editorRef.current) {
+      if (editorRef.current.isFocused()) {
+        editorRef.current.insertText(`${editorText().trim() ? " " : ""}${tagText}`);
+      } else {
+        editorRef.current.insertTextAtEnd(`${editorText().trim() ? "\n\n" : ""}${tagText}`);
+      }
+      syncBodyFromEditor("已将话题添加到正文");
+    } else {
+      writeEditorMarkup(`${editorHtml()}${textToEditorHtml(tagText)}`);
+      setStatusMessage("已将话题添加到正文");
+    }
     setCustomTopicInput("");
-  }
-
-  function toggleComponent(key: string) {
-    setEnabledComponents((items) =>
-      items.includes(key)
-        ? items.filter((item) => item !== key)
-        : [...items, key],
-    );
   }
 
   if (isLoadingInitial) {
@@ -1475,7 +1559,7 @@ export default function EditorPage() {
   return (
     <section className="min-h-full bg-[#f6f6f7] px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
       <div className="mx-auto grid max-w-440 gap-5 xl:grid-cols-[320px_minmax(0,1fr)_390px]">
-        <aside className="space-y-5">
+        <aside className="space-y-5 xl:sticky xl:top-5 xl:max-h-[calc(100vh-2.5rem)] xl:overflow-y-auto xl:pr-1">
           <section className="rounded-3xl border border-slate-100 bg-white p-4 shadow-sm">
             <div className="mb-3 flex rounded-2xl bg-slate-100 p-1">
               {[
@@ -1519,18 +1603,6 @@ export default function EditorPage() {
                   onChange={setViewpoint}
                   placeholder="例如：少量单品也能穿出松弛感"
                 />
-                <label className="block">
-                  <span className="mb-1 block text-sm font-medium text-slate-700">
-                    素材备注
-                  </span>
-                  <textarea
-                    value={materialNotes}
-                    onChange={(event) => setMaterialNotes(event.target.value)}
-                    rows={4}
-                    className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-[#ff2442]/50 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10"
-                    placeholder="可粘贴参考文本、关键词、链接摘要等"
-                  />
-                </label>
                 <button
                   type="button"
                   onClick={() => void createAiDraft("brief")}
@@ -1659,7 +1731,7 @@ export default function EditorPage() {
                   onClick={() => void autoSaveDraft(true)}
                   className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600"
                 >
-                  手动保存
+                  保存
                 </button>
               </div>
             </div>
@@ -1702,76 +1774,21 @@ export default function EditorPage() {
               </div>
             ) : null}
 
-            <div className="mt-4 flex flex-wrap items-center gap-1 border-y border-slate-100 py-3">
-              <ToolbarButton
-                label="加粗"
-                icon={<Bold size={17} />}
-                onClick={() => runCommand("bold")}
-              />
-              <ToolbarButton
-                label="斜体"
-                icon={<Italic size={17} />}
-                onClick={() => runCommand("italic")}
-              />
-              <ToolbarButton
-                label="引用"
-                icon={<Quote size={17} />}
-                onClick={() =>
-                  insertHtml(
-                    "<blockquote>请输入引用内容</blockquote>",
-                    "已插入引用",
-                  )
-                }
-              />
-              <ToolbarButton
-                label="列表"
-                icon={<List size={17} />}
-                onClick={() => runCommand("insertUnorderedList")}
-              />
-              <ToolbarButton
-                label="链接"
-                icon={<Link2 size={17} />}
-                onClick={() => {
-                  const href = window.prompt("请输入链接地址");
-                  if (href) runCommand("createLink", href);
-                }}
-              />
-              <ToolbarButton
-                label="代码"
-                icon={<Code2 size={17} />}
-                onClick={() =>
-                  insertHtml(
-                    "<p><code>代码或关键词</code></p>",
-                    "已插入代码样式",
-                  )
-                }
-              />
-              <ToolbarButton
-                label="上传并插入图片"
-                icon={<ImagePlus size={17} />}
-                onClick={() => openImageUpload("insert")}
-              />
-              <ToolbarButton
-                label="删除选中内容"
-                icon={<Trash2 size={17} />}
-                onClick={() => runCommand("delete")}
-              />
-            </div>
-
-            <div
+            <RichTextEditor
               ref={editorRef}
-              contentEditable
-              suppressContentEditableWarning
-              dangerouslySetInnerHTML={{ __html: safeHtmlContent }}
-              onInput={() => {
-                clearSelectionState();
-                syncBodyFromEditor();
+              initialContent={{
+                html: editorHtmlContent,
+                json: editorJsonContent,
+                text: body,
               }}
-              onMouseUp={() => cacheSelection(true)}
-              onKeyUp={() => cacheSelection(true)}
-              onDragOver={(event) => event.preventDefault()}
-              onDrop={onEditorDrop}
-              className="editor-surface min-h-130 rounded-2xl px-2 py-5 text-[17px] leading-9 text-slate-800 outline-none empty:before:text-slate-300 empty:before:content-['输入正文描述，真诚有价值的分享才入人心']"
+              resetKey={editorResetKey}
+              onChange={(value) => syncRichTextValue(value)}
+              onSelectionChange={(selection: RichTextSelection | null) => {
+                setToneMenuOpen(false);
+                setSelectionMenu(selection);
+              }}
+              onSaveShortcut={() => void autoSaveDraft(true)}
+              onOpenImageUpload={() => openImageUpload("insert")}
             />
 
             {selectionMenu ? (
@@ -1833,7 +1850,10 @@ export default function EditorPage() {
                     <button
                       type="button"
                       onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => customTone.trim() && void rewriteSelected("tone", customTone)}
+                      onClick={() =>
+                        customTone.trim() &&
+                        void rewriteSelected("tone", customTone)
+                      }
                       className="rounded-full bg-[#ff2442] px-3 py-1.5 text-white disabled:opacity-50"
                       disabled={!customTone.trim()}
                     >
@@ -1843,6 +1863,26 @@ export default function EditorPage() {
                 ) : null}
               </div>
             ) : null}
+
+            <div className="flex flex-wrap gap-2">
+              {selectedTopics.map((topic) => {
+                const topicName = normalizeTopicName(topic);
+                return (
+                  <button
+                    key={topic}
+                    type="button"
+                    onClick={() =>
+                      setSelectedTopics((items) =>
+                        items.filter((item) => item !== topic),
+                      )
+                    }
+                    className="rounded-full bg-[#fff3f5] px-3 py-1.5 text-sm font-semibold text-[#ff2442]"
+                  >
+                    #{topicName} ×
+                  </button>
+                );
+              })}
+            </div>
 
             <div className="mt-4 flex flex-wrap items-center gap-2">
               <button
@@ -1883,6 +1923,7 @@ export default function EditorPage() {
                   />
                   <button
                     type="button"
+                    onMouseDown={(event) => event.preventDefault()}
                     onClick={() => addTopic(customTopicInput)}
                     className="rounded-xl bg-[#ff2442] px-4 text-sm font-semibold text-white"
                   >
@@ -1890,16 +1931,22 @@ export default function EditorPage() {
                   </button>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  {hotTopics.map((topic) => (
+                  {recommendedTopics.map((topic) => (
                     <button
                       key={topic.id}
                       type="button"
+                      onMouseDown={(event) => event.preventDefault()}
                       onClick={() => addTopic(topic.title)}
                       className="rounded-full bg-white px-3 py-1.5 text-sm text-slate-600 hover:text-[#ff2442]"
                     >
                       #{topic.title}
                     </button>
                   ))}
+                  {!recommendedTopics.length ? (
+                    <span className="text-sm text-slate-400">
+                      正文里暂时没有匹配到可推荐的话题
+                    </span>
+                  ) : null}
                 </div>
               </div>
             ) : null}
@@ -1922,14 +1969,15 @@ export default function EditorPage() {
 
           <section className="rounded-3xl border border-slate-100 bg-white p-5 shadow-sm">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-bold text-slate-950">热门创作话题</h2>
-              <span className="text-xs text-slate-400">官方推荐</span>
+              <h2 className="text-lg font-bold text-slate-950">匹配正文话题</h2>
+              <span className="text-xs text-slate-400">根据当前内容推荐</span>
             </div>
             <div className="grid gap-3 md:grid-cols-2">
-              {hotTopics.slice(0, 4).map((topic) => (
+              {recommendedTopics.slice(0, 4).map((topic) => (
                 <button
                   key={topic.id}
                   type="button"
+                  onMouseDown={(event) => event.preventDefault()}
                   onClick={() => addTopic(topic.title)}
                   className="flex items-center gap-3 rounded-2xl bg-slate-50 p-3 text-left transition hover:bg-[#fff3f5]"
                 >
@@ -1954,6 +2002,11 @@ export default function EditorPage() {
                   </span>
                 </button>
               ))}
+              {!recommendedTopics.length ? (
+                <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-400">
+                  继续完善标题和正文后，这里会自动推荐更匹配的话题。
+                </div>
+              ) : null}
             </div>
           </section>
 
@@ -1969,11 +2022,6 @@ export default function EditorPage() {
                     active={coverMode === "single"}
                     label="单图"
                     onClick={() => setCoverMode("single")}
-                  />
-                  <TogglePill
-                    active={coverMode === "triple"}
-                    label="三图"
-                    onClick={() => setCoverMode("triple")}
                   />
                   <TogglePill
                     active={coverMode === "none"}
@@ -2037,71 +2085,6 @@ export default function EditorPage() {
 
               <div>
                 <h3 className="mb-3 text-sm font-semibold text-slate-700">
-                  添加组件
-                </h3>
-                <div className="grid gap-3 md:grid-cols-2">
-                  <div className="relative">
-                    <ComponentButton
-                      icon={<MapPin size={18} />}
-                      label="添加位置"
-                      value={selectedLocation || "根据定位推荐附近地点"}
-                      active={Boolean(selectedLocation)}
-                      onClick={openLocationPicker}
-                    />
-                    {showLocationPicker ? (
-                      <PickerPanel title="附近地点">
-                        {locationStatus === "loading" ? (
-                          <p className="px-3 py-2 text-sm text-slate-400">正在获取当前位置...</p>
-                        ) : null}
-                        {currentLocationOption ? (
-                          <PickerItem
-                            active={selectedLocation === currentLocationOption}
-                            label={currentLocationOption}
-                            onClick={() => {
-                              setSelectedLocation(currentLocationOption);
-                              setShowLocationPicker(false);
-                            }}
-                          />
-                        ) : null}
-                        {locationError ? (
-                          <p className="px-3 py-2 text-xs text-amber-600">{locationError}</p>
-                        ) : null}
-                        {nearbyLocations.map((location) => (
-                          <PickerItem
-                            key={location}
-                            active={selectedLocation === location}
-                            label={location}
-                            onClick={() => {
-                              setSelectedLocation(location);
-                              setShowLocationPicker(false);
-                            }}
-                          />
-                        ))}
-                      </PickerPanel>
-                    ) : null}
-                  </div>
-                  <ComponentButton
-                    icon={<FolderOpen size={18} />}
-                    label="个人素材仓库"
-                    value={`${assets.length} 个素材`}
-                    active={false}
-                    onClick={() => setAssetPanel("image")}
-                  />
-                  {componentOptions.map((item) => (
-                    <ComponentButton
-                      key={item.key}
-                      icon={<FileCheck2 size={18} />}
-                      label={item.label}
-                      value={item.desc}
-                      active={enabledComponents.includes(item.key)}
-                      onClick={() => toggleComponent(item.key)}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <h3 className="mb-3 text-sm font-semibold text-slate-700">
                   作品声明
                 </h3>
                 <div className="grid gap-3 md:grid-cols-2">
@@ -2110,8 +2093,8 @@ export default function EditorPage() {
                     checked={originalStatement}
                     onChange={setOriginalStatement}
                   />
-                  <div className="rounded-2xl bg-slate-50 px-4 py-3">
-                    <label className="text-sm font-semibold text-slate-700">
+                  <div className="flex rounded-2xl bg-slate-50 px-4 py-3">
+                    <label className="items-center text-sm font-semibold text-slate-700">
                       内容类型声明
                     </label>
                     <select
@@ -2119,7 +2102,7 @@ export default function EditorPage() {
                       onChange={(event) =>
                         setContentStatement(event.target.value)
                       }
-                      className="mt-2 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none"
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none"
                     >
                       {contentStatements.map((item) => (
                         <option key={item}>{item}</option>
@@ -2188,23 +2171,6 @@ export default function EditorPage() {
                   </div>
                 </div>
               </div>
-
-              <div className="flex flex-wrap gap-2">
-                {selectedTopics.map((topic) => (
-                  <button
-                    key={topic}
-                    type="button"
-                    onClick={() =>
-                      setSelectedTopics((items) =>
-                        items.filter((item) => item !== topic),
-                      )
-                    }
-                    className="rounded-full bg-[#fff3f5] px-3 py-1.5 text-sm font-semibold text-[#ff2442]"
-                  >
-                    {topic} ×
-                  </button>
-                ))}
-              </div>
             </div>
           </section>
 
@@ -2226,28 +2192,125 @@ export default function EditorPage() {
             </section>
           ) : null}
 
-          <section className="flex flex-wrap gap-3 rounded-3xl border border-slate-100 bg-white p-5 shadow-sm">
-            <button
-              type="button"
-              onClick={openPreview}
-              className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-slate-100 px-8 text-sm font-bold text-slate-700 transition hover:bg-slate-200"
-            >
-              <FileText size={18} />
-              预览
-            </button>
-            <button
-              type="button"
-              onClick={() => void submitForReview()}
-              disabled={isBusy}
-              className="inline-flex h-12 items-center justify-center gap-2 rounded-2xl bg-[#ff2442] px-8 text-sm font-bold text-white transition hover:bg-[#e91635] disabled:opacity-60"
-            >
-              <Rocket size={18} />
-              提交审核
-            </button>
+          <section className="rounded-3xl border border-slate-100 bg-white p-4 shadow-sm">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-slate-950">
+                <ShieldCheck size={18} className="text-[#ff2442]" />
+                <h2 className="font-bold">发布流转</h2>
+              </div>
+              {editingStatus ? (
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">
+                  {contentStatusLabels[editingStatus]}
+                </span>
+              ) : null}
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+              <button
+                type="button"
+                onClick={openPreview}
+                className="h-11 items-center justify-center gap-2 rounded-2xl bg-slate-100 px-8 text-sm font-bold text-slate-700 transition hover:bg-slate-200"
+              >
+                预览
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitForReview()}
+                disabled={isBusy}
+                className="h-11 items-center justify-center gap-2 rounded-2xl bg-[#ff2442] px-4 text-sm font-bold text-white transition hover:bg-[#e91635] disabled:opacity-60"
+              >
+                {isBusy ? "处理中..." : "内容审核"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void runQualityAssessment()}
+                disabled={isBusy || !canRunQualityReview}
+                className="h-11 items-center justify-center gap-2 rounded-2xl bg-emerald-50 px-4 text-sm font-bold text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                质量评估
+              </button>
+              <button
+                type="button"
+                onClick={() => void publishCurrentContent()}
+                disabled={isBusy || !canPublishContent}
+                className="h-11 items-center justify-center gap-2 rounded-2xl bg-[#ff2442] px-4 text-sm font-bold text-white transition hover:bg-[#e91635] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                发布
+              </button>
+            </div>
+
+            {reviewResult ? (
+              <div
+                className={`rounded-2xl my-3 p-3 text-sm ${
+                  reviewResult.audit.passed
+                    ? "bg-emerald-50 text-emerald-800"
+                    : "bg-rose-50 text-rose-800"
+                }`}
+              >
+                <p className="font-bold">
+                  {reviewResult.audit.passed
+                    ? "安全审核通过"
+                    : "安全审核未通过"}
+                </p>
+                <p className="mt-1 leading-6">
+                  {reviewResult.audit.reasons.length
+                    ? reviewResult.audit.reasons.join("；")
+                    : reviewResult.audit.passed
+                      ? "未发现明显合规风险。"
+                      : "存在合规风险，请根据建议修改。"}
+                </p>
+              </div>
+            ) : null}
+
+            {qualityResult ? (
+              <div className="mt-3 rounded-2xl border border-emerald-100 bg-white p-3">
+                <div className="flex items-end justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-bold text-emerald-800">
+                      质量综合分
+                    </p>
+                    <p className="mt-1 text-3xl font-black text-emerald-600">
+                      {qualityResult.total}
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">
+                    可用于推荐参考
+                  </span>
+                </div>
+                <div className="mt-3 space-y-2">
+                  {Object.entries(qualityResult.dimensions).map(
+                    ([key, value]) => (
+                      <div
+                        key={key}
+                        className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2 text-xs"
+                      >
+                        <span className="font-semibold text-slate-600">
+                          {
+                            qualityDimensionLabels[
+                              key as keyof QualityScoreResult["dimensions"]
+                            ]
+                          }
+                        </span>
+                        <span className="font-black text-slate-900">
+                          {value}
+                        </span>
+                      </div>
+                    ),
+                  )}
+                </div>
+                <p className="mt-3 text-sm leading-6 text-slate-500">
+                  {qualityResult.reason}
+                </p>
+              </div>
+            ) : lastContentSummary?.qualityScore ? (
+              <div className="mt-3 rounded-2xl bg-emerald-50 p-3 text-sm text-emerald-800">
+                当前质量分：<strong>{lastContentSummary.qualityScore}</strong>
+              </div>
+            ) : null}
           </section>
         </main>
 
-        <aside className="space-y-5">
+        <aside className="space-y-5 xl:sticky xl:top-5 xl:max-h-[calc(100vh-2.5rem)] xl:overflow-y-auto xl:pr-1">
           <section className="rounded-3xl border border-slate-100 bg-white p-4 shadow-sm">
             <div className="mb-4 flex items-center gap-2 text-slate-950">
               <MessageCircle size={18} className="text-[#ff2442]" />
@@ -2465,73 +2528,79 @@ export default function EditorPage() {
       ) : null}
 
       {showPreview ? (
-        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto px-4 py-10">
+        <div className="fixed inset-0 z-50">
           <div
-            className="absolute inset-0 bg-black/40"
+            className="fixed inset-0 bg-black/40"
             onClick={() => setShowPreview(false)}
           />
-          <div className="relative z-10 w-full max-w-3xl rounded-3xl bg-white p-6 shadow-xl">
-            <div className="mb-5 flex items-center justify-between gap-3">
-              <div>
-                <h3 className="text-lg font-bold text-slate-950">发布预览</h3>
-                <p className="text-sm text-slate-400">
-                  检查标题、正文、封面和话题后再提交审核。
-                </p>
+          <div className="fixed inset-0 overflow-y-auto px-4 py-10">
+            <div className="relative z-10 mx-auto w-full max-w-3xl rounded-3xl bg-white p-6 shadow-xl">
+              <div className="mb-5 flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-950">发布预览</h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowPreview(false)}
+                  className="rounded-full p-2 hover:bg-slate-50"
+                >
+                  <X size={16} />
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowPreview(false)}
-                className="rounded-full p-2 hover:bg-slate-50"
-              >
-                <X size={16} />
-              </button>
-            </div>
-            {coverMode !== "none" && coverPreview ? (
-              <img
-                src={coverPreview}
-                alt="封面预览"
-                onError={() => setCoverPreview("")}
-                className="mb-5 h-56 w-full rounded-2xl object-cover"
-              />
-            ) : null}
-            <h1 className="text-2xl font-black text-slate-950">
-              {title || "未命名草稿"}
-            </h1>
-            {selectedTopics.length ? (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {selectedTopics.map((topic) => (
-                  <span
-                    key={topic}
-                    className="rounded-full bg-[#fff3f5] px-3 py-1 text-xs font-semibold text-[#ff2442]"
-                  >
-                    #{topic}
-                  </span>
-                ))}
+              {coverMode !== "none" && coverPreview ? (
+                <img
+                  src={coverPreview}
+                  alt="封面预览"
+                  onError={() => setCoverPreview("")}
+                  className="mb-5 h-56 w-full rounded-2xl object-cover"
+                />
+              ) : null}
+              <h1 className="text-2xl font-black text-slate-950">
+                {title || "未命名草稿"}
+              </h1>
+              {selectedTopics.length ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {selectedTopics.map((topic) => (
+                    <span
+                      key={topic}
+                      className="rounded-full bg-[#fff3f5] px-3 py-1 text-xs font-semibold text-[#ff2442]"
+                    >
+                      #{normalizeTopicName(topic)}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              <article className="mt-5 rounded-2xl bg-slate-50 p-5 text-[16px] leading-8 text-slate-800">
+                <RichTextRenderer
+                  content={{
+                    html: previewHtml || editorHtml(),
+                    json: editorJsonContent,
+                    text: editorText(),
+                  }}
+                />
+              </article>
+              {isBusy ? (
+                <div className="mt-5 rounded-2xl bg-[#fff3f5] px-4 py-3 text-sm font-semibold text-[#ff2442]">
+                  {statusMessage}
+                </div>
+              ) : null}
+              <div className="mt-6 flex flex-wrap justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowPreview(false)}
+                  className="h-11 rounded-2xl bg-slate-100 px-6 text-sm font-bold text-slate-700"
+                >
+                  继续编辑
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void submitForReview()}
+                  disabled={isBusy}
+                  className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-[#ff2442] px-6 text-sm font-bold text-white transition hover:bg-[#e91635] disabled:opacity-60"
+                >
+                  {isBusy ? "提交中..." : "内容审核"}
+                </button>
               </div>
-            ) : null}
-            <article
-              className="editor-surface mt-5 rounded-2xl bg-slate-50 p-5 text-[16px] leading-8 text-slate-800"
-              dangerouslySetInnerHTML={{
-                __html: previewHtml || textToEditorHtml(editorText()),
-              }}
-            />
-            <div className="mt-6 flex flex-wrap justify-end gap-3">
-              <button
-                type="button"
-                onClick={() => setShowPreview(false)}
-                className="h-11 rounded-2xl bg-slate-100 px-6 text-sm font-bold text-slate-700"
-              >
-                继续编辑
-              </button>
-              <button
-                type="button"
-                onClick={() => void submitForReview()}
-                disabled={isBusy}
-                className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-[#ff2442] px-6 text-sm font-bold text-white transition hover:bg-[#e91635] disabled:opacity-60"
-              >
-                <Rocket size={17} />
-                提交审核
-              </button>
             </div>
           </div>
         </div>
@@ -2546,33 +2615,6 @@ function Field({ label, value, onChange, placeholder }: { label: string; value: 
       <span className="mb-1 block text-sm font-medium text-slate-700">{label}</span>
       <input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-[#ff2442]/50 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10" />
     </label>
-  );
-}
-
-function ToolbarButton({ label, icon, onClick }: { label: string; icon: React.ReactNode; onClick: () => void }) {
-  return (
-    <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={onClick} title={label} className="grid size-9 place-items-center rounded-xl text-slate-600 hover:bg-[#fff3f5] hover:text-[#ff2442]">
-      {icon}
-    </button>
-  );
-}
-
-function ComponentButton({ icon, label, value, active, onClick }: { icon: React.ReactNode; label: string; value: string; active: boolean; onClick: () => void }) {
-  return (
-    <button type="button" onClick={onClick} className={`flex w-full items-center justify-between gap-3 rounded-2xl border px-4 py-3 text-left transition ${
-      active ? "border-[#ff2442]/20 bg-[#fff3f5] text-[#ff2442]" : "border-transparent bg-slate-50 text-slate-700 hover:border-[#ff2442]/20 hover:bg-white hover:text-[#ff2442] hover:shadow-sm"
-    }`}>
-      <span className="inline-flex min-w-0 items-center gap-3">
-        <span className={`grid size-9 shrink-0 place-items-center rounded-xl ${active ? "bg-white text-[#ff2442]" : "bg-white text-slate-500"}`}>
-          {icon}
-        </span>
-        <span className="min-w-0">
-          <span className="block text-sm font-bold">{label}</span>
-          <span className="line-clamp-1 block text-xs text-slate-400">{value}</span>
-        </span>
-      </span>
-      {active ? <BadgeCheck size={16} /> : null}
-    </button>
   );
 }
 

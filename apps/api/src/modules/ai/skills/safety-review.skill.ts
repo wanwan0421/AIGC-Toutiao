@@ -19,7 +19,7 @@ export class SafetyReviewSkill {
     private readonly complianceRewrite: ComplianceRewriteAgent
   ) {}
 
-  // 只组合安全审核与合规改写能力，不做质量评分或数据库写入。
+  // 只组合安全审核与合规改写能力，不做质量评分、任务状态或数据库写入。
   review(input: ReviewInput): Promise<AuditResult> {
     return this.safetyReview.run(input);
   }

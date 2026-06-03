@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import type {
-  AiGenerateRequest,
+  ContentApprovalResult,
   CreativeChatRequest,
   DirectGenerateRequest,
   SelectionRewriteRequest,
@@ -9,7 +9,6 @@ import type {
 import { ContentStatus as DbContentStatus, Prisma } from "@prisma/client";
 import { toContentSummary, toDbAuditRiskLevel } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
-import { AiCallLogService } from "../ai/ai-call-log.service";
 import { ContextBuilderService } from "../ai/context-builder.service";
 import { ConversationArchiveService } from "../ai/conversation-archive.service";
 import { ContentQualitySkill } from "../ai/skills/content-quality.skill";
@@ -29,7 +28,6 @@ const contentInclude = {
 export class ContentWorkflowEngine {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly aiLogs: AiCallLogService,
     private readonly productionSkill: CreativeProductionSkill,
     private readonly assistantSkill: CreativeAssistantSkill,
     private readonly contextBuilder: ContextBuilderService,
@@ -37,50 +35,6 @@ export class ContentWorkflowEngine {
     private readonly safetyReviewSkill: SafetyReviewSkill,
     private readonly contentQualitySkill: ContentQualitySkill
   ) {}
-
-  async generate(request: AiGenerateRequest & { audience?: string; userId?: string }) {
-    const startedAt = Date.now();
-    const draft = await this.directGenerate({
-      userId: request.userId,
-      theme: request.topic,
-      audience: request.audience,
-      style: request.style,
-      materialNotes: request.materialNotes,
-    });
-    const result = {
-      title: draft.title,
-      body: draft.bodyMarkdown,
-      tags: draft.tags,
-      coverSuggestion: draft.coverSuggestion,
-    };
-
-    await this.aiLogs.log({
-      scene: "generate",
-      model: "content-workflow",
-      inputSummary: JSON.stringify({
-        topic: request.topic,
-        style: request.style,
-        platform: request.platform,
-        promptTemplateId: request.promptTemplateId,
-      }),
-      output: result,
-      latencyMs: Date.now() - startedAt,
-      success: true,
-    });
-
-    return {
-      ...result,
-      provider: "volcengine-ark",
-    };
-  }
-
-  auditText(body: { title: string; body: string }) {
-    return this.safetyReviewSkill.review(body);
-  }
-
-  scoreText(body: { title: string; body: string }) {
-    return this.contentQualitySkill.score(body);
-  }
 
   rewriteText(body: { title: string; body: string; reasons?: string[] }) {
     return this.safetyReviewSkill.rewrite(body);
@@ -131,7 +85,7 @@ export class ContentWorkflowEngine {
 
   async submitReview(userId: string, id: string) {
     const content = await this.getOwnedContent(userId, id);
-    // 提交审核只处理合规闸门，质量评分在 approve 阶段执行。
+    // 提交审核只处理合规问题；质量评分在 approve 阶段生成。
     const result = await this.reviewAndPersist({
       contentId: id,
       title: content.title,
@@ -179,7 +133,7 @@ export class ContentWorkflowEngine {
     };
   }
 
-  async approve(userId: string, id: string) {
+  async approve(userId: string, id: string): Promise<ContentApprovalResult> {
     const content = await this.getOwnedContent(userId, id);
     if (content.status !== DbContentStatus.pending_review) {
       throw new BadRequestException("only pending_review content can be approved");
@@ -207,7 +161,10 @@ export class ContentWorkflowEngine {
       }),
     ]);
 
-    return toContentSummary(updated);
+    return {
+      content: toContentSummary(updated),
+      quality,
+    };
   }
 
   async publish(userId: string, id: string) {
@@ -239,7 +196,7 @@ export class ContentWorkflowEngine {
     return toContentSummary(updated);
   }
 
-  // 审核并持久化内容
+  // Workflow 负责业务状态和持久化；安全审核能力本身由 SafetyReviewSkill 提供。
   private async reviewAndPersist(input: {
     contentId: string;
     title: string;

@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import type { DirectGenerateRequest, DirectGenerateResult } from "@aicp/shared";
 import { AiCallLogService } from "../ai-call-log.service";
 import { ModelClientService } from "../model-client.service";
@@ -8,6 +8,8 @@ import { parseJsonObject } from "../structured-output";
 
 @Injectable()
 export class DraftGeneratorAgent {
+  private readonly logger = new Logger(DraftGeneratorAgent.name);
+
   constructor(
     private readonly modelClient: ModelClientService,
     private readonly prompts: PromptTemplateService,
@@ -16,13 +18,12 @@ export class DraftGeneratorAgent {
 
   async run(input: DirectGenerateRequest): Promise<DirectGenerateResult> {
     const startedAt = Date.now();
-    // 获取提示词模板并渲染
+    // 渲染结构化图文创作提示词，模型结果只负责内容，不处理任务进度。
     const { prompt, model } = await this.prompts.render(
       AI_PROMPT_NAMES.directGenerate,
       input as unknown as Record<string, unknown>
     );
 
-    // 调LLM接口获取结果，要求必须是 JSON 格式
     const content = await this.modelClient.complete({
       model,
       temperature: 0.75,
@@ -34,17 +35,14 @@ export class DraftGeneratorAgent {
         { role: "user", content: prompt },
       ],
     });
+    this.logger.log(`Direct generate model output received: ${content.length} chars`);
 
-    console.log("获取到原始输出", { content });
-
-    // 解析结果并规范化为预期格式，必要时进行修正
     const parsed = parseJsonObject<DirectGenerateResult>(content);
     if (!parsed) {
       throw new Error("direct_generate returned invalid JSON");
     }
     const result = this.normalize(parsed);
 
-    // 记录调用日志
     await this.logs.log({
       scene: AI_PROMPT_NAMES.directGenerate,
       model: this.modelClient.modelName(model),

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { ContentDetail } from "@aicp/shared";
+import { RichTextRenderer } from "../../editor/rich-text-editor";
 import { ContentDetailActions } from "../../../components/content-detail-actions";
 import { StatusBadge } from "../../../components/status-badge";
 import { getContentDetail } from "../../../lib/api";
@@ -70,11 +71,21 @@ export default function ContentDetailPage({ params }: { params: { id: string } }
             )}
           </div>
           <div className="p-7 text-base leading-9 text-slate-700">
-            {detail.body.split("\n\n").map((paragraph) => (
-              <p className="m-0 mb-5 last:mb-0" key={paragraph}>
-                {paragraph}
-              </p>
-            ))}
+            {detail.bodyHtml || detail.bodyJson ? (
+              <RichTextRenderer
+                content={{
+                  html: detail.bodyHtml,
+                  json: detail.bodyJson,
+                  text: detail.body,
+                }}
+              />
+            ) : (
+              detail.body.split("\n\n").map((paragraph) => (
+                <p className="m-0 mb-5 last:mb-0" key={paragraph}>
+                  {paragraph}
+                </p>
+              ))
+            )}
             <div className="mt-6 flex flex-wrap gap-2">
               {detail.tags.map((tag) => (
                 <span className="inline-flex min-h-6 items-center rounded-full bg-slate-100 px-3 py-0.5 text-xs font-black text-slate-600" key={tag}>

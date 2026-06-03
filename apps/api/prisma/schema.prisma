@@ -22,6 +22,7 @@ model User {
   prompts      PromptTemplate[]
   events       UserActionEvent[]
   aiConversations AiConversation[]
+  aiJobs       AiJob[]
   preferences  UserPreference?
 }
 
@@ -42,6 +43,8 @@ model Content {
   authorId     String
   title        String
   body         String
+  bodyHtml     String?
+  bodyJson     Json?
   excerpt      String?
   status       ContentStatus     @default(draft)
   tags         String[]          @default([])
@@ -62,6 +65,7 @@ model Content {
   scores       QualityScore[]
   events       UserActionEvent[]
   aiConversations AiConversation[]
+  aiJobs       AiJob[]
 }
 
 model Draft {
@@ -82,6 +86,8 @@ model ContentVersion {
   version   Int
   title     String
   body      String
+  bodyHtml  String?
+  bodyJson  Json?
   snapshot  Json?
   createdAt DateTime @default(now())
   content   Content  @relation(fields: [contentId], references: [id])
@@ -192,6 +198,31 @@ model AiCallLog {
   createdAt    DateTime @default(now())
 }
 
+model AiJob {
+  id           String      @id @default(cuid())
+  userId       String
+  contentId    String?
+  type         AiJobType
+  status       AiJobStatus @default(queued)
+  progress     Int         @default(0)
+  currentStep  String?
+  input        Json
+  result       Json?
+  errorMessage String?
+  warnings     String[]    @default([])
+  attempts     Int         @default(0)
+  startedAt    DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  user         User        @relation(fields: [userId], references: [id])
+  content      Content?    @relation(fields: [contentId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([contentId, createdAt])
+  @@index([status, updatedAt])
+}
+
 model UserActionEvent {
   id        String   @id @default(cuid())
   userId    String?
@@ -237,4 +268,21 @@ enum AssetAuditStatus {
 enum AiMessageRole {
   user
   assistant
+}
+
+enum AiJobStatus {
+  queued
+  running
+  succeeded
+  failed
+  cancelled
+}
+
+enum AiJobType {
+  creative_direct_generate
+  creative_image_generate
+  content_submit_review
+  content_approve
+  moderation_content_run
+  compliance_rewrite
 }

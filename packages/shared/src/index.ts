@@ -15,6 +15,23 @@ export enum PromptScene {
   Rewrite = "rewrite"
 }
 
+export enum AiJobStatus {
+  Queued = "queued",
+  Running = "running",
+  Succeeded = "succeeded",
+  Failed = "failed",
+  Cancelled = "cancelled"
+}
+
+export enum AiJobType {
+  CreativeDirectGenerate = "creative_direct_generate",
+  CreativeImageGenerate = "creative_image_generate",
+  ContentSubmitReview = "content_submit_review",
+  ContentApprove = "content_approve",
+  ModerationContentRun = "moderation_content_run",
+  ComplianceRewrite = "compliance_rewrite"
+}
+
 export enum AuditRiskLevel {
   Low = "low",
   Medium = "medium",
@@ -83,6 +100,8 @@ export interface ContentSummary {
 
 export interface ContentDetail extends ContentSummary {
   body: string;
+  bodyHtml?: string | null;
+  bodyJson?: Record<string, unknown> | null;
   tags: string[];
   assets: AssetSummary[];
 }
@@ -244,6 +263,49 @@ export interface QualityScoreResult {
     compliance: number;
   };
   reason: string;
+}
+
+export interface ContentApprovalResult {
+  content: ContentSummary;
+  quality: QualityScoreResult;
+}
+
+export type AiJobEventType =
+  | "snapshot"
+  | "progress"
+  | "partial"
+  | "warning"
+  | "heartbeat"
+  | "done"
+  | "error";
+
+export interface AiJobSnapshot {
+  id: string;
+  type: AiJobType;
+  status: AiJobStatus;
+  contentId?: string | null;
+  progress: number;
+  currentStep?: string | null;
+  input?: Record<string, unknown>;
+  result?: unknown;
+  errorMessage?: string | null;
+  warnings: string[];
+  attempts: number;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AiJobStartRequest {
+  type: AiJobType;
+  payload: Record<string, unknown>;
+  contentId?: string;
+}
+
+export interface AiJobEvent {
+  type: AiJobEventType;
+  data: Record<string, unknown>;
 }
 
 export interface RankingQuery {
