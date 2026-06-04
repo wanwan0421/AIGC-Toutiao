@@ -56,7 +56,6 @@ export function ContentDetailActions({
           点赞
         </button>
       </div>
-      <p className="text-xs font-medium text-slate-400">{status}</p>
     </div>
   );
 }

@@ -87,13 +87,24 @@ export class ContentsController {
 
   @Post(":id/approve")
   approve(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
-    return this.workflow.approve(user.id, id);
+    return this.workflow.scoreQuality(user.id, id);
   }
 
   @Post(":id/approve/jobs")
   approveJob(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
+    return this.qualityScoreJob(user, id);
+  }
+
+  @Post(":id/quality-score")
+  qualityScore(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
+    return this.workflow.scoreQuality(user.id, id);
+  }
+
+  @Post(":id/quality-score/jobs")
+  qualityScoreJob(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
     return this.jobs.create({
       userId: user.id,
+      // 兼容已有 AiJobType 枚举；业务语义已调整为“质量评估”。
       type: AiJobType.ContentApprove,
       payload: { contentId: id },
       contentId: id,

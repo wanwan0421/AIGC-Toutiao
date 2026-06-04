@@ -16,6 +16,30 @@
   --color-app-green: #0f8a62;
   --color-app-amber: #b56a00;
   --color-app-rose: #b73a58;
+
+  /* 全站字号等级：caption / body / title / display 都收敛到这些 Tailwind token。 */
+  --text-xs: 0.8rem;
+  --text-xs--line-height: 1.35;
+  --text-sm: 0.933rem;
+  --text-sm--line-height: 1.5;
+  --text-base: 1rem;
+  --text-base--line-height: 1.6;
+  --text-lg: 1.2rem;
+  --text-lg--line-height: 1.45;
+  --text-xl: 1.333rem;
+  --text-xl--line-height: 1.35;
+  --text-2xl: 1.6rem;
+  --text-2xl--line-height: 1.25;
+  --text-3xl: 2rem;
+  --text-3xl--line-height: 1.2;
+  --text-4xl: 2.4rem;
+  --text-4xl--line-height: 1.15;
+
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --font-weight-black: 800;
 }
 
 @layer base {

@@ -11,6 +11,8 @@ import type {
   DirectGenerateRequest,
   AssetSummary,
   OfficialTopicSummary,
+  LocationSearchResponse,
+  NearbyLocationsResponse,
   PromptScene,
   SelectionRewriteRequest,
   SelectionRewriteResult,
@@ -412,7 +414,11 @@ export async function startSubmitReviewJob(id: string) {
 }
 
 export async function startApproveContentJob(id: string) {
-  return apiRequest<AiJobSnapshot>(`/contents/${id}/approve/jobs`, { method: "POST" }, true);
+  return startQualityScoreJob(id);
+}
+
+export async function startQualityScoreJob(id: string) {
+  return apiRequest<AiJobSnapshot>(`/contents/${id}/quality-score/jobs`, { method: "POST" }, true);
 }
 
 export async function startModerationRunJob(contentId: string) {
@@ -680,4 +686,23 @@ export async function getContentStats(contentId: string) {
     };
     redisCounters: Record<string, string>;
   }>(`/analytics/contents/${contentId}`, {}, true);
+}
+
+export async function postNearbyLocations(body: { latitude: number; longitude: number }) {
+  return apiRequest<NearbyLocationsResponse>(
+    "/locations/nearby",
+    {
+      method: "POST",
+      body: JSON.stringify(body)
+    },
+    true
+  );
+}
+
+export async function searchLocations(keyword: string) {
+  return apiRequest<LocationSearchResponse>(
+    `/locations/search?keyword=${encodeURIComponent(keyword)}`,
+    {},
+    true
+  );
 }

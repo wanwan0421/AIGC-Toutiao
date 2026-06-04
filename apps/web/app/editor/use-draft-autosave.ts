@@ -19,12 +19,12 @@ export type EditorDraftCache = {
   viewpoint: string;
   selectedTopics: string[];
   coverPreview: string;
-  coverMode: "single" | "triple" | "none";
+  coverMode: "single" | "none";
   assetIds: string[];
   publishTimeMode: "now" | "scheduled";
   scheduledAt: string;
+  selectedLocation: string;
   visibility: "public" | "followers" | "private";
-  allowCopy: boolean;
   originalStatement: boolean;
   contentStatement: string;
 };
@@ -147,8 +147,8 @@ export function useDraftAutosave(options: UseDraftAutosaveOptions) {
           viewpoint: data.viewpoint,
           publishTimeMode: data.publishTimeMode,
           scheduledAt: data.scheduledAt,
+          selectedLocation: data.selectedLocation,
           visibility: data.visibility,
-          allowCopy: data.allowCopy,
           originalStatement: data.originalStatement,
           contentStatement: data.contentStatement,
         },

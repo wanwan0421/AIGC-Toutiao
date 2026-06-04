@@ -1,7 +1,9 @@
 import { Injectable } from "@nestjs/common";
-import type { AuditResult, ComplianceRewriteResult } from "@aicp/shared";
+import type { AuditResult, AuditRiskItem, ComplianceRewriteResult } from "@aicp/shared";
 import { ComplianceRewriteAgent } from "../agents/compliance-rewrite.agent";
 import { SafetyReviewAgent } from "../agents/safety-review.agent";
+import { SafetyResultMerger } from "../safety/safety-result-merger.service";
+import { SafetyRuleEngine } from "../safety/safety-rule-engine.service";
 
 type ReviewInput = {
   title: string;
@@ -10,18 +12,26 @@ type ReviewInput = {
 
 type RewriteInput = ReviewInput & {
   reasons?: string[];
+  riskItems?: AuditRiskItem[];
 };
 
 @Injectable()
 export class SafetyReviewSkill {
   constructor(
+    private readonly safetyRules: SafetyRuleEngine,
     private readonly safetyReview: SafetyReviewAgent,
+    private readonly resultMerger: SafetyResultMerger,
     private readonly complianceRewrite: ComplianceRewriteAgent
   ) {}
 
-  // 只组合安全审核与合规改写能力，不做质量评分、任务状态或数据库写入。
-  review(input: ReviewInput): Promise<AuditResult> {
-    return this.safetyReview.run(input);
+  // Skill 只组合安全规则与模型能力，不写任务状态或数据库。
+  async review(input: ReviewInput): Promise<AuditResult> {
+    const ruleResult = this.safetyRules.scan(input);
+    const llmResult = await this.safetyReview.run({
+      ...input,
+      ruleRiskItems: ruleResult.riskItems,
+    });
+    return this.resultMerger.merge(ruleResult, llmResult, input);
   }
 
   rewrite(input: RewriteInput): Promise<ComplianceRewriteResult> {
@@ -39,7 +49,7 @@ export class SafetyReviewSkill {
 
     return {
       audit,
-      rewrite: await this.tryRewrite({ ...input, reasons: audit.reasons }),
+      rewrite: await this.tryRewrite({ ...input, reasons: audit.reasons, riskItems: audit.riskItems }),
     };
   }
 

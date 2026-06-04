@@ -5,11 +5,15 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   ContentStatus,
   type AuditResult,
+  type AuditRiskItem,
   type AssetSummary,
+  type ComplianceReplacement,
+  type ComplianceRewriteResult,
   type ContentApprovalResult,
   type ContentSummary,
   type DirectGenerateResult,
   type GeneratedImageAsset,
+  type LocationCandidate,
   type OfficialTopicSummary,
   type QualityScoreResult,
 } from "@aicp/shared";
@@ -28,11 +32,13 @@ import {
   getCreativeImageConfigStatus,
   getDraft,
   getOfficialTopics,
+  postNearbyLocations,
   publishContent,
   rewriteSelection,
-  startApproveContentJob,
+  searchLocations,
   startCreativeDraftJob,
   startCreativeImageJob,
+  startQualityScoreJob,
   startSubmitReviewJob,
   streamCreativeChat,
   updateContent,
@@ -50,12 +56,17 @@ import {
 } from "./rich-text-editor";
 import {
   BadgeCheck,
+  ChevronDown,
+  CheckCircle2,
+  Clock3,
   Copy,
+  Eye,
   FileText,
   Hash,
   ImagePlus,
+  MapPin,
   MessageCircle,
-  Rocket,
+  Search,
   ShieldCheck,
   Smile,
   Sparkles,
@@ -70,8 +81,19 @@ type PrepTab = "brief" | "assets";
 type PublishTimeMode = "now" | "scheduled";
 type QuickMenu = "topic" | "emoji" | null;
 type UploadIntent = "library" | "insert" | "cover";
-type CoverMode = "single" | "triple" | "none";
+type CoverMode = "single" | "none";
 type Visibility = "public" | "followers" | "private";
+type LocationStatus = "idle" | "locating" | "ready" | "denied" | "unsupported" | "failed" | "searching";
+type EditorOperation =
+  | "delete"
+  | "draft"
+  | "cover-image"
+  | "inline-image"
+  | "title"
+  | "rewrite"
+  | "audit"
+  | "quality"
+  | "publish";
 
 type DraftCache = EditorDraftCache;
 
@@ -89,11 +111,7 @@ type DraftCard = {
   body?: string;
 };
 
-type ReviewRewrite = {
-  title: string;
-  body: string;
-  reasons: string[];
-} | null;
+type ReviewRewrite = ComplianceRewriteResult | null;
 
 type ReviewResultState = {
   content: ContentSummary;
@@ -192,6 +210,31 @@ function markdownToEditorHtml(markdown: string) {
   return html.join("");
 }
 
+function stripDuplicateTitleFromMarkdown(markdown: string, title: string) {
+  const titleText = normalizeComparableText(title);
+  if (!titleText) return markdown;
+
+  const lines = markdown.split(/\r?\n/);
+  while (lines.length && !lines[0]?.trim()) lines.shift();
+  if (!lines.length) return markdown;
+
+  const firstLine = lines[0].trim().replace(/^#{1,6}\s+/, "");
+  if (normalizeComparableText(firstLine) === titleText) {
+    lines.shift();
+    while (lines.length && !lines[0]?.trim()) lines.shift();
+    return lines.join("\n");
+  }
+
+  return markdown;
+}
+
+function normalizeComparableText(value: string) {
+  return value
+    .replace(/^#+\s*/, "")
+    .replace(/[《》“”"'`*_#\s:：，。！？!?、-]/g, "")
+    .toLowerCase();
+}
+
 function draftStorageKey(contentId: string | null) {
   return `aicp:editor-draft:${contentId ?? "new"}`;
 }
@@ -244,11 +287,27 @@ function topicMatchScore(topicTitle: string, source: string) {
 const contentStatusLabels: Record<ContentStatus, string> = {
   [ContentStatus.Draft]: "草稿",
   [ContentStatus.PendingReview]: "安全审核通过",
-  [ContentStatus.Approved]: "已完成质量评估",
+  [ContentStatus.Approved]: "审核通过，可发布",
   [ContentStatus.Rejected]: "安全审核未通过",
   [ContentStatus.Published]: "已发布",
   [ContentStatus.Updated]: "已更新，待发布",
   [ContentStatus.Offline]: "已下线",
+};
+
+const visibilityLabels: Record<Visibility, string> = {
+  public: "公开",
+  followers: "仅粉丝可见",
+  private: "仅自己可见",
+};
+
+const publishTimeLabels: Record<PublishTimeMode, string> = {
+  now: "立即发布",
+  scheduled: "定时发布",
+};
+
+const coverModeLabels: Record<CoverMode, string> = {
+  single: "单图",
+  none: "无封面",
 };
 
 const qualityDimensionLabels: Record<keyof QualityScoreResult["dimensions"], string> = {
@@ -289,7 +348,7 @@ function payloadJson(payload: Record<string, unknown>, key: string) {
 
 function payloadCoverMode(payload: Record<string, unknown>, fallback: CoverMode): CoverMode {
   const value = payload.coverMode;
-  return value === "single" || value === "triple" || value === "none" ? value : fallback;
+  return value === "single" || value === "none" ? value : fallback;
 }
 
 function payloadPublishTimeMode(payload: Record<string, unknown>): PublishTimeMode {
@@ -299,6 +358,37 @@ function payloadPublishTimeMode(payload: Record<string, unknown>): PublishTimeMo
 function payloadVisibility(payload: Record<string, unknown>): Visibility {
   const value = payload.visibility;
   return value === "followers" || value === "private" || value === "public" ? value : "public";
+}
+
+function riskTypeLabel(type: AuditRiskItem["type"]) {
+  const labels: Record<AuditRiskItem["type"], string> = {
+    pornography: "涉黄",
+    gambling: "涉赌",
+    drug: "涉毒",
+    sensitive: "敏感",
+    vulgar: "低俗",
+    privacy: "隐私",
+    illegal: "违法",
+    fraud: "诈骗",
+    minor: "未成年人",
+    none: "无风险",
+  };
+  return labels[type] ?? type;
+}
+
+function riskSeverityLabel(severity: AuditRiskItem["severity"]) {
+  const labels: Record<AuditRiskItem["severity"], string> = {
+    low: "低风险",
+    medium: "中风险",
+    high: "高风险",
+  };
+  return labels[severity];
+}
+
+function riskSeverityClass(severity: AuditRiskItem["severity"]) {
+  if (severity === "high") return "bg-rose-100 text-rose-700";
+  if (severity === "medium") return "bg-amber-100 text-amber-700";
+  return "bg-slate-100 text-slate-600";
 }
 
 function textFromHtml(html: string) {
@@ -349,8 +439,8 @@ function snapshotFromCloudDraft(draft: CloudDraft, detail: ContentDetailForDraft
     viewpoint: payloadString(payload, "viewpoint"),
     publishTimeMode: payloadPublishTimeMode(payload),
     scheduledAt: payloadString(payload, "scheduledAt"),
+    selectedLocation: payloadString(payload, "selectedLocation"),
     visibility: payloadVisibility(payload),
-    allowCopy: payloadBoolean(payload, "allowCopy", true),
     originalStatement: payloadBoolean(payload, "originalStatement", false),
     contentStatement: payloadString(payload, "contentStatement", "无声明"),
   };
@@ -373,6 +463,7 @@ export default function EditorPage() {
   const bodyRef = useRef("");
   const contentIdRef = useRef<string | null>(editingContentId);
   const conversationIdRef = useRef<string | undefined>();
+  const publishRedirectTimerRef = useRef<number | null>(null);
 
   const [contentId, setContentId] = useState<string | null>(editingContentId);
   const [editingStatus, setEditingStatus] = useState<ContentStatus | null>(
@@ -396,7 +487,7 @@ export default function EditorPage() {
   const [showTitleCandidates, setShowTitleCandidates] = useState(false);
   const [statusMessage, setStatusMessage] = useState("编辑器已准备好");
   const [isLoadingInitial, setIsLoadingInitial] = useState(true);
-  const [isBusy, setIsBusy] = useState(false);
+  const [activeOperation, setActiveOperation] = useState<EditorOperation | null>(null);
   const [drafts, setDrafts] = useState<DraftCard[]>([]);
   const [hotTopics, setHotTopics] = useState<OfficialTopicSummary[]>([]);
   const [quickMenu, setQuickMenu] = useState<QuickMenu>(null);
@@ -411,12 +502,19 @@ export default function EditorPage() {
   const [publishTimeMode, setPublishTimeMode] =
     useState<PublishTimeMode>("now");
   const [scheduledAt, setScheduledAt] = useState("");
+  const [selectedLocation, setSelectedLocation] = useState("");
+  const [locationCandidates, setLocationCandidates] = useState<LocationCandidate[]>([]);
+  const [locationStatus, setLocationStatus] = useState<LocationStatus>("idle");
+  const [contentStatementOpen, setContentStatementOpen] = useState(false);
+  const [locationPickerOpen, setLocationPickerOpen] = useState(false);
+  const [visibilityOpen, setVisibilityOpen] = useState(false);
+  const [publishTimeOpen, setPublishTimeOpen] = useState(false);
   const [visibility, setVisibility] = useState<Visibility>("public");
-  const [allowCopy, setAllowCopy] = useState(true);
   const [originalStatement, setOriginalStatement] = useState(false);
   const [contentStatement, setContentStatement] = useState("无声明");
   const [assets, setAssets] = useState<AssetSummary[]>([]);
   const [assetPanel, setAssetPanel] = useState<null | "image" | "text">(null);
+  const [coverPickerOpen, setCoverPickerOpen] = useState(false);
   const [isUploadingAsset, setIsUploadingAsset] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [previewHtml, setPreviewHtml] = useState("");
@@ -424,14 +522,28 @@ export default function EditorPage() {
   const [reviewResult, setReviewResult] = useState<ReviewResultState>(null);
   const [reviewRewrite, setReviewRewrite] = useState<ReviewRewrite>(null);
   const [qualityResult, setQualityResult] = useState<QualityScoreResult | null>(null);
+  const [publishSuccess, setPublishSuccess] = useState(false);
   const [imageConfig, setImageConfig] = useState<{
     configured: boolean;
     missing: string[];
   } | null>(null);
+  const [searchKeyword, setSearchKeyword] = useState("");
+  const [isSearchingLocation, setIsSearchingLocation] = useState(false);
+  const isBusy = activeOperation !== null;
+  const isOperation = (operation: EditorOperation) => activeOperation === operation;
 
   const imageAssets = useMemo(() => assets.filter(isImageAsset), [assets]);
   const textAssets = useMemo(() => assets.filter(isTextAsset), [assets]);
   const wordCount = useMemo(() => body.replace(/\s/g, "").length, [body]);
+  const visibleReviewRiskItems = useMemo(
+    () => (reviewResult?.audit.riskItems ?? []).filter((item) => item.severity !== "low"),
+    [reviewResult],
+  );
+  const reviewReplacements = useMemo(() => reviewRewrite?.replacements ?? [], [reviewRewrite]);
+  const reviewReplacementByRiskItem = useMemo(
+    () => new Map(reviewReplacements.map((replacement) => [replacement.riskItemId, replacement])),
+    [reviewReplacements],
+  );
   const selectedTopicNameSet = useMemo(
     () => new Set(normalizeTopicList(selectedTopics)),
     [selectedTopics],
@@ -460,10 +572,17 @@ export default function EditorPage() {
       .map((item) => item.topic)
       .slice(0, 6);
   }, [body, briefTheme, hotTopics, selectedTopicNameSet, title, viewpoint]);
-  const canRunQualityReview = editingStatus === ContentStatus.PendingReview;
+  const qualityReadyStatuses = new Set<ContentStatus>([
+    ContentStatus.Approved,
+    ContentStatus.Updated,
+    ContentStatus.Published,
+    ContentStatus.PendingReview,
+  ]);
+  const canRunQualityReview = Boolean(editingStatus && qualityReadyStatuses.has(editingStatus));
   const canPublishContent =
     editingStatus === ContentStatus.Approved ||
-    editingStatus === ContentStatus.Updated;
+    editingStatus === ContentStatus.Updated ||
+    editingStatus === ContentStatus.PendingReview;
   const [editorHtmlContent, setEditorHtmlContent] = useState(""); // 当 editorRef 还没挂载时，把 HTML 存在状态里
   const [editorJsonContent, setEditorJsonContent] = useState<Record<string, unknown> | null>(null);
   const [editorResetKey, setEditorResetKey] = useState(0);
@@ -522,12 +641,23 @@ export default function EditorPage() {
     if (localSaveError) setStatusMessage(localSaveError);
   }, [localSaveError]);
 
+  useEffect(() => {
+    void refreshNearbyLocations(false);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (publishRedirectTimerRef.current) {
+        window.clearTimeout(publishRedirectTimerRef.current);
+      }
+    };
+  }, []);
+
   // 内容变更触发：先防抖写本地，再防抖尝试云端；hook 内部仍保留 30 秒轮询兜底。
   useEffect(() => {
     scheduleLocalDraftSave();
     scheduleCloudAutosave();
   }, [
-    allowCopy,
     assetIds,
     audience,
     body,
@@ -540,6 +670,7 @@ export default function EditorPage() {
     originalStatement,
     publishTimeMode,
     scheduledAt,
+    selectedLocation,
     selectedTopics,
     scheduleCloudAutosave,
     scheduleLocalDraftSave,
@@ -562,6 +693,24 @@ export default function EditorPage() {
     return (editorRef.current?.getJSON() as Record<string, unknown> | undefined) ?? editorJsonContent;
   }
 
+  function scheduledDate() {
+    return scheduledAt ? scheduledAt.slice(0, 10) : "";
+  }
+
+  function scheduledTime() {
+    return scheduledAt ? scheduledAt.slice(11, 16) : "";
+  }
+
+  function updateScheduledAtPart(part: "date" | "time", value: string) {
+    if (part === "date") {
+      setScheduledAt(value ? `${value}T${scheduledTime() || "09:00"}` : "");
+      return;
+    }
+
+    const date = scheduledDate();
+    setScheduledAt(date && value ? `${date}T${value}` : scheduledAt);
+  }
+
   function snapshot(): DraftCache {
     const currentBody = editorText();
     const currentHtml = editorHtml();
@@ -582,8 +731,8 @@ export default function EditorPage() {
       assetIds,
       publishTimeMode,
       scheduledAt,
+      selectedLocation,
       visibility,
-      allowCopy,
       originalStatement,
       contentStatement,
     };
@@ -610,8 +759,8 @@ export default function EditorPage() {
     setAssetIds(data.assetIds ?? []);
     setPublishTimeMode(data.publishTimeMode ?? "now");
     setScheduledAt(data.scheduledAt ?? "");
+    setSelectedLocation(data.selectedLocation ?? "");
     setVisibility(data.visibility ?? "public");
-    setAllowCopy(data.allowCopy ?? true);
     setOriginalStatement(data.originalStatement ?? false);
     setContentStatement(data.contentStatement ?? "无声明");
     writeEditorContent({ html: nextHtml, json: data.json ?? null, text: nextBody });
@@ -806,7 +955,8 @@ export default function EditorPage() {
       `确定删除「${draft.title || "未命名草稿"}」吗？删除后不可恢复。`,
     );
     if (!ok) return;
-    setIsBusy(true);
+    if (isBusy) return;
+    setActiveOperation("delete");
     try {
       await deleteContent(draft.id);
       removeLocalDraft(draft.id);
@@ -823,7 +973,7 @@ export default function EditorPage() {
           : "删除作品失败",
       );
     } finally {
-      setIsBusy(false);
+      setActiveOperation(null);
     }
   }
 
@@ -844,6 +994,60 @@ export default function EditorPage() {
         configured: status.configured,
         missing: status.missing,
       });
+    }
+  }
+
+  async function refreshNearbyLocations(manual: boolean) {
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      setLocationStatus("unsupported");
+      setLocationCandidates([]);
+      if (manual) setStatusMessage("当前浏览器不支持定位，请使用手动搜索");
+      return;
+    }
+
+    setLocationStatus("locating");
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        try {
+          const { latitude, longitude } = position.coords;
+          const response = await postNearbyLocations({ latitude, longitude });
+          setLocationCandidates(response.candidates);
+          setLocationStatus("ready");
+          if (manual) setStatusMessage("已更新附近地点候选");
+        } catch (error) {
+          setLocationStatus("failed");
+          setLocationCandidates([]);
+        }
+      },
+      (error) => {
+        const denied = error.code === error.PERMISSION_DENIED;
+        setLocationStatus(denied ? "denied" : "failed");
+        setLocationCandidates([]);
+        if (manual) {
+          setStatusMessage(denied ? "定位权限未开启，请使用手动搜索" : "定位失败，请使用手动搜索");
+        }
+      },
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 },
+    );
+  }
+
+  async function handleSearchLocation(keyword: string) {
+    const query = keyword.trim();
+    if (!query) return;
+
+    setIsSearchingLocation(true);
+    setLocationStatus("searching");
+
+    try {
+      const response = await searchLocations(query);
+      setLocationCandidates(response.candidates);
+      setLocationStatus("ready");
+      setStatusMessage(response.candidates.length ? "已获取地点搜索结果" : "没有找到匹配地点");
+    } catch (error) {
+      setLocationStatus("failed");
+    } finally {
+      setIsSearchingLocation(false);
     }
   }
 
@@ -985,8 +1189,9 @@ export default function EditorPage() {
       setStatusMessage("请先填写主题，或在右侧输入直接生成要求");
       return;
     }
+    if (isBusy) return;
 
-    setIsBusy(true);
+    setActiveOperation("draft");
     setStatusMessage("AI 正在生成结构化图文...");
     try {
       const generatedAssetIds: string[] = [];
@@ -1008,9 +1213,10 @@ export default function EditorPage() {
               const result = data.value as DirectGenerateResult;
               setTitle(result.title);
               setSelectedTopics(normalizeTopicList(result.tags));
-              setTitleCandidates(result.titleCandidates);
-              setShowTitleCandidates(Boolean(result.titleCandidates.length));
-              writeEditorMarkup(markdownToEditorHtml(result.bodyMarkdown), result.bodyMarkdown);
+              setTitleCandidates(result.titleCandidates.filter((candidate) => candidate.title !== result.title));
+              setShowTitleCandidates(false);
+              const cleanMarkdown = stripDuplicateTitleFromMarkdown(result.bodyMarkdown, result.title);
+              writeEditorMarkup(markdownToEditorHtml(cleanMarkdown), cleanMarkdown);
               setChatInput("");
               setStatusMessage("AI 初稿已填充，正在生成图片...");
             }
@@ -1024,9 +1230,10 @@ export default function EditorPage() {
               setAssetIds((items) => Array.from(new Set([...generatedAssetIds, ...items])));
               if (value.cover) {
                 setCoverPreview(asset.url);
+                setCoverMode("single");
+                setCoverPickerOpen(false);
               } else {
-                const figure = `<figure><img src="${asset.url}" alt="${escapeHtml(asset.position)}" /><figcaption>${escapeHtml(asset.position)}</figcaption></figure>`;
-                writeEditorMarkup(`${editorHtml()}${figure}`);
+                insertAsset(asset);
               }
             }
           },
@@ -1055,7 +1262,7 @@ export default function EditorPage() {
           : "AI 生成失败",
       );
     } finally {
-      setIsBusy(false);
+      setActiveOperation(null);
     }
   }
 
@@ -1067,7 +1274,8 @@ export default function EditorPage() {
       setStatusMessage("请先填写标题或正文，再生成封面图");
       return;
     }
-    setIsBusy(true);
+    if (isBusy) return;
+    setActiveOperation("cover-image");
     setStatusMessage("AI 正在生成封面图...");
     try {
       const generated = { asset: null as GeneratedImageAsset | null };
@@ -1108,6 +1316,8 @@ export default function EditorPage() {
         return;
       }
       setCoverPreview(finalAsset.url);
+      setCoverMode("single");
+      setCoverPickerOpen(false);
       setAssetIds((items) => Array.from(new Set([finalAsset.id, ...items])));
       await loadAssets();
       setStatusMessage("AI 封面图已生成，并加入素材库");
@@ -1118,12 +1328,13 @@ export default function EditorPage() {
           : "AI 封面生成失败",
       );
     } finally {
-      setIsBusy(false);
+      setActiveOperation(null);
     }
   }
 
   async function generateInlineImageFromText(prompt: string) {
-    setIsBusy(true);
+    if (isBusy) return;
+    setActiveOperation("inline-image");
     setStatusMessage("AI 正在生成正文配图...");
     try {
       const generated = { asset: null as GeneratedImageAsset | null };
@@ -1171,7 +1382,7 @@ export default function EditorPage() {
           : "AI 配图生成失败",
       );
     } finally {
-      setIsBusy(false);
+      setActiveOperation(null);
     }
   }
 
@@ -1181,7 +1392,8 @@ export default function EditorPage() {
       setStatusMessage("请先输入正文，再生成标题");
       return;
     }
-    setIsBusy(true);
+    if (isBusy) return;
+    setActiveOperation("title");
     try {
       const result = await generateCreativeTitles({
         currentTitle: title || undefined,
@@ -1198,7 +1410,7 @@ export default function EditorPage() {
           : "智能标题失败",
       );
     } finally {
-      setIsBusy(false);
+      setActiveOperation(null);
     }
   }
 
@@ -1268,7 +1480,8 @@ export default function EditorPage() {
       setStatusMessage("请先选中需要 AI 处理的文字");
       return;
     }
-    setIsBusy(true);
+    if (isBusy) return;
+    setActiveOperation("rewrite");
     try {
       const tone = toneOverride?.trim();
       const result = await rewriteSelection({
@@ -1287,7 +1500,7 @@ export default function EditorPage() {
           : "选区改写失败",
       );
     } finally {
-      setIsBusy(false);
+      setActiveOperation(null);
     }
   }
 
@@ -1309,6 +1522,8 @@ export default function EditorPage() {
       if (isImageAsset(asset)) {
         if (intent === "cover") {
           setCoverPreview(asset.url);
+          setCoverMode("single");
+          setCoverPickerOpen(false);
           setStatusMessage(`封面图已上传：${asset.fileName}`);
         } else if (intent === "insert") {
           insertAsset(asset);
@@ -1334,7 +1549,15 @@ export default function EditorPage() {
   function insertAsset(asset: AssetSummary) {
     setAssetIds((items) => Array.from(new Set([asset.id, ...items])));
     if (isImageAsset(asset)) {
-      editorRef.current?.insertImage(asset.url, asset.fileName);
+      if (!editorRef.current) {
+        const figure = `<figure><img src="${asset.url}" alt="${escapeHtml(asset.fileName)}" /></figure>`;
+        writeEditorMarkup(`${editorHtml()}${figure}`, editorText());
+        setStatusMessage("图片素材已插入正文");
+        if (!coverPreview) setCoverPreview(asset.url);
+        return;
+      } else {
+        editorRef.current.insertImage(asset.url, asset.fileName);
+      }
       syncBodyFromEditor("图片素材已插入正文");
       if (!coverPreview) setCoverPreview(asset.url);
       return;
@@ -1344,6 +1567,13 @@ export default function EditorPage() {
       markdownToEditorHtml(preview) || `<p>${escapeHtml(preview)}</p>`,
       "文本素材已插入正文",
     );
+  }
+
+  function removeCover() {
+    setCoverPreview("");
+    setCoverMode("none");
+    setCoverPickerOpen(false);
+    setStatusMessage("已移除封面");
   }
 
   function onAssetDragStart(
@@ -1380,9 +1610,10 @@ export default function EditorPage() {
     setShowPreview(true);
   }
 
-  // 提交审核前先保存内容；这里只做合规审核，质量分在作品管理通过审核时生成。
+  // 提交审核前先保存内容；这里只做安全合规，安全通过后即可发布。
   async function submitForReview() {
-    setIsBusy(true);
+    if (isBusy) return;
+    setActiveOperation("audit");
     setReviewRewrite(null);
     setStatusMessage("正在保存内容，准备内容审核...");
     try {
@@ -1413,6 +1644,9 @@ export default function EditorPage() {
         quality: null;
         rewrite: ReviewRewrite;
       };
+
+      console.log("审核结果", reviewed);
+
       setEditingStatus(reviewed.content.status);
       setLastContentSummary(reviewed.content);
       setReviewResult({ content: reviewed.content, audit: reviewed.audit });
@@ -1423,7 +1657,7 @@ export default function EditorPage() {
       if (reviewed.audit.passed) setShowPreview(false);
       setStatusMessage(
         reviewed.audit.passed
-          ? "安全审核通过，可继续进行质量评估与打分"
+          ? "安全审核通过，可直接发布；也可以先做质量评估作为分发参考"
           : `审核未通过：${reviewed.audit.reasons.join("；")}`,
       );
       await loadDraftCards();
@@ -1434,7 +1668,7 @@ export default function EditorPage() {
           : "内容审核失败",
       );
     } finally {
-      setIsBusy(false);
+      setActiveOperation(null);
     }
   }
 
@@ -1445,15 +1679,16 @@ export default function EditorPage() {
       return;
     }
     if (!canRunQualityReview) {
-      setStatusMessage("只有内容审核通过、处于待平台审核的内容才能进行质量评估");
+      setStatusMessage("内容需要先通过安全审核，才可以进行质量评估");
       return;
     }
+    if (isBusy) return;
 
-    setIsBusy(true);
+    setActiveOperation("quality");
     setStatusMessage("正在进行质量评估与打分...");
     try {
       const job = await runJob(
-        () => startApproveContentJob(targetId),
+        () => startQualityScoreJob(targetId),
         {
           onProgress: (data) => {
             if (typeof data.message === "string") setStatusMessage(data.message);
@@ -1488,7 +1723,7 @@ export default function EditorPage() {
           : "质量评估失败",
       );
     } finally {
-      setIsBusy(false);
+      setActiveOperation(null);
     }
   }
 
@@ -1499,17 +1734,22 @@ export default function EditorPage() {
       return;
     }
     if (!canPublishContent) {
-      setStatusMessage("内容需要完成质量评估并审核通过后才能发布");
+      setStatusMessage("内容需要先通过安全审核后才能发布");
       return;
     }
+    if (isBusy) return;
 
-    setIsBusy(true);
+    setActiveOperation("publish");
     setStatusMessage("正在发布内容...");
     try {
       const published = await publishContent(targetId);
       setLastContentSummary(published);
       setEditingStatus(published.status);
-      setStatusMessage("内容已发布");
+      setStatusMessage("内容已发布，正在跳转作品管理");
+      setPublishSuccess(true);
+      publishRedirectTimerRef.current = window.setTimeout(() => {
+        router.push("/content?status=published");
+      }, 1100);
     } catch (error) {
       setStatusMessage(
         error instanceof Error
@@ -1517,35 +1757,129 @@ export default function EditorPage() {
           : "发布失败",
       );
     } finally {
-      setIsBusy(false);
+      setActiveOperation(null);
     }
   }
 
-  function applyRewrite() {
-    if (!reviewRewrite) return;
-    setTitle(reviewRewrite.title);
-    writeEditorMarkup(textToEditorHtml(reviewRewrite.body), reviewRewrite.body);
-    setStatusMessage(`已应用合规改写：${reviewRewrite.reasons.join("；")}`);
-    setReviewRewrite(null);
+  function applyReplacement(replacement: ComplianceReplacement) {
+    const riskItem = reviewResult?.audit.riskItems.find((item) => item.id === replacement.riskItemId);
+    const changed = applyReplacementByRiskItem(replacement, riskItem);
+    setStatusMessage(changed ? `已替换风险片段：${replacement.reason}` : "未找到可替换的风险片段");
+  }
+
+  function applyAllReplacements() {
+    const replacements = reviewReplacements;
+    if (!replacements.length) {
+      setStatusMessage("暂无可逐条替换的风险片段");
+      return;
+    }
+
+    let nextTitle = title;
+    const riskItemsById = new Map((reviewResult?.audit.riskItems ?? []).map((item) => [item.id, item]));
+    const sorted = [...replacements].sort((left, right) => {
+      const leftItem = riskItemsById.get(left.riskItemId);
+      const rightItem = riskItemsById.get(right.riskItemId);
+      if ((leftItem?.field ?? "") !== (rightItem?.field ?? "")) {
+        return (rightItem?.field ?? "").localeCompare(leftItem?.field ?? "");
+      }
+      return (rightItem?.startOffset ?? -1) - (leftItem?.startOffset ?? -1);
+    });
+
+    let changed = 0;
+    const bodyReplacements: Array<{
+      original: string;
+      replacement: string;
+      startOffset?: number;
+      endOffset?: number;
+    }> = [];
+
+    for (const replacement of sorted) {
+      const riskItem = riskItemsById.get(replacement.riskItemId);
+      if (riskItem?.field === "title") {
+        const result = replaceInTextByRiskItem(nextTitle, replacement, riskItem);
+        if (!result.changed) continue;
+        nextTitle = result.text;
+        changed += 1;
+      } else {
+        bodyReplacements.push({
+          original: riskItem?.evidence || replacement.original,
+          replacement: replacement.replacement,
+          startOffset: riskItem?.startOffset,
+          endOffset: riskItem?.endOffset,
+        });
+      }
+    }
+
+    if (bodyReplacements.length && editorRef.current) {
+      changed += editorRef.current.replaceTextRanges(bodyReplacements);
+      syncBodyFromEditor();
+    } else if (bodyReplacements.length) {
+      let nextBody = editorText();
+      for (const replacement of sorted) {
+        const riskItem = riskItemsById.get(replacement.riskItemId);
+        if (riskItem?.field === "title") continue;
+        const result = replaceInTextByRiskItem(nextBody, replacement, riskItem);
+        if (!result.changed) continue;
+        nextBody = result.text;
+        changed += 1;
+      }
+      writeEditorMarkup(textToEditorHtml(nextBody), nextBody);
+    }
+
+    if (changed > 0 || nextTitle !== title) {
+      setTitle(nextTitle);
+    }
+    setStatusMessage(changed ? `已替换 ${changed} 个风险片段` : "未找到可替换的风险片段");
+  }
+
+  function applyReplacementByRiskItem(replacement: ComplianceReplacement, riskItem?: AuditRiskItem) {
+    if (riskItem?.field === "title") {
+      const result = replaceInTextByRiskItem(title, replacement, riskItem);
+      if (result.changed) setTitle(result.text);
+      return result.changed;
+    }
+
+    if (editorRef.current) {
+      const changed = editorRef.current.replaceTextRange({
+        original: riskItem?.evidence || replacement.original,
+        replacement: replacement.replacement,
+        startOffset: riskItem?.startOffset,
+        endOffset: riskItem?.endOffset,
+      });
+      if (changed) syncBodyFromEditor();
+      return changed;
+    }
+
+    const result = replaceInTextByRiskItem(editorText(), replacement, riskItem);
+    if (result.changed) writeEditorMarkup(textToEditorHtml(result.text), result.text);
+    return result.changed;
+  }
+
+  function replaceInTextByRiskItem(text: string, replacement: ComplianceReplacement, riskItem?: AuditRiskItem) {
+    const original = replacement.original || riskItem?.evidence || "";
+    if (
+      riskItem?.startOffset !== undefined &&
+      riskItem.endOffset !== undefined &&
+      text.slice(riskItem.startOffset, riskItem.endOffset) === original
+    ) {
+      return {
+        changed: true,
+        text: `${text.slice(0, riskItem.startOffset)}${replacement.replacement}${text.slice(riskItem.endOffset)}`,
+      };
+    }
+
+    if (!original || !text.includes(original)) {
+      return { changed: false, text };
+    }
+    return { changed: true, text: text.replace(original, replacement.replacement) };
   }
 
   function addTopic(topic: string) {
     const name = normalizeTopicName(topic);
     if (!name) return;
     setSelectedTopics((items) => normalizeTopicList([...items, name]));
-    const tagText = `#${name}`;
-    if (editorRef.current) {
-      if (editorRef.current.isFocused()) {
-        editorRef.current.insertText(`${editorText().trim() ? " " : ""}${tagText}`);
-      } else {
-        editorRef.current.insertTextAtEnd(`${editorText().trim() ? "\n\n" : ""}${tagText}`);
-      }
-      syncBodyFromEditor("已将话题添加到正文");
-    } else {
-      writeEditorMarkup(`${editorHtml()}${textToEditorHtml(tagText)}`);
-      setStatusMessage("已将话题添加到正文");
-    }
     setCustomTopicInput("");
+    setStatusMessage("已将话题添加到正文");
   }
 
   if (isLoadingInitial) {
@@ -1607,10 +1941,10 @@ export default function EditorPage() {
                   type="button"
                   onClick={() => void createAiDraft("brief")}
                   disabled={isBusy}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[#ff2442] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#e91635] disabled:opacity-60"
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[#ff2442] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#e91635] disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <Sparkles size={16} />
-                  AI 一键生成初稿
+                  {isOperation("draft") ? "AI 生成中..." : "AI 一键生成初稿"}
                 </button>
               </div>
             ) : (
@@ -1741,12 +2075,13 @@ export default function EditorPage() {
                 value={title}
                 onChange={(event) => setTitle(event.target.value)}
                 placeholder="填写标题会有更多赞哦"
-                className="w-full rounded-2xl border border-transparent bg-slate-50 px-4 py-4 pr-16 text-2xl font-bold outline-none placeholder:text-slate-300 focus:border-[#ff2442]/20 focus:bg-white"
+                className="w-full rounded-2xl border border-transparent bg-slate-50 px-4 py-4 pr-16 text-xl font-bold outline-none placeholder:text-slate-300 focus:border-[#ff2442]/20 focus:bg-white"
               />
               <button
                 type="button"
                 onClick={() => void generateSmartTitles()}
-                className="absolute right-3 top-1/2 grid size-10 -translate-y-1/2 place-items-center rounded-full bg-white text-[#ff2442] shadow-sm"
+                disabled={isBusy}
+                className="absolute right-3 top-1/2 grid size-10 -translate-y-1/2 place-items-center rounded-full bg-white text-[#ff2442] shadow-sm disabled:cursor-not-allowed disabled:opacity-50"
                 title="智能标题"
               >
                 <Wand2 size={18} />
@@ -1801,7 +2136,8 @@ export default function EditorPage() {
                   type="button"
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => void rewriteSelected("polish")}
-                  className="rounded-full px-3 py-1.5 text-slate-600 hover:bg-[#fff3f5] hover:text-[#ff2442]"
+                  disabled={isBusy}
+                  className="rounded-full px-3 py-1.5 text-slate-600 hover:bg-[#fff3f5] hover:text-[#ff2442] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   润色
                 </button>
@@ -1809,7 +2145,8 @@ export default function EditorPage() {
                   type="button"
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => void rewriteSelected("expand")}
-                  className="rounded-full px-3 py-1.5 text-slate-600 hover:bg-[#fff3f5] hover:text-[#ff2442]"
+                  disabled={isBusy}
+                  className="rounded-full px-3 py-1.5 text-slate-600 hover:bg-[#fff3f5] hover:text-[#ff2442] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   扩写
                 </button>
@@ -1829,7 +2166,8 @@ export default function EditorPage() {
                         type="button"
                         onMouseDown={(event) => event.preventDefault()}
                         onClick={() => void rewriteSelected("tone", tone)}
-                        className="rounded-full bg-slate-50 px-3 py-1.5 text-slate-600 hover:bg-[#fff3f5] hover:text-[#ff2442]"
+                        disabled={isBusy}
+                        className="rounded-full bg-slate-50 px-3 py-1.5 text-slate-600 hover:bg-[#fff3f5] hover:text-[#ff2442] disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {tone}
                       </button>
@@ -1838,7 +2176,11 @@ export default function EditorPage() {
                       value={customTone}
                       onChange={(event) => setCustomTone(event.target.value)}
                       onKeyDown={(event) => {
-                        if (event.key === "Enter" && customTone.trim()) {
+                        if (
+                          event.key === "Enter" &&
+                          customTone.trim() &&
+                          !isBusy
+                        ) {
                           event.preventDefault();
                           void rewriteSelected("tone", customTone);
                         }
@@ -1854,8 +2196,8 @@ export default function EditorPage() {
                         customTone.trim() &&
                         void rewriteSelected("tone", customTone)
                       }
-                      className="rounded-full bg-[#ff2442] px-3 py-1.5 text-white disabled:opacity-50"
-                      disabled={!customTone.trim()}
+                      className="rounded-full bg-[#ff2442] px-3 py-1.5 text-white disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={isBusy || !customTone.trim()}
                     >
                       应用
                     </button>
@@ -1968,236 +2310,358 @@ export default function EditorPage() {
           </section>
 
           <section className="rounded-3xl border border-slate-100 bg-white p-5 shadow-sm">
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-bold text-slate-950">匹配正文话题</h2>
-              <span className="text-xs text-slate-400">根据当前内容推荐</span>
-            </div>
-            <div className="grid gap-3 md:grid-cols-2">
-              {recommendedTopics.slice(0, 4).map((topic) => (
-                <button
-                  key={topic.id}
-                  type="button"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => addTopic(topic.title)}
-                  className="flex items-center gap-3 rounded-2xl bg-slate-50 p-3 text-left transition hover:bg-[#fff3f5]"
-                >
-                  {topic.coverUrl ? (
-                    <img
-                      src={topic.coverUrl}
-                      alt={topic.title}
-                      className="size-14 rounded-xl object-cover"
-                    />
-                  ) : (
-                    <div className="grid size-14 place-items-center rounded-xl bg-white text-[#ff2442]">
-                      <Hash size={20} />
-                    </div>
-                  )}
-                  <span className="min-w-0">
-                    <span className="block truncate text-sm font-semibold text-slate-900">
-                      #{topic.title}
-                    </span>
-                    <span className="line-clamp-1 block text-xs text-slate-500">
-                      {topic.description}
-                    </span>
-                  </span>
-                </button>
-              ))}
-              {!recommendedTopics.length ? (
-                <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-400">
-                  继续完善标题和正文后，这里会自动推荐更匹配的话题。
-                </div>
-              ) : null}
-            </div>
-          </section>
-
-          <section className="rounded-3xl border border-slate-100 bg-white p-5 shadow-sm">
             <h2 className="mb-4 text-lg font-bold text-slate-950">内容设置</h2>
             <div className="space-y-5">
-              <div>
-                <div className="mb-3 flex flex-wrap items-center gap-3">
-                  <span className="text-sm font-semibold text-slate-700">
+              <div className="space-y-3">
+                <div className="flex min-h-14 w-full flex-wrap items-center justify-between gap-3 rounded-2xl bg-slate-50 px-4 py-3">
+                  <span className="flex items-center gap-3 text-base text-slate-700">
+                    <ImagePlus size={18} className="text-slate-500" />
                     展示封面
                   </span>
-                  <TogglePill
-                    active={coverMode === "single"}
-                    label="单图"
-                    onClick={() => setCoverMode("single")}
-                  />
-                  <TogglePill
-                    active={coverMode === "none"}
-                    label="无封面"
-                    onClick={() => setCoverMode("none")}
-                  />
-                </div>
-                {coverMode !== "none" ? (
-                  <div className="flex flex-wrap items-center gap-4 rounded-2xl bg-slate-50 p-4">
-                    {coverPreview ? (
-                      <img
-                        src={coverPreview}
-                        alt="封面预览"
-                        onError={() => setCoverPreview("")}
-                        className="h-28 w-44 rounded-2xl object-cover"
-                      />
-                    ) : (
+                  <div className="flex rounded-full bg-white p-1 shadow-sm">
+                    {(["single", "none"] as CoverMode[]).map((mode) => (
                       <button
+                        key={mode}
                         type="button"
-                        onClick={() => openImageUpload("cover")}
-                        className="flex h-28 w-44 flex-col items-center justify-center rounded-2xl border border-dashed border-[#ff2442]/30 bg-white text-[#ff2442] transition hover:border-[#ff2442] hover:bg-[#fff3f5]"
+                        onClick={() => setCoverMode(mode)}
+                        className={`h-8 rounded-full px-4 text-sm transition ${
+                          coverMode === mode
+                            ? "bg-[#ff2442] font-bold text-white"
+                            : "text-slate-500 hover:text-[#ff2442]"
+                        }`}
                       >
-                        <span className="grid size-10 place-items-center rounded-full bg-[#fff3f5]">
-                          <ImagePlus size={22} />
-                        </span>
-                        <span className="mt-2 text-xs font-semibold text-slate-600">
-                          添加封面
-                        </span>
+                        {coverModeLabels[mode]}
                       </button>
-                    )}
-                    <div className="space-y-2">
-                      <p className="text-sm text-slate-500">
-                        优质封面有助于信息流推荐，支持上传或 AI 生成。
-                      </p>
-                      <div className="flex flex-wrap gap-2">
+                    ))}
+                  </div>
+                </div>
+
+                {coverMode !== "none" ? (
+                  <div className="rounded-2xl bg-slate-50 p-3">
+                    <div className="flex flex-wrap items-center gap-3">
+                      {coverPreview ? (
+                        <div className="relative">
+                          <img
+                            src={coverPreview}
+                            alt="封面预览"
+                            onError={() => setCoverPreview("")}
+                            className="h-24 w-36 rounded-2xl object-cover"
+                          />
+                          <span className="absolute left-2 top-2 rounded-full bg-black/45 px-2 py-1 text-sm font-semibold text-white">
+                            当前封面
+                          </span>
+                        </div>
+                      ) : (
                         <button
                           type="button"
                           onClick={() => openImageUpload("cover")}
-                          className="rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                          className="flex h-24 w-36 flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-white text-slate-500 transition hover:border-[#ff2442]/40 hover:bg-[#fff3f5] hover:text-[#ff2442]"
                         >
-                          上传封面
+                          <ImagePlus size={22} />
+                          <span className="mt-2 text-sm font-semibold">添加封面</span>
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => void generateCoverImage()}
-                          disabled={isBusy || imageConfig?.configured === false}
-                          className="rounded-xl bg-[#ff2442] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-                        >
-                          AI 生成封面
-                        </button>
-                      </div>
-                      {imageConfig?.configured === false ? (
-                        <p className="text-xs text-rose-500">
-                          文生图配置缺失：{imageConfig.missing.join("、")}
+                      )}
+                      <div className="min-w-56 flex-1">
+                        <p className="text-base text-slate-500">
+                          支持上传封面或使用 AI 生成，发布前可随时切换。
                         </p>
-                      ) : null}
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => openImageUpload("cover")}
+                            className="h-9 rounded-xl bg-white px-4 text-sm font-bold text-slate-700 shadow-sm transition hover:text-[#ff2442]"
+                          >
+                            上传封面
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void generateCoverImage()}
+                            disabled={isBusy || imageConfig?.configured === false}
+                            className="h-9 rounded-xl bg-[#ff2442] px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {isOperation("cover-image") ? "生成中..." : "AI 生成"}
+                          </button>
+                          {coverPreview ? (
+                            <button
+                              type="button"
+                              onClick={removeCover}
+                              className="h-9 rounded-xl bg-rose-50 px-4 text-base font-bold text-rose-600"
+                            >
+                              移除
+                            </button>
+                          ) : null}
+                        </div>
+                        {imageConfig?.configured === false ? (
+                          <p className="mt-2 text-xs text-rose-500">
+                            文生图配置缺失：{imageConfig.missing.join("、")}
+                          </p>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
                 ) : null}
               </div>
 
-              <div>
-                <h3 className="mb-3 text-sm font-semibold text-slate-700">
-                  作品声明
-                </h3>
-                <div className="grid gap-3 md:grid-cols-2">
-                  <SettingsSwitch
-                    label="原创声明"
-                    checked={originalStatement}
-                    onChange={setOriginalStatement}
-                  />
-                  <div className="flex rounded-2xl bg-slate-50 px-4 py-3">
-                    <label className="items-center text-sm font-semibold text-slate-700">
-                      内容类型声明
-                    </label>
-                    <select
-                      value={contentStatement}
-                      onChange={(event) =>
-                        setContentStatement(event.target.value)
-                      }
-                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none"
-                    >
-                      {contentStatements.map((item) => (
-                        <option key={item}>{item}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              </div>
+              <div className="space-y-3">
+                <button
+                  type="button"
+                  onClick={() => setOriginalStatement((value) => !value)}
+                  className="flex h-14 w-full items-center justify-between rounded-2xl bg-slate-50 px-4 text-left transition hover:bg-slate-100"
+                >
+                  <span className="flex items-center gap-3 text-base text-slate-700">
+                    <ShieldCheck size={18} className="text-slate-500" />
+                    原创声明
+                  </span>
+                  <span className={`relative h-8 w-14 rounded-full transition ${originalStatement ? "bg-[#ff2442]" : "bg-slate-300"}`}>
+                    <span className={`absolute top-1 size-6 rounded-full bg-white shadow-sm transition ${originalStatement ? "left-7" : "left-1"}`} />
+                  </span>
+                </button>
 
-              <div>
-                <h3 className="mb-3 text-sm font-semibold text-slate-700">
-                  权限设置
-                </h3>
-                <div className="grid gap-3 md:grid-cols-2">
-                  <div className="rounded-2xl bg-slate-50 px-4 py-3">
-                    <p className="mb-3 text-sm font-semibold text-slate-700">
-                      公开范围
-                    </p>
-                    <div className="flex flex-wrap gap-2">
-                      <TogglePill
-                        active={visibility === "public"}
-                        label="公开"
-                        onClick={() => setVisibility("public")}
-                      />
-                      <TogglePill
-                        active={visibility === "followers"}
-                        label="粉丝可见"
-                        onClick={() => setVisibility("followers")}
-                      />
-                      <TogglePill
-                        active={visibility === "private"}
-                        label="仅自己可见"
-                        onClick={() => setVisibility("private")}
-                      />
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setContentStatementOpen((value) => !value)}
+                    className="flex h-14 w-full items-center justify-between rounded-2xl bg-slate-50 px-4 text-left transition hover:bg-slate-100"
+                  >
+                    <span className="flex min-w-0 items-center gap-3 text-base text-slate-700">
+                      <FileText size={18} className="text-slate-500" />
+                      <span className="truncate">
+                        {contentStatement === "无声明" ? "添加内容类型声明" : contentStatement}
+                      </span>
+                    </span>
+                    <ChevronDown size={18} className={`shrink-0 text-slate-500 transition ${contentStatementOpen ? "rotate-180" : ""}`} />
+                  </button>
+                  {contentStatementOpen ? (
+                    <div className="mt-2 overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-lg">
+                      {contentStatements.map((item) => (
+                        <button
+                          key={item}
+                          type="button"
+                          onClick={() => {
+                            setContentStatement(item);
+                            setContentStatementOpen(false);
+                          }}
+                          className={`flex w-full items-center justify-between px-4 py-3 text-left text-sm transition hover:bg-slate-50 ${
+                            contentStatement === item ? "font-bold text-[#ff2442]" : "font-medium text-slate-700"
+                          }`}
+                        >
+                          {item === "无声明" ? "不添加内容类型声明" : item}
+                          {contentStatement === item ? <CheckCircle2 size={16} /> : null}
+                        </button>
+                      ))}
                     </div>
-                  </div>
-                  <SettingsSwitch
-                    label="允许正文复制"
-                    checked={allowCopy}
-                    onChange={setAllowCopy}
-                  />
-                  <div className="rounded-2xl bg-slate-50 px-4 py-3">
-                    <p className="mb-3 text-sm font-semibold text-slate-700">
-                      发布时间
-                    </p>
-                    <div className="flex flex-wrap gap-2">
-                      <TogglePill
-                        active={publishTimeMode === "now"}
-                        label="立即发布"
-                        onClick={() => setPublishTimeMode("now")}
-                      />
-                      <TogglePill
-                        active={publishTimeMode === "scheduled"}
-                        label="定时发布"
-                        onClick={() => setPublishTimeMode("scheduled")}
-                      />
+                  ) : null}
+                </div>
+
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setLocationPickerOpen((value) => !value)}
+                    className="flex h-14 w-full items-center justify-between rounded-2xl bg-slate-50 px-4 text-left transition hover:bg-slate-100"
+                  >
+                    <span className="flex min-w-0 items-center gap-3 text-base text-slate-700">
+                      <MapPin size={18} className="text-slate-500" />
+                      <span className="truncate">{selectedLocation || "添加地点"}</span>
+                    </span>
+                    <ChevronDown size={18} className={`shrink-0 text-slate-500 transition ${locationPickerOpen ? "rotate-180" : ""}`} />
+                  </button>
+
+                  {locationPickerOpen ? (
+                    <div className="mt-2 overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-xl">
+                      <div className="border-b border-slate-100 p-3">
+                        <div className="flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-2 transition focus-within:ring-4 focus-within:ring-[#ff2442]/10">
+                          <Search size={15} className="text-slate-400" />
+                          <input
+                            value={searchKeyword}
+                            onChange={(event) => setSearchKeyword(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                event.preventDefault();
+                                void handleSearchLocation(searchKeyword);
+                              }
+                            }}
+                            placeholder="搜索地点、商圈或景点"
+                            className="min-w-0 flex-1 bg-transparent text-base text-slate-800 outline-none placeholder:text-slate-400"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => void handleSearchLocation(searchKeyword)}
+                            disabled={isSearchingLocation || !searchKeyword.trim()}
+                            className="h-8 text-base font-bold text-slate-800 transition hover:text-[#ff2442] disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {isSearchingLocation ? "搜索中" : "搜索"}
+                          </button>
+                        </div>
+                        <div className="mt-2 flex items-center justify-between gap-2 text-xs">
+                          <button
+                            type="button"
+                            onClick={() => void refreshNearbyLocations(true)}
+                            disabled={locationStatus === "locating"}
+                            className="font-bold text-slate-500 transition hover:text-[#ff2442] disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {locationStatus === "locating" ? "定位中..." : "重新获取附近地点"}
+                          </button>
+                          {selectedLocation ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedLocation("");
+                                setLocationPickerOpen(false);
+                              }}
+                              className="font-bold text-slate-400 transition hover:text-[#ff2442]"
+                            >
+                              清除地点
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <div className="max-h-72 overflow-y-auto py-1">
+                        {locationCandidates.length ? (
+                          locationCandidates.map((location) => (
+                            <button
+                              key={location.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedLocation(location.name);
+                                setLocationPickerOpen(false);
+                              }}
+                              className="block w-full px-5 py-3 text-left transition hover:bg-slate-50"
+                            >
+                              <span className="block text-base font-semibold text-slate-900">
+                                {location.name}
+                              </span>
+                              <span className="mt-1 block truncate text-xs text-slate-400">
+                                {location.address || "附近地点"}
+                                {location.distance !== undefined ? ` · ${Math.round(location.distance)}m` : ""}
+                              </span>
+                            </button>
+                          ))
+                        ) : (
+                          <div className="px-5 py-6 text-sm text-slate-400">
+                            {locationStatus === "locating"
+                              ? "正在获取附近地点..."
+                              : "暂无地点候选，可以输入关键词搜索。"}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                    {publishTimeMode === "scheduled" ? (
-                      <input
-                        type="datetime-local"
-                        value={scheduledAt}
-                        onChange={(event) => setScheduledAt(event.target.value)}
-                        className="mt-3 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none"
-                      />
-                    ) : null}
-                  </div>
+                  ) : null}
                 </div>
               </div>
             </div>
           </section>
 
-          {reviewRewrite ? (
-            <section className="rounded-3xl border border-rose-100 bg-[#fff3f5] p-5 text-sm text-rose-900">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h2 className="font-bold">审核未通过，可应用 AI 合规改写</h2>
-                  <p className="mt-1">{reviewRewrite.reasons.join("；")}</p>
-                </div>
+          <section className="rounded-3xl border border-slate-100 bg-white p-5 shadow-sm">
+            <h2 className="mb-4 text-lg font-bold text-slate-950">发布设置</h2>
+            <div className="space-y-3">
+              <div className="relative">
                 <button
                   type="button"
-                  onClick={applyRewrite}
-                  className="rounded-full bg-[#ff2442] px-5 py-2 font-semibold text-white"
+                  onClick={() => setVisibilityOpen((value) => !value)}
+                  className="flex h-14 w-full items-center justify-between rounded-2xl bg-slate-50 px-4 text-left transition hover:bg-slate-100"
                 >
-                  一键替换为合规版本
+                  <span className="flex min-w-0 items-center gap-3 text-base text-slate-700">
+                    <Eye size={18} className="text-slate-500" />
+                    <span className="truncate">谁可以看：{visibilityLabels[visibility]}</span>
+                  </span>
+                  <ChevronDown size={18} className={`shrink-0 text-slate-500 transition ${visibilityOpen ? "rotate-180" : ""}`} />
                 </button>
+                {visibilityOpen ? (
+                  <div className="mt-2 overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-lg">
+                    {(["public", "followers", "private"] as Visibility[]).map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        onClick={() => {
+                          setVisibility(value);
+                          setVisibilityOpen(false);
+                        }}
+                        className={`flex w-full items-center justify-between px-4 py-3 text-left text-base transition hover:bg-slate-50 ${
+                          visibility === value ? "font-bold text-[#ff2442]" : "text-slate-700"
+                        }`}
+                      >
+                        {visibilityLabels[value]}
+                        {visibility === value ? <CheckCircle2 size={16} /> : null}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </div>
-            </section>
-          ) : null}
 
-          <section className="rounded-3xl border border-slate-100 bg-white p-4 shadow-sm">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 text-slate-950">
-                <ShieldCheck size={18} className="text-[#ff2442]" />
-                <h2 className="font-bold">发布流转</h2>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setPublishTimeOpen((value) => !value)}
+                  className="flex h-14 w-full items-center justify-between rounded-2xl bg-slate-50 px-4 text-left transition hover:bg-slate-100"
+                >
+                  <span className="flex min-w-0 items-center gap-3 text-base text-slate-700">
+                    <Clock3 size={18} className="text-slate-500" />
+                    <span className="truncate">
+                      发布时间：{publishTimeMode === "scheduled" && scheduledAt ? `${scheduledDate()} ${scheduledTime() || ""}` : publishTimeLabels[publishTimeMode]}
+                    </span>
+                  </span>
+                  <ChevronDown size={18} className={`shrink-0 text-slate-500 transition ${publishTimeOpen ? "rotate-180" : ""}`} />
+                </button>
+                {publishTimeOpen ? (
+                  <div className="mt-2 overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-lg">
+                    {(["now", "scheduled"] as PublishTimeMode[]).map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        onClick={() => setPublishTimeMode(value)}
+                        className={`flex w-full items-center justify-between px-4 py-3 text-left text-base transition hover:bg-slate-50 ${
+                          publishTimeMode === value ? "font-bold text-[#ff2442]" : "text-slate-700"
+                        }`}
+                      >
+                        {publishTimeLabels[value]}
+                        {publishTimeMode === value ? <CheckCircle2 size={16} /> : null}
+                      </button>
+                    ))}
+
+                    {publishTimeMode === "scheduled" ? (
+                      <div className="border-t border-slate-100 bg-slate-50 p-3">
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <label className="text-xs font-bold text-slate-500">
+                            日期
+                            <input
+                              type="date"
+                              value={scheduledDate()}
+                              onChange={(event) => updateScheduledAtPart("date", event.target.value)}
+                              className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-base text-slate-800 outline-none transition focus:border-[#ff2442]/40 focus:ring-4 focus:ring-[#ff2442]/10"
+                            />
+                          </label>
+                          <label className="text-xs font-bold text-slate-500">
+                            时间
+                            <input
+                              type="time"
+                              value={scheduledTime()}
+                              disabled={!scheduledDate()}
+                              onChange={(event) => updateScheduledAtPart("time", event.target.value)}
+                              className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-base text-slate-800 outline-none transition focus:border-[#ff2442]/40 focus:ring-4 focus:ring-[#ff2442]/10 disabled:cursor-not-allowed disabled:opacity-50"
+                            />
+                          </label>
+                        </div>
+                        {scheduledAt ? (
+                          <button
+                            type="button"
+                            onClick={() => setScheduledAt("")}
+                            className="mt-3 text-xs font-bold text-slate-500 transition hover:text-[#ff2442]"
+                          >
+                            清除定时
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
+            </div>
+          </section>
+
+          <section className="rounded-3xl border border-slate-100 bg-white p-5 shadow-sm">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h2 className="text-lg font-semibold">发布流转</h2>
               {editingStatus ? (
                 <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">
                   {contentStatusLabels[editingStatus]}
@@ -2205,11 +2669,11 @@ export default function EditorPage() {
               ) : null}
             </div>
 
-            <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <button
                 type="button"
                 onClick={openPreview}
-                className="h-11 items-center justify-center gap-2 rounded-2xl bg-slate-100 px-8 text-sm font-bold text-slate-700 transition hover:bg-slate-200"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-slate-100 px-4 text-base font-bold text-slate-700 transition hover:bg-slate-200"
               >
                 预览
               </button>
@@ -2217,90 +2681,173 @@ export default function EditorPage() {
                 type="button"
                 onClick={() => void submitForReview()}
                 disabled={isBusy}
-                className="h-11 items-center justify-center gap-2 rounded-2xl bg-[#ff2442] px-4 text-sm font-bold text-white transition hover:bg-[#e91635] disabled:opacity-60"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-[#ff2442] px-4 text-base font-bold text-white transition hover:bg-[#e91635] disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {isBusy ? "处理中..." : "内容审核"}
+                {isOperation("audit") ? "审核中..." : "内容审核"}
               </button>
               <button
                 type="button"
                 onClick={() => void runQualityAssessment()}
                 disabled={isBusy || !canRunQualityReview}
-                className="h-11 items-center justify-center gap-2 rounded-2xl bg-emerald-50 px-4 text-sm font-bold text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-emerald-50 px-4 text-base font-bold text-emerald-700 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                质量评估
+                {isOperation("quality") ? "评估中..." : "质量评估"}
               </button>
               <button
                 type="button"
                 onClick={() => void publishCurrentContent()}
                 disabled={isBusy || !canPublishContent}
-                className="h-11 items-center justify-center gap-2 rounded-2xl bg-[#ff2442] px-4 text-sm font-bold text-white transition hover:bg-[#e91635] disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-[#ff2442] px-4 text-base font-bold text-white transition hover:bg-[#e91635] disabled:cursor-not-allowed disabled:opacity-60"
               >
-                发布
+                {isOperation("publish") ? "发布中..." : "发布"}
               </button>
             </div>
 
             {reviewResult ? (
               <div
-                className={`rounded-2xl my-3 p-3 text-sm ${
+                className={`mt-3 rounded-2xl p-3 text-sm ${
                   reviewResult.audit.passed
                     ? "bg-emerald-50 text-emerald-800"
                     : "bg-rose-50 text-rose-800"
                 }`}
               >
-                <p className="font-bold">
-                  {reviewResult.audit.passed
-                    ? "安全审核通过"
-                    : "安全审核未通过"}
-                </p>
-                <p className="mt-1 leading-6">
-                  {reviewResult.audit.reasons.length
-                    ? reviewResult.audit.reasons.join("；")
-                    : reviewResult.audit.passed
-                      ? "未发现明显合规风险。"
-                      : "存在合规风险，请根据建议修改。"}
-                </p>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <p className="font-bold">
+                    {reviewResult.audit.passed
+                      ? "安全审核通过"
+                      : "安全审核未通过"}
+                  </p>
+                  {!reviewResult.audit.passed && reviewReplacements.length ? (
+                    <button
+                      type="button"
+                      onClick={applyAllReplacements}
+                      className="shrink-0 rounded-full bg-[#ff2442] px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-rose-100"
+                    >
+                      一键替换全部风险片段
+                    </button>
+                  ) : null}
+                </div>
+                {visibleReviewRiskItems.length ? (
+                  <div className="mt-3 grid gap-2">
+                    {visibleReviewRiskItems.map((item) => {
+                      const replacement = reviewReplacementByRiskItem.get(
+                        item.id,
+                      );
+                      return (
+                        <div
+                          key={item.id}
+                          className="rounded-xl bg-white/80 p-3 text-sm text-slate-700"
+                        >
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span
+                              className={`rounded-full px-2 py-0.5 items-center justify-center font-bold ${riskSeverityClass(item.severity)}`}
+                            >
+                              {riskSeverityLabel(item.severity)}
+                            </span>
+                            <span className="rounded-full bg-slate-100 px-2 py-0.5 items-center justify-center font-bold text-slate-600">
+                              {riskTypeLabel(item.type)}
+                            </span>
+                            <span className="font-semibold text-slate-400">
+                              置信度 {Math.round(item.confidence * 100)}%
+                            </span>
+                          </div>
+                          <p className="mt-2 font-semibold text-slate-900">
+                            风险片段：{item.evidence}
+                          </p>
+                          <p className="mt-1 leading-5 italic text-xs">
+                            {item.reason}
+                          </p>
+                          {replacement ? (
+                            <div className="flex flex-wrap items-center justify-between mt-2 rounded-xl bg-rose-50 px-3 py-2 text-rose-900">
+                              <p className="font-bold">
+                                替代表达：{replacement.replacement}
+                              </p>
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => applyReplacement(replacement)}
+                                  className="shrink-0 rounded-full bg-white px-3 py-1 font-bold text-[#ff2442] shadow-sm transition hover:bg-[#fff3f5]"
+                                >
+                                  替换该片段
+                                </button>
+                              </div>
+                            </div>
+                          ) : item.suggestion ? (
+                            <p className="mt-1 text-slate-500">
+                              建议：{item.suggestion}
+                            </p>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : null}
               </div>
             ) : null}
 
             {qualityResult ? (
-              <div className="mt-3 rounded-2xl border border-emerald-100 bg-white p-3">
-                <div className="flex items-end justify-between gap-3">
+              <div className="mt-3 rounded-2xl border border-emerald-100 bg-white p-3 shadow-sm">
+                {/* 头部：总分看板 */}
+                <div className="flex items-center justify-between border-b border-emerald-50 pb-4">
                   <div>
-                    <p className="text-sm font-bold text-emerald-800">
+                    <p className="text-sm font-bold uppercase tracking-wider text-emerald-800">
                       质量综合分
                     </p>
-                    <p className="mt-1 text-3xl font-black text-emerald-600">
+                    <p className="mt-1 flex items-baseline gap-1.5 text-4xl font-black text-emerald-600">
                       {qualityResult.total}
+                      <span className="text-sm font-bold text-emerald-600/40">
+                        / 100
+                      </span>
                     </p>
                   </div>
-                  <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700">
-                    可用于推荐参考
+                  <span className="rounded-full bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700">
+                    分发参考
                   </span>
                 </div>
-                <div className="mt-3 space-y-2">
-                  {Object.entries(qualityResult.dimensions).map(
-                    ([key, value]) => (
-                      <div
-                        key={key}
-                        className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2 text-xs"
-                      >
-                        <span className="font-semibold text-slate-600">
-                          {
-                            qualityDimensionLabels[
-                              key as keyof QualityScoreResult["dimensions"]
-                            ]
-                          }
-                        </span>
-                        <span className="font-black text-slate-900">
-                          {value}
-                        </span>
-                      </div>
-                    ),
-                  )}
+
+                {/* 中部核心区：采用 grid 动态分栏 */}
+                <div className="mt-6 grid grid-cols-1 items-center gap-8 md:grid-cols-12">
+                  {/* 左侧：放大的雷达图，占据 7/12 的宽度 */}
+                  <div className="mx-auto w-full md:col-span-7 md:max-w-full p-2">
+                    <QualityRadarChart quality={qualityResult} />
+                  </div>
+
+                  {/* 右侧：得分列表，占据 5/12 的宽度 */}
+                  <div className="flex flex-col gap-2 md:col-span-5">
+                    {Object.entries(qualityResult.dimensions).map(
+                      ([key, value]) => (
+                        <div
+                          key={key}
+                          className="flex items-center justify-between rounded-2xl bg-slate-50/80 border border-slate-100 px-4 py-3 shadow-2xs"
+                        >
+                          <span className="text-sm font-bold text-slate-500">
+                            {
+                              qualityDimensionLabels[
+                                key as keyof QualityScoreResult["dimensions"]
+                              ]
+                            }
+                          </span>
+                          <span className="text-sm font-black text-slate-800">
+                            {value}
+                            <span className="ml-0.5 font-normal text-slate-400">
+                              /20
+                            </span>
+                          </span>
+                        </div>
+                      ),
+                    )}
+                  </div>
                 </div>
-                <p className="mt-3 text-sm leading-6 text-slate-500">
-                  {qualityResult.reason}
-                </p>
+
+                {/* 底部：AI 详细评价 */}
+                <div className="mt-6 rounded-2xl bg-emerald-50/40 border border-emerald-100/50 p-4">
+                  <p className="text-sm leading-6 text-emerald-800">
+                    <span className="font-extrabold text-emerald-700">
+                      AI 诊断报告：
+                    </span>
+                    {qualityResult.reason}
+                  </p>
+                </div>
               </div>
             ) : lastContentSummary?.qualityScore ? (
               <div className="mt-3 rounded-2xl bg-emerald-50 p-3 text-sm text-emerald-800">
@@ -2394,10 +2941,13 @@ export default function EditorPage() {
                                   message.content,
                                 )
                               }
-                              className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600 hover:bg-[#fff3f5] hover:text-[#ff2442]"
+                              disabled={isBusy}
+                              className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600 hover:bg-[#fff3f5] hover:text-[#ff2442] disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               <ImagePlus size={13} />
-                              生成配图
+                              {isOperation("inline-image")
+                                ? "生成中..."
+                                : "生成配图"}
                             </button>
                           </div>
                         ) : null}
@@ -2433,13 +2983,15 @@ export default function EditorPage() {
                     : void sendCreativeChatMessage()
                 }
                 disabled={isBusy || isChatStreaming}
-                className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-[#ff2442] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+                className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-[#ff2442] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <Sparkles size={16} />
                 {isChatStreaming
                   ? "AI 输出中..."
                   : aiMode === "direct"
-                    ? "生成到编辑区"
+                    ? isOperation("draft")
+                      ? "生成中..."
+                      : "生成到编辑区"
                     : "发送给 AI"}
               </button>
             </div>
@@ -2527,6 +3079,20 @@ export default function EditorPage() {
         />
       ) : null}
 
+      {publishSuccess ? (
+        <div className="fixed inset-0 z-60 grid place-items-center bg-black/35 px-4">
+          <div className="w-full max-w-sm rounded-3xl bg-white p-7 text-center shadow-2xl">
+            <div className="mx-auto grid size-14 place-items-center rounded-full bg-emerald-50 text-emerald-600">
+              <CheckCircle2 size={30} />
+            </div>
+            <h3 className="mt-4 text-xl font-black text-slate-950">已发布</h3>
+            <p className="mt-2 text-sm leading-6 text-slate-500">
+              内容已进入已发布列表，正在跳转作品管理。
+            </p>
+          </div>
+        </div>
+      ) : null}
+
       {showPreview ? (
         <div className="fixed inset-0 z-50">
           <div
@@ -2570,7 +3136,13 @@ export default function EditorPage() {
                   ))}
                 </div>
               ) : null}
-              <article className="mt-5 rounded-2xl bg-slate-50 p-5 text-[16px] leading-8 text-slate-800">
+              {selectedLocation ? (
+                <div className="mt-3 inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+                  <MapPin size={14} />
+                  {selectedLocation}
+                </div>
+              ) : null}
+              <article className="mt-5 rounded-2xl bg-slate-50 p-5 text-base leading-8 text-slate-800">
                 <RichTextRenderer
                   content={{
                     html: previewHtml || editorHtml(),
@@ -2596,9 +3168,9 @@ export default function EditorPage() {
                   type="button"
                   onClick={() => void submitForReview()}
                   disabled={isBusy}
-                  className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-[#ff2442] px-6 text-sm font-bold text-white transition hover:bg-[#e91635] disabled:opacity-60"
+                  className="inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-[#ff2442] px-6 text-sm font-bold text-white transition hover:bg-[#e91635] disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {isBusy ? "提交中..." : "内容审核"}
+                  {isOperation("audit") ? "审核中..." : "内容审核"}
                 </button>
               </div>
             </div>
@@ -2609,49 +3181,80 @@ export default function EditorPage() {
   );
 }
 
+function QualityRadarChart({ quality }: { quality: QualityScoreResult }) {
+  const entries = (Object.entries(quality.dimensions) as Array<[
+    keyof QualityScoreResult["dimensions"],
+    number,
+  ]>).slice(0, 5);
+  const size = 200;
+  const center = size / 2;
+  const radius = size * 0.5;
+  const maxDimensionScore = 20;
+
+  const pointFor = (index: number, value: number) => {
+    const angle = -Math.PI / 2 + (index * 2 * Math.PI) / entries.length;
+    const distance = radius * Math.max(0, Math.min(value, maxDimensionScore)) / maxDimensionScore;
+    return {
+      x: center + Math.cos(angle) * distance,
+      y: center + Math.sin(angle) * distance,
+    };
+  };
+  const axisPointFor = (index: number, distance = radius) => {
+    const angle = -Math.PI / 2 + (index * 2 * Math.PI) / entries.length;
+    return {
+      x: center + Math.cos(angle) * distance,
+      y: center + Math.sin(angle) * distance,
+    };
+  };
+  const polygon = entries.map(([, value], index) => pointFor(index, value)).map((point) => `${point.x},${point.y}`).join(" ");
+
+  // 移除了外层的 bg-emerald-50/50 包装，使其背景透明，并轻微增加了 SVG 的溢出可见性防止截断
+  return (
+    <svg viewBox={`0 0 ${size} ${size}`} className="mx-auto size-full max-w-52.5 overflow-visible">
+      {[0.25, 0.5, 0.75, 1].map((scale) => (
+        <polygon
+          key={scale}
+          points={entries.map((_, index) => {
+            const point = axisPointFor(index, radius * scale);
+            return `${point.x},${point.y}`;
+          }).join(" ")}
+          fill="none"
+          stroke="rgba(16,185,129,0.18)"
+        />
+      ))}
+      {entries.map(([key], index) => {
+        const axis = axisPointFor(index);
+        const label = axisPointFor(index, radius + 22); // 文字稍微收紧一点点
+        return (
+          <g key={key}>
+            <line x1={center} y1={center} x2={axis.x} y2={axis.y} stroke="rgba(15,23,42,0.08)" />
+            <text
+              x={label.x}
+              y={label.y}
+              textAnchor="middle"
+              dominantBaseline="middle"
+              className="fill-slate-500 text-sm font-semibold"
+            >
+              {qualityDimensionLabels[key]}
+            </text>
+          </g>
+        );
+      })}
+      <polygon points={polygon} fill="rgba(16,185,129,0.28)" stroke="#10b981" strokeWidth="2" />
+      {entries.map(([, value], index) => {
+        const point = pointFor(index, value);
+        return <circle key={index} cx={point.x} cy={point.y} r="3.5" fill="#10b981" />;
+      })}
+    </svg>
+  );
+}
+
 function Field({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (value: string) => void; placeholder: string }) {
   return (
     <label className="block">
       <span className="mb-1 block text-sm font-medium text-slate-700">{label}</span>
       <input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-[#ff2442]/50 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10" />
     </label>
-  );
-}
-
-function PickerPanel({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div className="absolute left-0 top-[calc(100%+8px)] z-30 w-full min-w-72 rounded-2xl border border-slate-100 bg-white p-3 shadow-xl">
-      <p className="mb-2 text-xs font-semibold text-slate-400">{title}</p>
-      <div className="space-y-1">{children}</div>
-    </div>
-  );
-}
-
-function PickerItem({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
-  return (
-    <button type="button" onClick={onClick} className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm ${active ? "bg-[#fff3f5] text-[#ff2442]" : "text-slate-600 hover:bg-slate-50"}`}>
-      {label}
-      {active ? <BadgeCheck size={16} /> : null}
-    </button>
-  );
-}
-
-function TogglePill({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
-  return (
-    <button type="button" onClick={onClick} className={`rounded-full px-4 py-2 text-sm font-semibold transition ${active ? "bg-[#ff2442] text-white" : "bg-slate-100 text-slate-600 hover:bg-[#fff3f5] hover:text-[#ff2442]"}`}>
-      {label}
-    </button>
-  );
-}
-
-function SettingsSwitch({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
-  return (
-    <button type="button" onClick={() => onChange(!checked)} className="flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-3 text-left">
-      <span className="font-medium text-slate-800">{label}</span>
-      <span className={`relative h-7 w-12 rounded-full transition ${checked ? "bg-[#ff2442]" : "bg-slate-300"}`}>
-        <span className={`absolute top-1 size-5 rounded-full bg-white transition ${checked ? "left-6" : "left-1"}`} />
-      </span>
-    </button>
   );
 }
 

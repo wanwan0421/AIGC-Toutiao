@@ -303,7 +303,7 @@ export default function DashboardPage() {
                     type="button"
                     onClick={() => setProfileOpen(true)}
                     disabled={!profile}
-                    className="inline-flex h-10 items-center gap-2 rounded-full bg-rose-600 px-4 text-[14px] font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+                    className="inline-flex h-10 items-center gap-2 rounded-full bg-rose-600 px-4 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:cursor-not-allowed disabled:bg-slate-300"
                   >
                     <UserRound className="h-4 w-4" />
                     修改资料
@@ -424,7 +424,7 @@ export default function DashboardPage() {
                         className="w-full rounded-t-xl bg-linear-to-t from-rose-500 to-orange-300"
                         style={{ height: `${point.value}%` }}
                       />
-                      <span className="text-[10px] font-bold text-slate-400">
+                      <span className="text-xs font-bold text-slate-400">
                         {point.label}
                       </span>
                     </div>

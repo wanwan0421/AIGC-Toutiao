@@ -113,7 +113,7 @@ function MetricCard({ label, value }: { label: string; value: string }) {
 function SmallMetric({ label, value }: { label: string; value: number }) {
   return (
     <div>
-      <div className="text-[11px] font-bold text-slate-400">{label}</div>
+      <div className="text-xs font-bold text-slate-400">{label}</div>
       <div className="text-lg font-black text-slate-950">{value}</div>
     </div>
   );

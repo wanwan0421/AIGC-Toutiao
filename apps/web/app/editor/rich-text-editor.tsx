@@ -64,6 +64,15 @@ export type RichTextEditorHandle = {
   insertTextAtEnd: (text: string) => void;
   insertImage: (src: string, alt?: string) => void;
   replaceSelection: (text: string) => void;
+  replaceTextRange: (input: RichTextReplaceInput) => boolean;
+  replaceTextRanges: (inputs: RichTextReplaceInput[]) => number;
+};
+
+export type RichTextReplaceInput = {
+  original: string;
+  replacement: string;
+  startOffset?: number;
+  endOffset?: number;
 };
 
 export type RichTextInitialContent = {
@@ -117,6 +126,60 @@ function editorValue(editor: Editor): RichTextValue {
   };
 }
 
+function buildPlainTextPositionMap(editor: Editor) {
+  const positions: number[] = [];
+  let text = "";
+  let lastTextEnd: number | null = null;
+
+  editor.state.doc.descendants((node, pos) => {
+    if (!node.isText || !node.text) return;
+
+    if (lastTextEnd !== null && pos > lastTextEnd && text.length > 0 && !text.endsWith("\n\n")) {
+      positions[text.length] = lastTextEnd;
+      text += "\n";
+      positions[text.length] = lastTextEnd;
+      text += "\n";
+    }
+
+    for (let index = 0; index < node.text.length; index += 1) {
+      positions[text.length] = pos + index;
+      text += node.text[index];
+    }
+    lastTextEnd = pos + node.text.length;
+  });
+
+  positions[text.length] = lastTextEnd ?? 0;
+  return { text, positions };
+}
+
+function replaceTextRange(editor: Editor, input: RichTextReplaceInput) {
+  if (!input.replacement) return false;
+  const original = input.original;
+  const { text, positions } = buildPlainTextPositionMap(editor);
+  let start = -1;
+  let end = -1;
+
+  if (
+    original &&
+    input.startOffset !== undefined &&
+    input.endOffset !== undefined &&
+    text.slice(input.startOffset, input.endOffset) === original
+  ) {
+    start = input.startOffset;
+    end = input.endOffset;
+  } else if (original) {
+    start = text.indexOf(original);
+    end = start >= 0 ? start + original.length : -1;
+  }
+
+  const from = positions[start];
+  const to = positions[end];
+  if (start < 0 || end < 0 || from === undefined || to === undefined || from > to) return false;
+
+  editor.chain().focus().setTextSelection({ from, to }).insertContent(input.replacement).run();
+  return true;
+}
+
 function highlightRegistry() {
   if (typeof window === "undefined" || typeof CSS === "undefined") return null;
   const registry = (CSS as unknown as {
@@ -154,9 +217,9 @@ function paintSelectionHighlight(editor: Editor, from: number, to: number) {
 function editorContentClassName(readonly = false) {
   return [
     "editor-surface-wrapper",
-    "[&_.ProseMirror]:min-h-130 [&_.ProseMirror]:rounded-2xl [&_.ProseMirror]:px-2 [&_.ProseMirror]:py-5 [&_.ProseMirror]:text-[17px] [&_.ProseMirror]:leading-9 [&_.ProseMirror]:text-slate-800 [&_.ProseMirror]:outline-none",
+    "[&_.ProseMirror]:min-h-130 [&_.ProseMirror]:rounded-2xl [&_.ProseMirror]:px-2 [&_.ProseMirror]:py-5 [&_.ProseMirror]:text-base [&_.ProseMirror]:leading-8 [&_.ProseMirror]:text-slate-800 [&_.ProseMirror]:outline-none",
     readonly ? "[&_.ProseMirror]:min-h-0 [&_.ProseMirror]:p-0" : "",
-    "[&_.ProseMirror_p]:my-3 [&_.ProseMirror_h1]:mb-5 [&_.ProseMirror_h1]:mt-7 [&_.ProseMirror_h1]:text-3xl [&_.ProseMirror_h1]:font-black [&_.ProseMirror_h1]:leading-tight [&_.ProseMirror_h2]:mb-4 [&_.ProseMirror_h2]:mt-6 [&_.ProseMirror_h2]:text-2xl [&_.ProseMirror_h2]:font-black [&_.ProseMirror_h3]:mb-3 [&_.ProseMirror_h3]:mt-5 [&_.ProseMirror_h3]:text-xl [&_.ProseMirror_h3]:font-bold",
+    "[&_.ProseMirror_p]:my-3 [&_.ProseMirror_h1]:mb-5 [&_.ProseMirror_h1]:mt-7 [&_.ProseMirror_h1]:text-2xl [&_.ProseMirror_h1]:font-black [&_.ProseMirror_h1]:leading-tight [&_.ProseMirror_h2]:mb-4 [&_.ProseMirror_h2]:mt-6 [&_.ProseMirror_h2]:text-xl [&_.ProseMirror_h2]:font-black [&_.ProseMirror_h3]:mb-3 [&_.ProseMirror_h3]:mt-5 [&_.ProseMirror_h3]:text-lg [&_.ProseMirror_h3]:font-bold",
     "[&_.ProseMirror_ul]:my-4 [&_.ProseMirror_ul]:list-disc [&_.ProseMirror_ul]:pl-6 [&_.ProseMirror_ol]:my-4 [&_.ProseMirror_ol]:list-decimal [&_.ProseMirror_ol]:pl-6 [&_.ProseMirror_li]:my-1",
     "[&_.ProseMirror_blockquote]:my-5 [&_.ProseMirror_blockquote]:border-l-4 [&_.ProseMirror_blockquote]:border-[#ff2442]/30 [&_.ProseMirror_blockquote]:bg-[#fff3f5] [&_.ProseMirror_blockquote]:px-4 [&_.ProseMirror_blockquote]:py-2 [&_.ProseMirror_blockquote]:text-rose-900",
     "[&_.ProseMirror_code]:rounded [&_.ProseMirror_code]:bg-slate-100 [&_.ProseMirror_code]:px-1.5 [&_.ProseMirror_code]:py-0.5 [&_.ProseMirror_code]:text-sm [&_.ProseMirror_code]:text-slate-700",
@@ -289,12 +352,41 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
           editor?.chain().focus("end").insertContent(text).run();
         },
         insertImage: (src, alt) => {
-          editor?.chain().focus().setImage({ src, alt }).insertContent("<p></p>").run();
+          editor
+            ?.chain()
+            .focus()
+            .insertContent([
+              { type: "image", attrs: { src, alt } },
+              { type: "paragraph" },
+            ])
+            .run();
         },
         replaceSelection: (text) => {
           editor?.chain().focus().insertContent(text).run();
           clearSelectionHighlight();
           onSelectionChange?.(null);
+        },
+        replaceTextRange: (input) => {
+          if (!editor) return false;
+          const changed = replaceTextRange(editor, input);
+          if (changed) {
+            clearSelectionHighlight();
+            onSelectionChange?.(null);
+          }
+          return changed;
+        },
+        replaceTextRanges: (inputs) => {
+          if (!editor) return 0;
+          let changed = 0;
+          const sorted = [...inputs].sort((left, right) => (right.startOffset ?? -1) - (left.startOffset ?? -1));
+          for (const input of sorted) {
+            if (replaceTextRange(editor, input)) changed += 1;
+          }
+          if (changed) {
+            clearSelectionHighlight();
+            onSelectionChange?.(null);
+          }
+          return changed;
         },
       }),
       [editor, onSelectionChange]

@@ -13,6 +13,9 @@ import { ImageGenerationService } from "./image-generation.service";
 import { MemoryService } from "./memory.service";
 import { ModelClientService } from "./model-client.service";
 import { PromptTemplateService } from "./prompt-template.service";
+import { SafetyResultMerger } from "./safety/safety-result-merger.service";
+import { SafetyRuleEngine } from "./safety/safety-rule-engine.service";
+import { SafetyRuleLoader } from "./safety/safety-rule-loader.service";
 import { ContentQualitySkill } from "./skills/content-quality.skill";
 import { CreativeAssistantSkill } from "./skills/creative-assistant.skill";
 import { CreativeProductionSkill } from "./skills/creative-production.skill";
@@ -26,6 +29,9 @@ const providers = [
   MemoryService,
   ModelClientService,
   PromptTemplateService,
+  SafetyRuleLoader,
+  SafetyRuleEngine,
+  SafetyResultMerger,
   DraftGeneratorAgent,
   IdeaAssistantAgent,
   SelectionRewriterAgent,

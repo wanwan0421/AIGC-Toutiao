@@ -83,9 +83,9 @@ export class ContentWorkflowEngine {
     return { ok: true, conversationId: conversation.id, contentId: body.contentId };
   }
 
+  // 提交审核，审核不通过则更新状态为 rejected，并返回审核结果和改写建议；审核通过则更新状态为 approved。
   async submitReview(userId: string, id: string) {
     const content = await this.getOwnedContent(userId, id);
-    // 提交审核只处理合规问题；质量评分在 approve 阶段生成。
     const result = await this.reviewAndPersist({
       contentId: id,
       title: content.title,
@@ -134,13 +134,24 @@ export class ContentWorkflowEngine {
   }
 
   async approve(userId: string, id: string): Promise<ContentApprovalResult> {
+    return this.scoreQuality(userId, id);
+  }
+
+  async scoreQuality(userId: string, id: string): Promise<ContentApprovalResult> {
     const content = await this.getOwnedContent(userId, id);
-    if (content.status !== DbContentStatus.pending_review) {
-      throw new BadRequestException("only pending_review content can be approved");
+    const allowed = new Set<DbContentStatus>([
+      DbContentStatus.approved,
+      DbContentStatus.updated,
+      DbContentStatus.published,
+      DbContentStatus.pending_review,
+    ]);
+    if (!allowed.has(content.status)) {
+      throw new BadRequestException("content must pass safety review before quality scoring");
     }
 
-    // 人工/平台审核通过后再生成质量分，作为后续分发和推荐参考。
+    // 质量评分只为推荐/分发提供参考，不参与安全审核是否通过。
     const quality = await this.contentQualitySkill.score({ title: content.title, body: content.body });
+    const nextStatus = content.status === DbContentStatus.pending_review ? DbContentStatus.approved : content.status;
     const [, updated] = await this.prisma.$transaction([
       this.prisma.qualityScore.create({
         data: {
@@ -154,7 +165,7 @@ export class ContentWorkflowEngine {
       this.prisma.content.update({
         where: { id },
         data: {
-          status: DbContentStatus.approved,
+          status: nextStatus,
           qualityScore: quality.total,
         },
         include: contentInclude,
@@ -169,7 +180,11 @@ export class ContentWorkflowEngine {
 
   async publish(userId: string, id: string) {
     const content = await this.getOwnedContent(userId, id);
-    if (content.status !== DbContentStatus.approved && content.status !== DbContentStatus.updated) {
+    if (
+      content.status !== DbContentStatus.approved &&
+      content.status !== DbContentStatus.updated &&
+      content.status !== DbContentStatus.pending_review
+    ) {
       throw new BadRequestException("content must be approved before publish");
     }
 
@@ -215,7 +230,7 @@ export class ContentWorkflowEngine {
           riskLevel: toDbAuditRiskLevel(audit.riskLevel),
           riskTypes: audit.riskTypes,
           reasons: audit.reasons,
-          rawResponse: audit as unknown as Prisma.InputJsonValue,
+          rawResponse: { audit, rewrite } as unknown as Prisma.InputJsonValue,
         },
       });
 
@@ -224,7 +239,7 @@ export class ContentWorkflowEngine {
         ? { qualityScore: 0, status: DbContentStatus.rejected }
         : null
       : input.updateStatus
-        ? { status: DbContentStatus.pending_review }
+        ? { status: DbContentStatus.approved }
         : null;
 
     if (contentUpdateData) {

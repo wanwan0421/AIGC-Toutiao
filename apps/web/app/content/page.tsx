@@ -11,7 +11,7 @@ import {
   getContents,
   offlineContent,
   publishContent,
-  startApproveContentJob,
+  startQualityScoreJob,
   startComplianceRewriteJob,
   startSubmitReviewJob,
   updateContent,
@@ -20,7 +20,7 @@ import { useAiJob } from "../../lib/use-ai-job";
 
 const statusLabels: Record<ContentStatus, string> = {
   [ContentStatus.Draft]: "草稿",
-  [ContentStatus.PendingReview]: "待审核",
+  [ContentStatus.PendingReview]: "安全审核通过",
   [ContentStatus.Approved]: "审核通过",
   [ContentStatus.Rejected]: "审核驳回",
   [ContentStatus.Published]: "已发布",
@@ -38,6 +38,19 @@ const statusClasses: Record<ContentStatus, string> = {
   [ContentStatus.Offline]: "bg-slate-100 text-slate-500",
 };
 
+// 草稿箱在业务上是“未发布工作台”，不等同于数据库里的 draft 单状态。
+const draftWorkbenchStatuses = new Set<ContentStatus>([
+  ContentStatus.Draft,
+  ContentStatus.PendingReview,
+  ContentStatus.Approved,
+  ContentStatus.Updated,
+  ContentStatus.Rejected,
+]);
+
+function isContentStatus(value: string | null): value is ContentStatus {
+  return Object.values(ContentStatus).includes(value as ContentStatus);
+}
+
 function formatTime(value?: string) {
   if (!value) return "暂未发布";
   const date = new Date(value);
@@ -49,7 +62,7 @@ function actionLabel(content: ContentSummary, busyId: string | null) {
   if (busyId === content.id) return "处理中...";
   if (content.status === ContentStatus.Rejected) return "一键合规改写";
   if (content.status === ContentStatus.Draft) return "提交审核";
-  if (content.status === ContentStatus.PendingReview) return "通过审核";
+  if (content.status === ContentStatus.PendingReview) return "质量评估";
   if (content.status === ContentStatus.Approved || content.status === ContentStatus.Updated) return "发布更新";
   if (content.status === ContentStatus.Published) return "下线";
   return "执行操作";
@@ -67,19 +80,20 @@ export default function ContentPage() {
   const searchParams = useSearchParams();
   const { runJob } = useAiJob();
   const statusFilterValue = searchParams.get("status");
-  const statusFilter = Object.values(ContentStatus).includes(statusFilterValue as ContentStatus)
-    ? (statusFilterValue as ContentStatus)
-    : null;
+  const statusFilter = isContentStatus(statusFilterValue) ? statusFilterValue : null;
+  const isDraftWorkbenchFilter = statusFilterValue === "drafts" || statusFilter === ContentStatus.Draft;
 
   const [contents, setContents] = useState<ContentSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [message, setMessage] = useState("正在加载作品...");
 
-  const filteredContents = useMemo(
-    () => (statusFilter ? contents.filter((item) => item.status === statusFilter) : contents),
-    [contents, statusFilter]
-  );
+  const filteredContents = useMemo(() => {
+    if (isDraftWorkbenchFilter) {
+      return contents.filter((item) => draftWorkbenchStatuses.has(item.status));
+    }
+    return statusFilter ? contents.filter((item) => item.status === statusFilter) : contents;
+  }, [contents, isDraftWorkbenchFilter, statusFilter]);
 
   useEffect(() => {
     let cancelled = false;
@@ -158,15 +172,15 @@ export default function ContentPage() {
         }>(() => startSubmitReviewJob(content.id), "提交审核失败");
         setMessage(
           response.audit.passed
-            ? "草稿已提交审核，审核通过后将生成质量分"
+            ? "安全审核通过，可直接发布；也可以先做质量评估"
             : `草稿审核未通过：${response.audit.reasons.join("；")}`
         );
       } else if (content.status === ContentStatus.PendingReview) {
         const approved = await runContentJob<ContentApprovalResult>(
-          () => startApproveContentJob(content.id),
-          "审核通过失败"
+          () => startQualityScoreJob(content.id),
+          "质量评估失败"
         );
-        setMessage(`「${content.title}」已通过审核，质量分 ${approved.quality.total}`);
+        setMessage(`「${content.title}」质量评估完成，综合分 ${approved.quality.total}`);
       } else if (content.status === ContentStatus.Approved || content.status === ContentStatus.Updated) {
         await publishContent(content.id);
         setMessage(`「${content.title}」已发布`);
@@ -199,11 +213,10 @@ export default function ContentPage() {
   }
 
   const tabs = [
-    { label: "全部作品", value: null },
-    { label: "已发布", value: ContentStatus.Published },
-    { label: "草稿箱", value: ContentStatus.Draft },
-    { label: "审核中", value: ContentStatus.PendingReview },
-    { label: "未通过", value: ContentStatus.Rejected },
+    { label: "全部作品", href: "/content", active: !statusFilterValue },
+    { label: "已发布", href: `/content?status=${ContentStatus.Published}`, active: statusFilter === ContentStatus.Published },
+    { label: "草稿箱", href: "/content?status=drafts", active: isDraftWorkbenchFilter },
+    { label: "未通过", href: `/content?status=${ContentStatus.Rejected}`, active: statusFilter === ContentStatus.Rejected },
   ];
 
   return (
@@ -211,7 +224,6 @@ export default function ContentPage() {
       <header className="mb-6 flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-normal text-slate-950">作品管理</h1>
-          <p className="mt-2 text-sm text-slate-500">{message}</p>
         </div>
         <Link
           href="/editor"
@@ -225,9 +237,9 @@ export default function ContentPage() {
         {tabs.map((tab) => (
           <Link
             key={tab.label}
-            href={tab.value ? `/content?status=${tab.value}` : "/content"}
+            href={tab.href}
             className={`whitespace-nowrap rounded-full px-5 py-2 text-sm font-medium transition ${
-              statusFilter === tab.value
+              tab.active
                 ? "bg-white font-semibold text-[#ff2442] shadow-sm"
                 : "text-slate-500 hover:text-slate-900"
             }`}
@@ -283,34 +295,13 @@ export default function ContentPage() {
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap items-center justify-start gap-2 lg:justify-end">
+                  <div className="flex flex-wrap h-full items-start justify-start gap-2 lg:justify-end">
                     <Link href={`/content/${content.id}`} className="inline-flex items-center gap-2 rounded-full bg-slate-50 px-4 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900">
                       <Icons.Book className="h-4 w-4" /> 查看详情
                     </Link>
                     <Link href={`/editor?contentId=${content.id}`} className="inline-flex items-center gap-2 rounded-full bg-slate-50 px-4 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900">
                       <Icons.PenTool className="h-4 w-4" /> 编辑作品
                     </Link>
-                    <button
-                      type="button"
-                      disabled={busyId === content.id}
-                      onClick={() => void handleLifecycleAction(content)}
-                      className={`inline-flex items-center gap-2 rounded-full px-5 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${
-                        content.status === ContentStatus.Rejected
-                          ? "bg-[#ff2442] text-white hover:bg-[#e91635]"
-                          : content.status === ContentStatus.PendingReview
-                            ? "bg-amber-50 text-amber-700 hover:bg-amber-100"
-                            : isReadyToPublish
-                              ? "bg-emerald-50 text-emerald-600 hover:bg-emerald-100"
-                              : "border border-slate-200 bg-white text-slate-700 hover:border-[#ff2442]/30 hover:text-[#ff2442]"
-                      }`}
-                    >
-                      {content.status === ContentStatus.Rejected ? <Icons.Sparkles className="h-4 w-4" /> : null}
-                      {content.status === ContentStatus.Draft ? <Icons.Refresh className="h-4 w-4" /> : null}
-                      {content.status === ContentStatus.PendingReview ? <Icons.Shield className="h-4 w-4" /> : null}
-                      {isReadyToPublish ? <Icons.Rocket className="h-4 w-4" /> : null}
-                      {content.status === ContentStatus.Published ? <Icons.Trash className="h-4 w-4" /> : null}
-                      {actionLabel(content, busyId)}
-                    </button>
                     <button
                       type="button"
                       disabled={busyId === content.id}

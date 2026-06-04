@@ -8,7 +8,7 @@ export function makeGeneratedDraft(topic: string, style = "清爽、实用", mat
     title: `${safeTopic}：一篇可以直接发布的短图文初稿`,
     body: `开头：围绕“${safeTopic}”给读者一个明确的问题场景，让内容从第一句话就有代入感。\n\n第一部分：用 ${style} 的表达方式交代核心观点，避免空泛描述。\n\n第二部分：拆成 3-5 个可执行步骤，每一步都给出具体做法和适用人群。\n\n第三部分：补充个人判断或避坑提醒，让内容不像模板堆砌。\n\n结尾：用一句行动建议收束，引导读者收藏、评论或尝试。\n\n${materialLine}`,
     tags: Array.from(new Set([safeTopic, "AI创作", "短图文"].map((tag) => tag.slice(0, 12)))),
-    coverSuggestion: `封面建议突出“${safeTopic}”的核心视觉：主体清晰、背景干净，标题控制在 12 字以内。`
+    coverSuggestion: `封面建议突出“${safeTopic}”的核心视觉：主体清晰、背景干净，标题控制在 12 字以内。`,
   };
 }
 
@@ -23,16 +23,21 @@ export function buildAuditResult(title: string, body: string): AuditResult {
       riskLevel: AuditRiskLevel.Low,
       riskTypes: ["none"],
       reasons: ["未发现高危合规风险。"],
-      rewriteAvailable: false
+      rewriteAvailable: false,
+      riskItems: [],
+      categoryScores: {},
     };
   }
 
+  const type = hits.includes("隐私") || hits.includes("身份证") ? "privacy" : "sensitive";
   return {
     passed: false,
     riskLevel: hits.length > 1 ? AuditRiskLevel.High : AuditRiskLevel.Medium,
-    riskTypes: hits.includes("隐私") || hits.includes("身份证") ? ["privacy"] : ["sensitive"],
+    riskTypes: [type],
     reasons: [`检测到可能违规或敏感表达：${hits.join("、")}。`],
-    rewriteAvailable: true
+    rewriteAvailable: true,
+    riskItems: [],
+    categoryScores: {},
   };
 }
 
@@ -52,8 +57,8 @@ export function buildQualityScore(title: string, body: string): QualityScoreResu
       clarity,
       value,
       attraction,
-      compliance
+      compliance,
     },
-    reason: total >= 85 ? "结构完整、表达清晰，适合进入审核发布流程。" : "内容可用，但建议继续补充结构、细节或合规表达。"
+    reason: total >= 85 ? "结构完整、表达清晰，适合进入发布流程。" : "内容可用，但建议继续补充结构、细节或合规表达。",
   };
 }

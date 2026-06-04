@@ -65,7 +65,7 @@ export class WorkflowJobRunner {
       case AiJobType.ContentSubmitReview:
         return this.runContentSubmitReview(jobId, userId, contentId);
       case AiJobType.ContentApprove:
-        return this.runContentApprove(jobId, userId, contentId);
+        return this.runContentQualityScore(jobId, userId, contentId);
       case AiJobType.ModerationContentRun:
         return this.runModerationContentAudit(jobId, contentId);
       case AiJobType.ComplianceRewrite:
@@ -153,10 +153,10 @@ export class WorkflowJobRunner {
     return result;
   }
 
-  private async runContentApprove(jobId: string, userId: string, contentId?: string) {
+  private async runContentQualityScore(jobId: string, userId: string, contentId?: string) {
     if (!contentId) throw new Error("contentId is required");
-    await this.progress(jobId, 20, "质量评分", "审核通过后正在生成质量分");
-    const result = await this.workflow.approve(userId, contentId);
+    await this.progress(jobId, 20, "质量评估", "正在生成质量分，结果只作为分发推荐参考");
+    const result = await this.workflow.scoreQuality(userId, contentId);
     await this.partial(jobId, "quality", result.quality);
     await this.partial(jobId, "content", result.content);
     return result;

@@ -460,21 +460,48 @@ async function seedPrompts(userId: string) {
       id: "prompt_safety_review",
       name: AI_PROMPT_NAMES.safetyReview,
       scene: PromptScene.audit,
-      variables: ["title", "body"],
+      variables: ["title", "body", "ruleRiskItemsJson"],
       modelOptions: { temperature: 0.15 },
       template: `你是中文内容安全审核专家，只负责判断内容是否合规，不做质量评分，也不做改写。
+请重点识别涉黄、涉赌、涉毒、敏感信息、低俗表达、隐私泄露、违法交易、诈骗黑产、未成年人风险、夸大绝对化等风险。
 
 标题：{{title}}
 正文：{{body}}
 
-请检查涉黄、赌博、毒品、敏感信息、低俗表达、隐私泄露、夸大绝对化等风险。
+规则引擎预检命中的候选风险片段如下，可能有误杀，请复核，也要补充规则未命中的语义风险：
+{{ruleRiskItemsJson}}
+
 只返回 JSON，不要输出 Markdown 或额外解释：
 {
-  "passed": true,
-  "riskLevel": "low",
-  "riskTypes": ["none"],
-  "reasons": ["未发现明显合规风险"],
-  "rewriteAvailable": false
+  "passed": false,
+  "riskLevel": "high",
+  "riskTypes": ["gambling"],
+  "categoryScores": {
+    "pornography": 0,
+    "gambling": 0.92,
+    "drug": 0,
+    "sensitive": 0.2,
+    "vulgar": 0,
+    "privacy": 0,
+    "illegal": 0,
+    "fraud": 0,
+    "minor": 0
+  },
+  "riskItems": [
+    {
+      "id": "llm_1",
+      "type": "gambling",
+      "severity": "high",
+      "confidence": 0.92,
+      "evidence": "加我微信带你玩私彩",
+      "reason": "包含赌博引流和收益诱导",
+      "source": "llm",
+      "field": "body",
+      "suggestion": "删除赌博玩法、联系方式和收益承诺"
+    }
+  ],
+  "reasons": ["存在赌博引流风险"],
+  "rewriteAvailable": true
 }`,
     },
     {
@@ -512,7 +539,7 @@ async function seedPrompts(userId: string) {
       id: "prompt_compliance_rewrite",
       name: AI_PROMPT_NAMES.complianceRewrite,
       scene: PromptScene.rewrite,
-      variables: ["title", "body", "reasons"],
+      variables: ["title", "body", "reasons", "riskItemsJson"],
       modelOptions: { temperature: 0.45 },
       template: `你是中文内容合规改写编辑，只负责生成可替换的合规版本。
 
@@ -520,13 +547,25 @@ async function seedPrompts(userId: string) {
 原正文：{{body}}
 审核原因：
 {{reasons}}
+危险片段：
+{{riskItemsJson}}
 
 请保留原主题和有价值信息，弱化或移除违规、敏感、夸大、隐私泄露和低俗表达。
+同时为每个危险片段生成可单独替换的合规文本。
+注意：replacement 必须是可直接插入正文的最终文本，不能写成“删除某表达”“改为某描述”“弱化某信息”这类操作建议。
 只返回 JSON，不要输出 Markdown 或额外解释：
 {
   "title": "合规改写后的标题",
   "body": "合规改写后的正文",
-  "reasons": ["弱化绝对化表达", "移除敏感信息"]
+  "reasons": ["弱化绝对化表达", "移除敏感信息"],
+  "replacements": [
+    {
+      "riskItemId": "risk_1",
+      "original": "加我微信带你玩私彩",
+      "replacement": "请关注正规渠道发布的风险提示内容",
+      "reason": "移除赌博引流和收益暗示"
+    }
+  ]
 }`,
     },
   ];

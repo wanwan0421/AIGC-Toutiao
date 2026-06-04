@@ -45,7 +45,31 @@ export type AuditRiskType =
   | "sensitive"
   | "vulgar"
   | "privacy"
+  | "illegal"
+  | "fraud"
+  | "minor"
   | "none";
+
+export type AuditRiskSeverity = "low" | "medium" | "high";
+export type AuditRiskSource = "rule" | "llm" | "merged";
+export type AuditRiskField = "title" | "body";
+
+export interface AuditRiskItem {
+  id: string;
+  type: AuditRiskType;
+  severity: AuditRiskSeverity;
+  confidence: number;
+  evidence: string;
+  reason: string;
+  source: AuditRiskSource;
+  field?: AuditRiskField;
+  startOffset?: number;
+  endOffset?: number;
+  ruleId?: string;
+  suggestion?: string;
+}
+
+export type AuditCategoryScores = Partial<Record<Exclude<AuditRiskType, "none">, number>>;
 
 export interface CreatorProfile {
   id: string;
@@ -129,6 +153,28 @@ export interface AssetSummary {
   auditStatus: "pending" | "approved" | "rejected";
   source?: string;
   metadata?: Record<string, unknown>;
+}
+
+export interface LocationCandidate {
+  id: string;
+  name: string;
+  address: string;
+  type: string;
+  distance?: number;
+  latitude?: number;
+  longitude?: number;
+  source: "amap";
+}
+
+export interface NearbyLocationsResponse {
+  formattedAddress: string;
+  city?: string;
+  district?: string;
+  candidates: LocationCandidate[];
+}
+
+export interface LocationSearchResponse {
+  candidates: LocationCandidate[];
 }
 
 export interface AiGenerateRequest {
@@ -243,6 +289,14 @@ export interface ComplianceRewriteResult {
   title: string;
   body: string;
   reasons: string[];
+  replacements?: ComplianceReplacement[];
+}
+
+export interface ComplianceReplacement {
+  riskItemId: string;
+  original: string;
+  replacement: string;
+  reason: string;
 }
 
 export interface AuditResult {
@@ -251,6 +305,8 @@ export interface AuditResult {
   riskTypes: AuditRiskType[];
   reasons: string[];
   rewriteAvailable: boolean;
+  riskItems: AuditRiskItem[];
+  categoryScores?: AuditCategoryScores;
 }
 
 export interface QualityScoreResult {
