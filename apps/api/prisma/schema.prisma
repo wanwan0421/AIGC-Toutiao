@@ -17,6 +17,8 @@ model User {
   avatarUrl    String?
   createdAt    DateTime          @default(now())
   updatedAt    DateTime          @updatedAt
+  promptDefinitions PromptDefinition[]
+  promptVersions PromptVersion[]
   assets       Asset[]
   contents     Content[]
   prompts      PromptTemplate[]
@@ -112,6 +114,101 @@ model PromptTemplate {
   creator      User?       @relation(fields: [creatorId], references: [id])
 }
 
+model PromptDefinition {
+  id              String            @id @default(cuid())
+  key             String            @unique
+  scene           PromptScene
+  displayName     String
+  description     String?
+  status          String            @default("active")
+  usageCount      Int               @default(0)
+  creatorId       String?
+  activeVersionId String?           @unique
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  creator         User?             @relation(fields: [creatorId], references: [id])
+  activeVersion   PromptVersion?    @relation("ActivePromptVersion", fields: [activeVersionId], references: [id])
+  versions        PromptVersion[]   @relation("PromptDefinitionVersions")
+  testCases       PromptTestCase[]
+  evalRuns        PromptEvalRun[]
+
+  @@index([scene, status])
+}
+
+model PromptVersion {
+  id            String             @id @default(cuid())
+  definitionId  String
+  version       Int
+  template      String
+  variables     Json?
+  model         String?
+  modelOptions  Json?
+  outputSchema  Json?
+  changeNote    String?
+  status        String             @default("draft")
+  createdById   String?
+  createdAt     DateTime           @default(now())
+  definition    PromptDefinition   @relation("PromptDefinitionVersions", fields: [definitionId], references: [id], onDelete: Cascade)
+  activeFor     PromptDefinition?  @relation("ActivePromptVersion")
+  createdBy     User?              @relation(fields: [createdById], references: [id])
+  evalRuns      PromptEvalRun[]
+
+  @@unique([definitionId, version])
+  @@index([definitionId, createdAt])
+}
+
+model PromptTestCase {
+  id            String           @id @default(cuid())
+  definitionId  String
+  name          String
+  input         Json
+  expectedOutput Json?
+  assertions    Json?
+  enabled       Boolean          @default(true)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  definition    PromptDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+  evalResults   PromptEvalResult[]
+
+  @@index([definitionId, enabled])
+}
+
+model PromptEvalRun {
+  id            String             @id @default(cuid())
+  definitionId  String
+  versionId     String?
+  mode          String             @default("dry_run")
+  status        String             @default("succeeded")
+  total         Int                @default(0)
+  passed        Int                @default(0)
+  failed        Int                @default(0)
+  startedAt     DateTime           @default(now())
+  completedAt   DateTime?
+  createdAt     DateTime           @default(now())
+  definition    PromptDefinition   @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+  version       PromptVersion?     @relation(fields: [versionId], references: [id])
+  results       PromptEvalResult[]
+
+  @@index([definitionId, createdAt])
+}
+
+model PromptEvalResult {
+  id             String          @id @default(cuid())
+  runId          String
+  testCaseId     String?
+  status         String
+  input          Json
+  output         Json?
+  renderedPrompt String?
+  errorMessage   String?
+  latencyMs      Int?
+  createdAt      DateTime        @default(now())
+  run            PromptEvalRun   @relation(fields: [runId], references: [id], onDelete: Cascade)
+  testCase       PromptTestCase? @relation(fields: [testCaseId], references: [id], onDelete: SetNull)
+
+  @@index([runId, status])
+}
+
 model Asset {
   id          String           @id @default(cuid())
   uploaderId  String
@@ -190,6 +287,9 @@ model AiCallLog {
   id           String   @id @default(cuid())
   scene        String
   model        String?
+  promptKey    String?
+  promptVersionId String?
+  promptTemplateId String?
   inputSummary String?
   output       Json?
   latencyMs    Int?

@@ -1,8 +1,8 @@
 import "reflect-metadata";
-import { join } from "node:path";
 import { NestFactory } from "@nestjs/core";
 import { json, static as serveStatic, urlencoded } from "express";
 import { AppModule } from "./app.module";
+import { getUploadRoot, getUploadRoute } from "./modules/storage/storage.config";
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -10,7 +10,7 @@ async function bootstrap() {
 
   app.use(json({ limit: "10mb" }));
   app.use(urlencoded({ limit: "10mb", extended: true }));
-  app.use("/api/uploads", serveStatic(join(process.cwd(), "uploads")));
+  app.use(getUploadRoute(), serveStatic(getUploadRoot()));
   app.setGlobalPrefix("api");
   app.enableCors({
     origin: webOrigin,

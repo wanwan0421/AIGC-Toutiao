@@ -1,23 +1,37 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
-import { AssetAuditStatus } from "@prisma/client";
+import { AssetAuditStatus, Prisma } from "@prisma/client";
 import type { GeneratedImageAsset } from "@aicp/shared";
 import { randomUUID } from "node:crypto";
 import { PrismaService } from "../../infra/prisma/prisma.service";
+import { StorageService } from "../storage/storage.service";
 
 type ImagePrompt = {
   position: string;
   prompt: string;
 };
 
+type GeneratedImageOutput = {
+  kind: "remoteUrl" | "dataUrl";
+  value: string;
+  mimeType: string;
+  extension: string;
+};
+
 @Injectable()
 export class ImageGenerationService {
   private readonly logger = new Logger(ImageGenerationService.name);
-  private readonly apiKey = process.env.ARK_API_KEY;
-  private readonly apiUrl = process.env.ARK_IMAGE_API_URL ?? "https://ark.cn-beijing.volces.com/api/v3/images/generations";
-  private readonly model = process.env.ARK_IMAGE_MODEL;
+  private readonly apiKey = process.env.ARK_IMAGE_API_KEY ?? process.env.ARK_API_KEY;
+  private readonly apiUrl =
+    process.env.ARK_IMAGE_API_URL ??
+    process.env.ARK_IMAGE_BASE_URL ??
+    "https://ark.cn-beijing.volces.com/api/v3/images/generations";
+  private readonly model = process.env.ARK_IMAGE_MODEL_ID ?? process.env.ARK_IMAGE_MODEL;
   private readonly imageSize = process.env.ARK_IMAGE_SIZE ?? "4704x3520";
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly storage: StorageService
+  ) {}
 
   configStatus() {
     const missing = [
@@ -37,7 +51,7 @@ export class ImageGenerationService {
     };
   }
 
-  // 根据创作初稿中的图片提示词生成图片，并把生成结果挂到素材库。
+  // 根据创作草稿中的提示词生成图片，并把稳定 URL 挂到素材库。
   async generateForDraft(input: {
     userId?: string;
     contentId?: string;
@@ -84,6 +98,7 @@ export class ImageGenerationService {
     });
   }
 
+  // 调用LLM生成图片，保存到存储层，并在数据库创建素材记录。返回最终的素材信息供前端使用
   private async generateAndStore(input: {
     userId: string;
     contentId?: string;
@@ -91,20 +106,40 @@ export class ImageGenerationService {
     prompt: string;
   }): Promise<GeneratedImageAsset> {
     const output = await this.generateImage(input.prompt);
+    const requestedFileName = `ai-${Date.now()}-${randomUUID().slice(0, 8)}.${output.extension}`;
+    const stored =
+      output.kind === "dataUrl"
+        ? await this.storage.saveDataUrl(output.value, {
+            folder: "ai-images",
+            fileName: requestedFileName,
+            mimeType: output.mimeType,
+          })
+        : await this.storage.saveRemoteFile(output.value, {
+            folder: "ai-images",
+            fileName: requestedFileName,
+            mimeType: output.mimeType,
+          });
+
+    const metadata: Prisma.InputJsonObject = {
+      prompt: input.prompt,
+      position: input.position,
+      provider: "volcengine-ark",
+      imageSize: this.imageSize,
+      storageKey: stored.storageKey,
+      size: stored.size,
+      ...(this.model ? { model: this.model } : {}),
+      ...(output.kind === "remoteUrl" ? { originalProviderHost: this.hostFromUrl(output.value) } : {}),
+    };
+
     const asset = await this.prisma.asset.create({
       data: {
         uploaderId: input.userId,
-        fileName: `ai-${Date.now()}-${randomUUID().slice(0, 8)}.${output.extension}`,
-        mimeType: output.mimeType,
-        url: output.url,
+        fileName: stored.fileName,
+        mimeType: stored.mimeType,
+        url: stored.url,
         source: "ai_generated",
         auditStatus: AssetAuditStatus.pending,
-        metadata: {
-          prompt: input.prompt,
-          position: input.position,
-          model: this.model,
-          provider: "volcengine-ark",
-        },
+        metadata,
       },
     });
 
@@ -133,7 +168,8 @@ export class ImageGenerationService {
     };
   }
 
-  private async generateImage(prompt: string) {
+  // 调用LLM生成图片
+  private async generateImage(prompt: string): Promise<GeneratedImageOutput> {
     this.assertConfigured();
 
     const response = await fetch(this.apiUrl, {
@@ -164,7 +200,7 @@ export class ImageGenerationService {
     return image;
   }
 
-  private extractImage(payload: Record<string, unknown>) {
+  private extractImage(payload: Record<string, unknown>): GeneratedImageOutput | null {
     const data = payload.data;
     if (Array.isArray(data)) {
       for (const item of data) {
@@ -176,21 +212,30 @@ export class ImageGenerationService {
     return this.extractImageFromAny(payload);
   }
 
-  private extractImageFromAny(value: unknown): { url: string; mimeType: string; extension: string } | null {
+  // 从任意对象中递归提取图片信息，支持直接的URL或Base64字段，或嵌套在其他字段中的情况
+  private extractImageFromAny(value: unknown): GeneratedImageOutput | null {
     if (!value || typeof value !== "object") return null;
     const record = value as Record<string, unknown>;
 
     const url = record.url;
     if (typeof url === "string" && url) {
-      return { url, mimeType: this.mimeFromUrl(url), extension: this.extensionFromUrl(url) };
+      return {
+        kind: "remoteUrl",
+        value: url,
+        mimeType: this.mimeFromUrl(url),
+        extension: this.extensionFromUrl(url),
+      };
     }
 
     const base64 = record.b64_json ?? record.base64 ?? record.image_base64;
     if (typeof base64 === "string" && base64) {
+      const dataUrl = base64.startsWith("data:") ? base64 : `data:image/png;base64,${base64}`;
+      const mimeType = this.mimeFromDataUrl(dataUrl);
       return {
-        url: base64.startsWith("data:") ? base64 : `data:image/png;base64,${base64}`,
-        mimeType: "image/png",
-        extension: "png",
+        kind: "dataUrl",
+        value: dataUrl,
+        mimeType,
+        extension: this.extensionForMimeType(mimeType),
       };
     }
 
@@ -224,8 +269,9 @@ export class ImageGenerationService {
   }
 
   private extensionFromUrl(url: string) {
-    const match = url.split("?")[0]?.match(/\.([a-zA-Z0-9]+)$/);
-    return match?.[1]?.toLowerCase() || "png";
+    const extension = url.split("?")[0]?.match(/\.([a-zA-Z0-9]+)$/)?.[1]?.toLowerCase();
+    if (extension === "jpg" || extension === "jpeg" || extension === "png" || extension === "webp") return extension;
+    return "png";
   }
 
   private mimeFromUrl(url: string) {
@@ -235,8 +281,21 @@ export class ImageGenerationService {
     return "image/png";
   }
 
-  private describeImageUrl(url: string) {
-    if (url.startsWith("data:")) return `data URL (${url.length} chars)`;
-    return url.length > 140 ? `${url.slice(0, 140)}...` : url;
+  private mimeFromDataUrl(dataUrl: string) {
+    return dataUrl.match(/^data:([^;,]+)/)?.[1] ?? "image/png";
+  }
+
+  private extensionForMimeType(mimeType: string) {
+    if (mimeType === "image/jpeg") return "jpg";
+    if (mimeType === "image/webp") return "webp";
+    return "png";
+  }
+
+  private hostFromUrl(url: string) {
+    try {
+      return new URL(url).host;
+    } catch {
+      return "unknown";
+    }
   }
 }

@@ -13,7 +13,12 @@ import type {
   OfficialTopicSummary,
   LocationSearchResponse,
   NearbyLocationsResponse,
+  PromptDefinitionSummary,
+  PromptEvalRunSummary,
+  PromptRenderPreviewResult,
   PromptScene,
+  PromptTestCaseSummary,
+  PromptVersionSummary,
   SelectionRewriteRequest,
   SelectionRewriteResult,
   TopicDetail,
@@ -46,6 +51,7 @@ export type PromptTemplateSummary = {
   variables?: unknown;
   model?: string | null;
   modelOptions?: unknown;
+  outputSchema?: unknown;
   version: number;
   status: string;
   usageCount: number;
@@ -302,6 +308,9 @@ export async function createPrompt(body: {
   variables?: string[];
   model?: string;
   modelOptions?: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
+  description?: string;
+  changeNote?: string;
 }) {
   return apiRequest<PromptTemplateSummary>(
     "/prompts",
@@ -317,10 +326,14 @@ export async function updatePrompt(
   id: string,
   body: Partial<{
     name: string;
+    scene: PromptScene;
     template: string;
     variables: string[];
     model: string;
     modelOptions: Record<string, unknown>;
+    outputSchema: Record<string, unknown>;
+    description: string;
+    changeNote: string;
     status: "active" | "draft" | "disabled";
   }>
 ) {
@@ -695,6 +708,138 @@ export async function postNearbyLocations(body: { latitude: number; longitude: n
       method: "POST",
       body: JSON.stringify(body)
     },
+    true
+  );
+}
+
+export async function getPromptDefinitions(scene?: PromptScene) {
+  const query = scene ? `?scene=${encodeURIComponent(scene)}` : "";
+  return apiRequest<PromptDefinitionSummary[]>(`/prompts/definitions${query}`, {}, true);
+}
+
+export async function getPromptVersions(key: string) {
+  return apiRequest<PromptVersionSummary[]>(`/prompts/${encodeURIComponent(key)}/versions`, {}, true);
+}
+
+export async function createPromptVersion(
+  key: string,
+  body: {
+    template: string;
+    variables?: string[];
+    model?: string;
+    modelOptions?: Record<string, unknown>;
+    outputSchema?: Record<string, unknown>;
+    changeNote?: string;
+    status?: "active" | "draft" | "disabled";
+  }
+) {
+  return apiRequest<PromptVersionSummary>(
+    `/prompts/${encodeURIComponent(key)}/versions`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+    true
+  );
+}
+
+export async function activatePromptVersion(key: string, versionId: string) {
+  return apiRequest<PromptDefinitionSummary>(
+    `/prompts/${encodeURIComponent(key)}/versions/${encodeURIComponent(versionId)}/activate`,
+    { method: "POST" },
+    true
+  );
+}
+
+export async function renderPromptPreview(
+  key: string,
+  body: {
+    input?: Record<string, unknown>;
+    template?: string;
+    variables?: string[];
+    model?: string;
+    modelOptions?: Record<string, unknown>;
+    outputSchema?: Record<string, unknown>;
+  }
+) {
+  return apiRequest<PromptRenderPreviewResult>(
+    `/prompts/${encodeURIComponent(key)}/render-preview`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+    true
+  );
+}
+
+export async function getPromptTestCases(key: string) {
+  return apiRequest<PromptTestCaseSummary[]>(`/prompts/${encodeURIComponent(key)}/test-cases`, {}, true);
+}
+
+export async function createPromptTestCase(
+  key: string,
+  body: {
+    name: string;
+    input: Record<string, unknown>;
+    expectedOutput?: unknown;
+    assertions?: Record<string, unknown>;
+    enabled?: boolean;
+  }
+) {
+  return apiRequest<PromptTestCaseSummary>(
+    `/prompts/${encodeURIComponent(key)}/test-cases`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+    true
+  );
+}
+
+export async function updatePromptTestCase(
+  key: string,
+  caseId: string,
+  body: Partial<{
+    name: string;
+    input: Record<string, unknown>;
+    expectedOutput: unknown;
+    assertions: Record<string, unknown>;
+    enabled: boolean;
+  }>
+) {
+  return apiRequest<PromptTestCaseSummary>(
+    `/prompts/${encodeURIComponent(key)}/test-cases/${encodeURIComponent(caseId)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    },
+    true
+  );
+}
+
+export async function deletePromptTestCase(key: string, caseId: string) {
+  return apiRequest<{ ok: boolean; id: string }>(
+    `/prompts/${encodeURIComponent(key)}/test-cases/${encodeURIComponent(caseId)}`,
+    { method: "DELETE" },
+    true
+  );
+}
+
+export async function runPromptEval(key: string, body: { versionId?: string; includeDisabled?: boolean } = {}) {
+  return apiRequest<PromptEvalRunSummary>(
+    `/prompts/${encodeURIComponent(key)}/eval-runs`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+    true
+  );
+}
+
+export async function getPromptEvalRun(key: string, runId: string) {
+  return apiRequest<PromptEvalRunSummary>(
+    `/prompts/${encodeURIComponent(key)}/eval-runs/${encodeURIComponent(runId)}`,
+    {},
     true
   );
 }

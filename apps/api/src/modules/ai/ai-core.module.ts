@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common";
+import { StorageModule } from "../storage/storage.module";
 import { AiCallLogService } from "./ai-call-log.service";
 import { ComplianceRewriteAgent } from "./agents/compliance-rewrite.agent";
 import { DraftGeneratorAgent } from "./agents/draft-generator.agent";
@@ -46,6 +47,7 @@ const providers = [
 ];
 
 @Module({
+  imports: [StorageModule],
   providers,
   exports: providers,
 })

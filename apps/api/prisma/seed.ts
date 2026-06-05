@@ -595,6 +595,44 @@ async function seedPrompts(userId: string) {
         status: "active",
       },
     });
+
+    const definition = await prisma.promptDefinition.upsert({
+      where: { key: prompt.name },
+      create: {
+        key: prompt.name,
+        scene: prompt.scene,
+        displayName: prompt.name,
+        status: "active",
+        creatorId: userId,
+      },
+      update: {},
+    });
+
+    const existingVersion = await prisma.promptVersion.findFirst({
+      where: { definitionId: definition.id },
+      orderBy: { version: "desc" },
+    });
+
+    if (!existingVersion) {
+      const version = await prisma.promptVersion.create({
+        data: {
+          definitionId: definition.id,
+          version: 1,
+          template: prompt.template,
+          variables: prompt.variables,
+          model: textModel,
+          modelOptions: prompt.modelOptions,
+          status: "active",
+          createdById: userId,
+          changeNote: "Seed 初始化默认 Prompt",
+        },
+      });
+
+      await prisma.promptDefinition.update({
+        where: { id: definition.id },
+        data: { activeVersionId: version.id },
+      });
+    }
   }
 }
 

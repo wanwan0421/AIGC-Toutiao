@@ -15,6 +15,93 @@ export enum PromptScene {
   Rewrite = "rewrite"
 }
 
+export type PromptStatus = "active" | "draft" | "disabled" | "archived";
+export type PromptValidationSeverity = "info" | "warning" | "error";
+
+export interface PromptValidationIssue {
+  type: "missing_variable" | "unused_variable" | "undeclared_variable" | "empty_variable" | "duplicate_variable";
+  severity: PromptValidationSeverity;
+  variable?: string;
+  message: string;
+}
+
+export interface PromptVersionSummary {
+  id: string;
+  definitionId: string;
+  version: number;
+  template: string;
+  variables: string[];
+  model?: string | null;
+  modelOptions?: Record<string, unknown> | null;
+  outputSchema?: Record<string, unknown> | null;
+  changeNote?: string | null;
+  status: string;
+  createdAt: string;
+}
+
+export interface PromptDefinitionSummary {
+  id: string;
+  key: string;
+  scene: PromptScene;
+  displayName: string;
+  description?: string | null;
+  status: string;
+  usageCount: number;
+  activeVersionId?: string | null;
+  activeVersion?: PromptVersionSummary | null;
+  updatedAt: string;
+  createdAt: string;
+}
+
+export interface PromptRenderPreviewResult {
+  prompt: string;
+  variables: string[];
+  issues: PromptValidationIssue[];
+  model?: string | null;
+  modelOptions?: Record<string, unknown> | null;
+  outputSchema?: Record<string, unknown> | null;
+}
+
+export interface PromptTestCaseSummary {
+  id: string;
+  definitionId: string;
+  name: string;
+  input: Record<string, unknown>;
+  expectedOutput?: unknown;
+  assertions?: Record<string, unknown> | null;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PromptEvalResultSummary {
+  id: string;
+  runId: string;
+  testCaseId?: string | null;
+  status: string;
+  input: Record<string, unknown>;
+  output?: unknown;
+  renderedPrompt?: string | null;
+  errorMessage?: string | null;
+  latencyMs?: number | null;
+  createdAt: string;
+}
+
+export interface PromptEvalRunSummary {
+  id: string;
+  definitionId: string;
+  versionId?: string | null;
+  mode: string;
+  status: string;
+  total: number;
+  passed: number;
+  failed: number;
+  startedAt: string;
+  completedAt?: string | null;
+  createdAt: string;
+  results?: PromptEvalResultSummary[];
+}
+
 export enum AiJobStatus {
   Queued = "queued",
   Running = "running",

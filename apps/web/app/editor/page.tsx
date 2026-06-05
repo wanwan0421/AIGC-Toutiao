@@ -55,7 +55,6 @@ import {
   type RichTextValue,
 } from "./rich-text-editor";
 import {
-  BadgeCheck,
   ChevronDown,
   CheckCircle2,
   Clock3,
@@ -2857,7 +2856,7 @@ export default function EditorPage() {
           </section>
         </main>
 
-        <aside className="space-y-5 xl:sticky xl:top-5 xl:max-h-[calc(100vh-2.5rem)] xl:overflow-y-auto xl:pr-1">
+        <aside className="space-y-5 xl:sticky xl:top-5 xl:max-h-[calc(100vh-2.5rem)] xl:pr-1">
           <section className="rounded-3xl border border-slate-100 bg-white p-4 shadow-sm">
             <div className="mb-4 flex items-center gap-2 text-slate-950">
               <MessageCircle size={18} className="text-[#ff2442]" />
