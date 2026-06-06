@@ -217,15 +217,16 @@ function paintSelectionHighlight(editor: Editor, from: number, to: number) {
 function editorContentClassName(readonly = false) {
   return [
     "editor-surface-wrapper",
-    "[&_.ProseMirror]:min-h-130 [&_.ProseMirror]:rounded-2xl [&_.ProseMirror]:px-2 [&_.ProseMirror]:py-5 [&_.ProseMirror]:text-base [&_.ProseMirror]:leading-8 [&_.ProseMirror]:text-slate-800 [&_.ProseMirror]:outline-none",
+    "[&_.ProseMirror]:min-h-130 [&_.ProseMirror]:max-w-full [&_.ProseMirror]:rounded-2xl [&_.ProseMirror]:px-2 [&_.ProseMirror]:py-5 [&_.ProseMirror]:text-base [&_.ProseMirror]:leading-8 [&_.ProseMirror]:text-slate-800 [&_.ProseMirror]:outline-none",
     readonly ? "[&_.ProseMirror]:min-h-0 [&_.ProseMirror]:p-0" : "",
     "[&_.ProseMirror_p]:my-3 [&_.ProseMirror_h1]:mb-5 [&_.ProseMirror_h1]:mt-7 [&_.ProseMirror_h1]:text-2xl [&_.ProseMirror_h1]:font-black [&_.ProseMirror_h1]:leading-tight [&_.ProseMirror_h2]:mb-4 [&_.ProseMirror_h2]:mt-6 [&_.ProseMirror_h2]:text-xl [&_.ProseMirror_h2]:font-black [&_.ProseMirror_h3]:mb-3 [&_.ProseMirror_h3]:mt-5 [&_.ProseMirror_h3]:text-lg [&_.ProseMirror_h3]:font-bold",
     "[&_.ProseMirror_ul]:my-4 [&_.ProseMirror_ul]:list-disc [&_.ProseMirror_ul]:pl-6 [&_.ProseMirror_ol]:my-4 [&_.ProseMirror_ol]:list-decimal [&_.ProseMirror_ol]:pl-6 [&_.ProseMirror_li]:my-1",
     "[&_.ProseMirror_blockquote]:my-5 [&_.ProseMirror_blockquote]:border-l-4 [&_.ProseMirror_blockquote]:border-[#ff2442]/30 [&_.ProseMirror_blockquote]:bg-[#fff3f5] [&_.ProseMirror_blockquote]:px-4 [&_.ProseMirror_blockquote]:py-2 [&_.ProseMirror_blockquote]:text-rose-900",
     "[&_.ProseMirror_code]:rounded [&_.ProseMirror_code]:bg-slate-100 [&_.ProseMirror_code]:px-1.5 [&_.ProseMirror_code]:py-0.5 [&_.ProseMirror_code]:text-sm [&_.ProseMirror_code]:text-slate-700",
     "[&_.ProseMirror_img]:my-5 [&_.ProseMirror_img]:max-w-full [&_.ProseMirror_img]:rounded-2xl",
-    "[&_.ProseMirror_table]:my-5 [&_.ProseMirror_table]:w-full [&_.ProseMirror_table]:border-collapse [&_.ProseMirror_table]:overflow-hidden [&_.ProseMirror_table]:rounded-xl [&_.ProseMirror_table]:text-left",
-    "[&_.ProseMirror_th]:border [&_.ProseMirror_th]:border-slate-200 [&_.ProseMirror_th]:bg-slate-50 [&_.ProseMirror_th]:px-3 [&_.ProseMirror_th]:py-2 [&_.ProseMirror_th]:font-bold [&_.ProseMirror_td]:border [&_.ProseMirror_td]:border-slate-200 [&_.ProseMirror_td]:px-3 [&_.ProseMirror_td]:py-2 [&_.ProseMirror_.selectedCell]:bg-[#fff3f5]",
+    "[&_.ProseMirror_.tableWrapper]:my-5 [&_.ProseMirror_.tableWrapper]:max-w-full [&_.ProseMirror_.tableWrapper]:overflow-x-auto [&_.ProseMirror_.tableWrapper]:rounded-xl",
+    "[&_.ProseMirror_table]:my-5 [&_.ProseMirror_table]:w-full [&_.ProseMirror_table]:max-w-full [&_.ProseMirror_table]:table-fixed [&_.ProseMirror_table]:border-collapse [&_.ProseMirror_table]:overflow-hidden [&_.ProseMirror_table]:rounded-xl [&_.ProseMirror_table]:text-left",
+    "[&_.ProseMirror_th]:min-w-0 [&_.ProseMirror_th]:break-words [&_.ProseMirror_th]:border [&_.ProseMirror_th]:border-slate-200 [&_.ProseMirror_th]:bg-slate-50 [&_.ProseMirror_th]:px-3 [&_.ProseMirror_th]:py-2 [&_.ProseMirror_th]:font-bold [&_.ProseMirror_th]:whitespace-normal [&_.ProseMirror_td]:min-w-0 [&_.ProseMirror_td]:break-words [&_.ProseMirror_td]:border [&_.ProseMirror_td]:border-slate-200 [&_.ProseMirror_td]:px-3 [&_.ProseMirror_td]:py-2 [&_.ProseMirror_td]:align-top [&_.ProseMirror_td]:whitespace-normal [&_.ProseMirror_.selectedCell]:bg-[#fff3f5]",
     "[&_.ProseMirror_.is-editor-empty:first-child::before]:pointer-events-none [&_.ProseMirror_.is-editor-empty:first-child::before]:float-left [&_.ProseMirror_.is-editor-empty:first-child::before]:h-0 [&_.ProseMirror_.is-editor-empty:first-child::before]:text-slate-300 [&_.ProseMirror_.is-editor-empty:first-child::before]:content-[attr(data-placeholder)]",
   ]
     .filter(Boolean)

@@ -7,6 +7,7 @@ import type {
   ContentReactionToggleResult,
   ContentSummary,
   CreativeChatDone,
+  CreativeChatSkillEvent,
   CreativeConversationSummary,
   CreativeChatRequest,
   DirectGenerateRequest,
@@ -499,6 +500,7 @@ export async function streamCreativeChat(
     onMeta?: (event: CreativeChatDone) => void;
     onDelta: (text: string) => void;
     onDone?: (event: CreativeChatDone) => void;
+    onSkill?: (event: CreativeChatSkillEvent) => void;
     onError?: (message: string) => void;
   }
 ) {
@@ -593,6 +595,7 @@ async function streamCreativeChatOnce(
     onMeta?: (event: CreativeChatDone) => void;
     onDelta: (text: string) => void;
     onDone?: (event: CreativeChatDone) => void;
+    onSkill?: (event: CreativeChatSkillEvent) => void;
     onError?: (message: string) => void;
   },
   allowRefresh: boolean
@@ -635,6 +638,8 @@ async function streamCreativeChatOnce(
         handlers.onMeta?.(event.data as CreativeChatDone);
       } else if (event.type === "done") {
         handlers.onDone?.(event.data as CreativeChatDone);
+      } else if (event.type === "skill") {
+        handlers.onSkill?.(event.data as CreativeChatSkillEvent);
       } else if (event.type === "error") {
         handlers.onError?.((event.data as { message?: string }).message ?? "AI stream failed");
       }

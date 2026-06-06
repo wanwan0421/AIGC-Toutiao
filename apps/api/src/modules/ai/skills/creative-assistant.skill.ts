@@ -1,13 +1,15 @@
 import { Injectable } from "@nestjs/common";
-import type { CreativeChatRequest, SelectionRewriteRequest, TitleGenerateRequest } from "@aicp/shared";
+import { AiJobType, type CreativeChatRequest, type SelectionRewriteRequest, type TitleGenerateRequest } from "@aicp/shared";
 import { AiCallLogService } from "../ai-call-log.service";
 import { IdeaAssistantAgent } from "../agents/idea-assistant.agent";
 import { SelectionRewriterAgent } from "../agents/selection-rewriter.agent";
+import { SkillRouterAgent } from "../agents/skill-router.agent";
 import { TitleAgent } from "../agents/title.agent";
 import { ContextBuilderService } from "../context-builder.service";
 import { ConversationArchiveService } from "../conversation-archive.service";
 import { MemoryService } from "../memory.service";
 import { AI_PROMPT_NAMES } from "../prompt-names";
+import type { SkillJobRequest, SkillRouterDecision } from "../skills-runtime/skill-runtime.types";
 
 @Injectable()
 export class CreativeAssistantSkill {
@@ -18,6 +20,7 @@ export class CreativeAssistantSkill {
     private readonly logs: AiCallLogService,
     private readonly titleAgent: TitleAgent,
     private readonly selectionRewriter: SelectionRewriterAgent,
+    private readonly skillRouter: SkillRouterAgent,
     private readonly conversations: ConversationArchiveService
   ) {}
 
@@ -65,20 +68,59 @@ export class CreativeAssistantSkill {
       },
     };
 
-    // 将模型流式增量原样转发给调用方。
-    for await (const delta of this.ideaAssistant.stream({
+    const routerDecision = await this.skillRouter.decide({
       message: request.message,
       currentTitle: context.currentTitle,
       currentBody: context.currentBody,
-      bodySummary: context.bodySummary,
       selectedText: context.selectedText,
       historyText,
-    })) {
-      assistantContent += delta;
+    });
+
+    if (routerDecision.action === "ask_clarification") {
+      assistantContent = routerDecision.message ?? "我还需要更多信息才能继续。";
       yield {
         type: "delta" as const,
-        data: { text: delta },
+        data: { text: assistantContent },
       };
+    } else if (routerDecision.action === "run_skill" && routerDecision.skillKey) {
+      assistantContent = this.skillAssistantMessage(routerDecision);
+      
+      const jobRequest = this.buildSkillJobRequest(routerDecision, {
+        conversationId,
+        request,
+        context,
+        historyText,
+      });
+      
+      yield {
+        type: "skill" as const,
+        data: {
+          type: "skill_started",
+          skillKey: routerDecision.skillKey,
+          message: assistantContent,
+          data: {
+            confidence: routerDecision.confidence,
+            requiresContent: routerDecision.skillKey === "content-safety-reviewer" && !context.persistenceContentId,
+          },
+          jobRequest,
+        },
+      };
+    } else {
+      // 将模型流式增量原样转发给调用方。
+      for await (const delta of this.ideaAssistant.stream({
+        message: request.message,
+        currentTitle: context.currentTitle,
+        currentBody: context.currentBody,
+        bodySummary: context.bodySummary,
+        selectedText: context.selectedText,
+        historyText,
+      })) {
+        assistantContent += delta;
+        yield {
+          type: "delta" as const,
+          data: { text: delta },
+        };
+      }
     }
 
     // 同步短期记忆，便于下一轮上下文构建。
@@ -123,5 +165,59 @@ export class CreativeAssistantSkill {
         messageId: assistantMessageId,
       },
     };
+  }
+
+  private skillAssistantMessage(decision: SkillRouterDecision) {
+    if (decision.message) return decision.message;
+    if (decision.skillKey === "content-production-line") {
+      return "已选择：一键图文生成。我会根据你的对话和当前内容生成完整图文，并写入编辑器。";
+    }
+    if (decision.skillKey === "content-safety-reviewer") {
+      return "已选择：内容安全审核。我会检查当前内容是否存在发布风险。";
+    }
+    return "我会为你执行对应的创作任务。";
+  }
+
+  private buildSkillJobRequest(
+    decision: SkillRouterDecision,
+    input: {
+      conversationId: string;
+      request: CreativeChatRequest;
+      context: Awaited<ReturnType<ContextBuilderService["buildCreativeChatContext"]>>;
+      historyText: string;
+    }
+  ): SkillJobRequest | undefined {
+    if (decision.skillKey === "content-production-line") {
+      const skillInput = decision.input ?? {};
+      return {
+        type: AiJobType.CreativeDirectGenerate,
+        contentId: input.context.persistenceContentId ?? undefined,
+        payload: {
+          ...skillInput,
+          source: "conversation",
+          conversationId: input.conversationId,
+          contentId: input.context.persistenceContentId ?? undefined,
+          message: input.request.message,
+          theme: typeof skillInput.theme === "string" && skillInput.theme.trim() ? skillInput.theme : input.request.message,
+          currentTitle: input.context.currentTitle,
+          currentBody: input.context.currentBody,
+          historyText: input.historyText,
+        },
+      };
+    }
+
+    if (decision.skillKey === "content-safety-reviewer" && input.context.persistenceContentId) {
+      return {
+        type: AiJobType.ContentSubmitReview,
+        contentId: input.context.persistenceContentId,
+        payload: {
+          source: "conversation",
+          conversationId: input.conversationId,
+          message: input.request.message,
+        },
+      };
+    }
+
+    return undefined;
   }
 }

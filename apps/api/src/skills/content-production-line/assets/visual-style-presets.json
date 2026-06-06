@@ -1,0 +1,19 @@
+{
+  "presets": [
+    {
+      "key": "clean-editorial",
+      "label": "清爽信息流",
+      "promptHint": "clean editorial cover, bright natural light, clear subject, minimal clutter, horizontal composition"
+    },
+    {
+      "key": "warm-lifestyle",
+      "label": "温暖生活方式",
+      "promptHint": "warm lifestyle photography style, realistic scene, soft daylight, human-scale details, horizontal composition"
+    },
+    {
+      "key": "flat-infographic",
+      "label": "扁平信息图",
+      "promptHint": "flat infographic illustration, structured layout, readable visual hierarchy, modern colors, no small text"
+    }
+  ]
+}

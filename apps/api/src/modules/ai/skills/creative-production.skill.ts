@@ -13,8 +13,8 @@ export class CreativeProductionSkill {
   ) {}
 
   // Skill 只封装模型和图片能力，不管理任务状态；异步进度由 Workflow Job 层处理。
-  generateDraft(request: DirectGenerateRequest) {
-    return this.draftGenerator.run(request);
+  generateDraft(request: DirectGenerateRequest, options: { trustedContext?: string } = {}) {
+    return this.draftGenerator.run(request, options);
   }
 
   generateImagesForDraft(input: {

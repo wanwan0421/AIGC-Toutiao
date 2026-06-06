@@ -11,6 +11,7 @@ import { toContentSummary, toDbAuditRiskLevel } from "../../common/prisma-mapper
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { ContextBuilderService } from "../ai/context-builder.service";
 import { ConversationArchiveService } from "../ai/conversation-archive.service";
+import { SkillExecutorService } from "../ai/skills-runtime/skill-executor.service";
 import { ContentQualitySkill } from "../ai/skills/content-quality.skill";
 import { CreativeAssistantSkill } from "../ai/skills/creative-assistant.skill";
 import { CreativeProductionSkill } from "../ai/skills/creative-production.skill";
@@ -32,6 +33,7 @@ export class ContentWorkflowEngine {
     private readonly assistantSkill: CreativeAssistantSkill,
     private readonly contextBuilder: ContextBuilderService,
     private readonly conversations: ConversationArchiveService,
+    private readonly skillExecutor: SkillExecutorService,
     private readonly safetyReviewSkill: SafetyReviewSkill,
     private readonly contentQualitySkill: ContentQualitySkill
   ) {}
@@ -52,7 +54,11 @@ export class ContentWorkflowEngine {
   }
 
   directGenerate(body: DirectGenerateRequest) {
-    return this.productionSkill.directGenerate(body);
+    return this.skillExecutor.runContentProductionLine(body, {
+      userId: body.userId ?? "",
+      contentId: body.contentId,
+      source: "button",
+    });
   }
 
   generateTitles(body: TitleGenerateRequest) {
@@ -124,7 +130,7 @@ export class ContentWorkflowEngine {
   }
 
   async checkText(body: { title: string; body: string }) {
-    const { audit, rewrite } = await this.safetyReviewSkill.reviewWithRewrite(body);
+    const { audit, rewrite } = await this.skillExecutor.runContentSafetyReviewer(body);
     return {
       audit,
       quality: null,
@@ -218,7 +224,7 @@ export class ContentWorkflowEngine {
     body: string;
     updateStatus: boolean;
   }) {
-    const { audit, rewrite } = await this.safetyReviewSkill.reviewWithRewrite({
+    const { audit, rewrite } = await this.skillExecutor.runContentSafetyReviewer({
       title: input.title,
       body: input.body,
     });

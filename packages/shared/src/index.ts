@@ -346,6 +346,26 @@ export interface CreativeChatDone {
   messageId: string;
 }
 
+export type AiSkillKey = "content-production-line" | "content-safety-reviewer";
+
+export type CreativeChatSkillEventType =
+  | "skill_started"
+  | "job_started"
+  | "job_progress"
+  | "job_partial"
+  | "job_done"
+  | "inline_result"
+  | "skill_error";
+
+export interface CreativeChatSkillEvent {
+  type: CreativeChatSkillEventType;
+  skillKey: AiSkillKey;
+  message?: string;
+  job?: AiJobSnapshot;
+  result?: unknown;
+  data?: Record<string, unknown>;
+}
+
 export interface DirectGenerateRequest {
   userId?: string;
   contentId?: string;

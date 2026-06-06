@@ -86,3 +86,31 @@
     cursor: pointer;
   }
 }
+
+@layer components {
+  .editor-surface-wrapper {
+    max-width: 100%;
+  }
+
+  .editor-surface-wrapper .ProseMirror,
+  .editor-surface-wrapper .ProseMirror * {
+    min-width: 0;
+  }
+
+  .editor-surface-wrapper .ProseMirror .tableWrapper {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .editor-surface-wrapper .ProseMirror table {
+    max-width: 100%;
+    table-layout: fixed;
+  }
+
+  .editor-surface-wrapper .ProseMirror th,
+  .editor-surface-wrapper .ProseMirror td {
+    white-space: normal;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+}

@@ -25,37 +25,40 @@ export class SafetyReviewSkill {
   ) {}
 
   // Skill 只组合安全规则与模型能力，不写任务状态或数据库。
-  async review(input: ReviewInput): Promise<AuditResult> {
+  async review(input: ReviewInput, options: { trustedContext?: string } = {}): Promise<AuditResult> {
     const ruleResult = this.safetyRules.scan(input);
     const llmResult = await this.safetyReview.run({
       ...input,
       ruleRiskItems: ruleResult.riskItems,
-    });
+    }, options);
     return this.resultMerger.merge(ruleResult, llmResult, input);
   }
 
-  rewrite(input: RewriteInput): Promise<ComplianceRewriteResult> {
-    return this.complianceRewrite.run(input);
+  rewrite(input: RewriteInput, options: { trustedContext?: string } = {}): Promise<ComplianceRewriteResult> {
+    return this.complianceRewrite.run(input, options);
   }
 
-  async reviewWithRewrite(input: ReviewInput): Promise<{
+  async reviewWithRewrite(input: ReviewInput, options: { trustedContext?: string } = {}): Promise<{
     audit: AuditResult;
     rewrite: ComplianceRewriteResult | null;
   }> {
-    const audit = await this.review(input);
+    const audit = await this.review(input, options);
     if (audit.passed) {
       return { audit, rewrite: null };
     }
 
     return {
       audit,
-      rewrite: await this.tryRewrite({ ...input, reasons: audit.reasons, riskItems: audit.riskItems }),
+      rewrite: await this.tryRewrite({ ...input, reasons: audit.reasons, riskItems: audit.riskItems }, options),
     };
   }
 
-  private async tryRewrite(input: RewriteInput): Promise<ComplianceRewriteResult | null> {
+  private async tryRewrite(
+    input: RewriteInput,
+    options: { trustedContext?: string } = {}
+  ): Promise<ComplianceRewriteResult | null> {
     try {
-      return await this.rewrite(input);
+      return await this.rewrite(input, options);
     } catch {
       return null;
     }

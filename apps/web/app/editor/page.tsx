@@ -6,6 +6,7 @@ import {
   ContentStatus,
   type AuditResult,
   type AuditRiskItem,
+  type CreativeChatSkillEvent,
   type AssetSummary,
   type ComplianceReplacement,
   type ComplianceRewriteResult,
@@ -75,7 +76,6 @@ import {
   X,
 } from "lucide-react";
 
-type AiMode = "brainstorm" | "direct";
 type PrepTab = "brief" | "assets";
 type PublishTimeMode = "now" | "scheduled";
 type QuickMenu = "topic" | "emoji" | null;
@@ -99,6 +99,7 @@ type DraftCache = EditorDraftCache;
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
+  kind?: "chat" | "skill_status";
   content: string;
   insertable?: boolean;
 };
@@ -170,9 +171,42 @@ function contentToEditorHtml(text: string, assets: AssetSummary[] = []) {
   return [bodyHtml, imageHtml].filter(Boolean).join("");
 }
 
-function markdownToEditorHtml(markdown: string) {
-  if (!markdown.trim()) return "";
+function normalizeChatMarkdown(markdown: string) {
   const lines = markdown.split(/\r?\n/);
+  const normalized: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const prev = normalized[normalized.length - 1]?.trim() ?? "";
+    const next = lines[index + 1]?.trim() ?? "";
+    if (!line.trim() && isMarkdownTableLine(prev) && isMarkdownTableLine(next)) {
+      continue;
+    }
+    normalized.push(line);
+  }
+  return normalized.join("\n");
+}
+
+function isMarkdownTableLine(value: string) {
+  return /^\|.*\|$/.test(value.trim());
+}
+
+function isMarkdownTableSeparator(value: string) {
+  return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(value.trim());
+}
+
+function parseMarkdownTableRow(value: string) {
+  return value
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function markdownToEditorHtml(markdown: string) {
+  const normalizedMarkdown = normalizeChatMarkdown(markdown);
+  if (!normalizedMarkdown.trim()) return "";
+  const lines = normalizedMarkdown.split(/\r?\n/);
   const html: string[] = [];
   let listItems: string[] = [];
 
@@ -185,11 +219,32 @@ function markdownToEditorHtml(markdown: string) {
     escapeHtml(value)
       .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
       .replace(/`(.+?)`/g, "<code>$1</code>");
+  const renderTable = (headers: string[], rows: string[][]) => {
+    const head = headers.map((cell) => `<th>${inline(cell)}</th>`).join("");
+    const body = rows
+      .map((row) => `<tr>${row.map((cell) => `<td>${inline(cell)}</td>`).join("")}</tr>`)
+      .join("");
+    return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  };
 
-  for (const line of lines) {
-    const trimmed = line.trim();
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim();
+    const next = lines[index + 1]?.trim() ?? "";
     if (!trimmed) {
       flushList();
+      continue;
+    }
+    if (isMarkdownTableLine(trimmed) && isMarkdownTableSeparator(next)) {
+      flushList();
+      const headers = parseMarkdownTableRow(trimmed);
+      const rows: string[][] = [];
+      index += 2;
+      while (index < lines.length && isMarkdownTableLine(lines[index].trim())) {
+        rows.push(parseMarkdownTableRow(lines[index]));
+        index += 1;
+      }
+      index -= 1;
+      html.push(renderTable(headers, rows));
       continue;
     }
     if (/^#{1,3}\s+/.test(trimmed)) {
@@ -475,7 +530,6 @@ export default function EditorPage() {
   const [style, setStyle] = useState("");
   const [viewpoint, setViewpoint] = useState("");
   const [prepTab, setPrepTab] = useState<PrepTab>("brief");
-  const [aiMode, setAiMode] = useState<AiMode>("brainstorm");
   const [chatInput, setChatInput] = useState("");
   const [conversationId, setConversationId] = useState<string | undefined>();
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -817,8 +871,9 @@ export default function EditorPage() {
           latestConversation.messages.map((item) => ({
             id: item.id ?? `${item.role}-${item.createdAt}`,
             role: item.role,
+            kind: "chat",
             content: item.content,
-            insertable: item.role === "assistant",
+            insertable: false,
           })),
         );
       } else {
@@ -887,8 +942,9 @@ export default function EditorPage() {
             latestConversation.messages.map((item) => ({
               id: item.id ?? `${item.role}-${item.createdAt}`,
               role: item.role,
+              kind: "chat",
               content: item.content,
-              insertable: item.role === "assistant",
+              insertable: false,
             })),
           );
         }
@@ -1178,14 +1234,49 @@ export default function EditorPage() {
     textInputRef.current?.click();
   }
 
-  // AI 生成初稿，支持从创作简报或直接输入要求两种方式，生成后填充正文和图片素材到编辑区
-  async function createAiDraft(source: "brief" | "direct") {
-    const theme =
-      source === "direct" && chatInput.trim()
-        ? chatInput.trim()
-        : briefTheme.trim();
+  function applyGeneratedDraft(result: DirectGenerateResult) {
+    setTitle(result.title);
+    setSelectedTopics(normalizeTopicList(result.tags));
+    setTitleCandidates(result.titleCandidates.filter((candidate) => candidate.title !== result.title));
+    setShowTitleCandidates(false);
+    const cleanMarkdown = stripDuplicateTitleFromMarkdown(result.bodyMarkdown, result.title);
+    writeEditorMarkup(markdownToEditorHtml(cleanMarkdown), cleanMarkdown);
+  }
+
+  function applyGeneratedImageAsset(value: { asset?: GeneratedImageAsset; cover?: boolean }, generatedAssetIds: string[]) {
+    const asset = value.asset;
+    if (!asset) return;
+    generatedAssetIds.push(asset.id);
+    setAssets((items) => [asset, ...items.filter((item) => item.id !== asset.id)]);
+    setAssetIds((items) => Array.from(new Set([...generatedAssetIds, ...items])));
+    if (value.cover) {
+      setCoverPreview(asset.url);
+      setCoverMode("single");
+      setCoverPickerOpen(false);
+    } else {
+      insertAsset(asset);
+    }
+  }
+
+  function finishGeneratedDraft(generated: DirectGenerateResult, generatedAssetIds: string[]) {
+    const ids = [
+      generated.coverAsset?.id,
+      ...(generated.imageAssets ?? []).map((item) => item.id),
+      ...generatedAssetIds,
+    ].filter((id): id is string => Boolean(id));
+    if (ids.length) setAssetIds((items) => Array.from(new Set([...ids, ...items])));
+    if (generated.coverAsset?.url) {
+      setCoverPreview(generated.coverAsset.url);
+      setCoverMode("single");
+    }
+    setStatusMessage(ids.length ? "AI 初稿和图片已填充到编辑区" : "AI 初稿已填充，图片稍后可单独生成");
+  }
+
+  // 左侧 AI 一键生成初稿：只使用创作简报字段，右侧对话入口不再复用这个直接生成函数。
+  async function runBriefDraftSkill() {
+    const theme = briefTheme.trim();
     if (!theme) {
-      setStatusMessage("请先填写主题，或在右侧输入直接生成要求");
+      setStatusMessage("请先填写创作简报里的主题");
       return;
     }
     if (isBusy) return;
@@ -1209,43 +1300,17 @@ export default function EditorPage() {
           },
           onPartial: (data) => {
             if (data.kind === "draft") {
-              const result = data.value as DirectGenerateResult;
-              setTitle(result.title);
-              setSelectedTopics(normalizeTopicList(result.tags));
-              setTitleCandidates(result.titleCandidates.filter((candidate) => candidate.title !== result.title));
-              setShowTitleCandidates(false);
-              const cleanMarkdown = stripDuplicateTitleFromMarkdown(result.bodyMarkdown, result.title);
-              writeEditorMarkup(markdownToEditorHtml(cleanMarkdown), cleanMarkdown);
-              setChatInput("");
+              applyGeneratedDraft(data.value as DirectGenerateResult);
               setStatusMessage("AI 初稿已填充，正在生成图片...");
             }
 
             if (data.kind === "imageAsset") {
-              const value = data.value as { asset?: GeneratedImageAsset; cover?: boolean };
-              const asset = value.asset;
-              if (!asset) return;
-              generatedAssetIds.push(asset.id);
-              setAssets((items) => [asset, ...items.filter((item) => item.id !== asset.id)]);
-              setAssetIds((items) => Array.from(new Set([...generatedAssetIds, ...items])));
-              if (value.cover) {
-                setCoverPreview(asset.url);
-                setCoverMode("single");
-                setCoverPickerOpen(false);
-              } else {
-                insertAsset(asset);
-              }
+              applyGeneratedImageAsset(data.value as { asset?: GeneratedImageAsset; cover?: boolean }, generatedAssetIds);
             }
           },
           onWarning: (message) => setStatusMessage(message),
           onDone: (_job, result) => {
-            const generated = result as DirectGenerateResult;
-            const ids = [
-              generated.coverAsset?.id,
-              ...(generated.imageAssets ?? []).map((item) => item.id),
-            ].filter((id): id is string => Boolean(id));
-            if (ids.length) setAssetIds((items) => Array.from(new Set([...ids, ...items])));
-            if (generated.coverAsset?.url) setCoverPreview(generated.coverAsset.url);
-            setStatusMessage(ids.length ? "AI 初稿和图片已填充到编辑区" : "AI 初稿已填充，图片稍后可单独生成");
+            finishGeneratedDraft(result as DirectGenerateResult, generatedAssetIds);
           },
           onError: (message) => setStatusMessage(`AI 生成失败：${message}`),
         },
@@ -1413,6 +1478,176 @@ export default function EditorPage() {
     }
   }
 
+  function setAssistantSkillStatus(assistantId: string, text: string) {
+    if (!text.trim()) return;
+    setChatMessages((items) =>
+      items.map((item) =>
+        item.id === assistantId
+          ? { ...item, kind: "skill_status", content: text, insertable: false }
+          : item,
+      ),
+    );
+  }
+
+  function shouldOfferChatActions(message: ChatMessage) {
+    return message.role === "assistant" && message.kind !== "skill_status" && Boolean(message.content.trim());
+  }
+
+  async function runConversationDraftJob(event: CreativeChatSkillEvent, assistantId: string) {
+    if (!event.job || isBusy) return;
+    const generatedAssetIds: string[] = [];
+    setActiveOperation("draft");
+    setStatusMessage("AI Agent 已选择一键图文生成，正在执行...");
+    setAssistantSkillStatus(assistantId, "正在生成完整图文，并会自动写入编辑器。");
+    try {
+      const job = await runJob(
+        () => Promise.resolve(event.job!),
+        {
+          onProgress: (data) => {
+            if (typeof data.message === "string") {
+              setStatusMessage(data.message);
+              setAssistantSkillStatus(assistantId, data.message);
+            }
+          },
+          onPartial: (data) => {
+            if (data.kind === "draft") {
+              applyGeneratedDraft(data.value as DirectGenerateResult);
+              setStatusMessage("AI 初稿已填充，正在生成图片...");
+            }
+            if (data.kind === "imageAsset") {
+              applyGeneratedImageAsset(data.value as { asset?: GeneratedImageAsset; cover?: boolean }, generatedAssetIds);
+            }
+          },
+          onWarning: (message) => {
+            setStatusMessage(message);
+            setAssistantSkillStatus(assistantId, `提示：${message}`);
+          },
+          onDone: (_job, result) => {
+            finishGeneratedDraft(result as DirectGenerateResult, generatedAssetIds);
+            setAssistantSkillStatus(assistantId, "已写入编辑器。");
+          },
+          onError: (message) => {
+            setStatusMessage(`AI 生成失败：${message}`);
+            setAssistantSkillStatus(assistantId, `生成失败：${message}`);
+          },
+        },
+      );
+      if (job.status !== "succeeded") {
+        throw new Error(job.errorMessage ?? "AI 生成失败");
+      }
+      await loadAssets();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "AI 生成失败";
+      setStatusMessage(`AI 生成失败：${message}`);
+      setAssistantSkillStatus(assistantId, `生成失败：${message}`);
+    } finally {
+      setActiveOperation(null);
+    }
+  }
+
+  async function runConversationReviewJob(event: CreativeChatSkillEvent, assistantId: string) {
+    if (!event.job || isBusy) return;
+    setActiveOperation("audit");
+    setReviewRewrite(null);
+    setStatusMessage("AI Agent 已选择内容安全审核，正在执行...");
+    setAssistantSkillStatus(assistantId, "正在审核当前内容。");
+    try {
+      const reviewJob = await runJob(
+        () => Promise.resolve(event.job!),
+        {
+          onProgress: (data) => {
+            if (typeof data.message === "string") setStatusMessage(data.message);
+          },
+          onPartial: (data) => {
+            if (data.kind === "audit") setStatusMessage("审核结果已生成，正在更新作品状态");
+          },
+          onError: (message) => setStatusMessage(`内容审核失败：${message}`),
+        },
+      );
+      if (reviewJob.status !== "succeeded" || !reviewJob.result) {
+        throw new Error(reviewJob.errorMessage ?? "内容审核失败");
+      }
+      applyReviewJobResult(reviewJob.result as {
+        content: ContentSummary;
+        audit: AuditResult;
+        quality: null;
+        rewrite: ReviewRewrite;
+      });
+      setAssistantSkillStatus(assistantId, "内容审核已完成，结果已同步到发布流转面板。");
+      await loadDraftCards();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "内容审核失败";
+      setStatusMessage(`内容审核失败：${message}`);
+      setAssistantSkillStatus(assistantId, `审核失败：${message}`);
+    } finally {
+      setActiveOperation(null);
+    }
+  }
+
+  async function runConversationReviewAfterPersist(assistantId: string) {
+    if (isBusy) return;
+    setActiveOperation("audit");
+    setReviewRewrite(null);
+    setAssistantSkillStatus(assistantId, "正在先保存当前内容，再执行安全审核。");
+    try {
+      const saved = await persistContent();
+      const reviewJob = await runJob(
+        () => startSubmitReviewJob(saved.id),
+        {
+          onProgress: (data) => {
+            if (typeof data.message === "string") setStatusMessage(data.message);
+          },
+          onPartial: (data) => {
+            if (data.kind === "audit") setStatusMessage("审核结果已生成，正在更新作品状态");
+          },
+          onError: (message) => setStatusMessage(`内容审核失败：${message}`),
+        },
+      );
+      if (reviewJob.status !== "succeeded" || !reviewJob.result) {
+        throw new Error(reviewJob.errorMessage ?? "内容审核失败");
+      }
+      applyReviewJobResult(reviewJob.result as {
+        content: ContentSummary;
+        audit: AuditResult;
+        quality: null;
+        rewrite: ReviewRewrite;
+      });
+      setAssistantSkillStatus(assistantId, "内容审核已完成，结果已同步到发布流转面板。");
+      await loadDraftCards();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "内容审核失败";
+      setStatusMessage(`内容审核失败：${message}`);
+      setAssistantSkillStatus(assistantId, `审核失败：${message}`);
+    } finally {
+      setActiveOperation(null);
+    }
+  }
+
+  function handleCreativeChatSkillEvent(event: CreativeChatSkillEvent, assistantId: string) {
+    if (event.type === "skill_started") {
+      setAssistantSkillStatus(assistantId, event.message ?? `已选择：${event.skillKey}`);
+      if (event.skillKey === "content-safety-reviewer" && event.data?.requiresContent) {
+        void runConversationReviewAfterPersist(assistantId);
+      }
+      return;
+    }
+
+    if (event.type === "job_started") {
+      if (event.skillKey === "content-production-line") {
+        void runConversationDraftJob(event, assistantId);
+      } else if (event.skillKey === "content-safety-reviewer") {
+        void runConversationReviewJob(event, assistantId);
+      }
+      return;
+    }
+
+    if (event.type === "skill_error") {
+      const message = event.message ?? "Skill 执行失败";
+      setStatusMessage(message);
+      setAssistantSkillStatus(assistantId, message);
+    }
+  }
+
   async function sendCreativeChatMessage() {
     const message = chatInput.trim();
     if (!message || isChatStreaming || streamLockRef.current) return;
@@ -1424,7 +1659,7 @@ export default function EditorPage() {
     setChatMessages((items) => [
       ...items,
       { id: userId, role: "user", content: message },
-      { id: assistantId, role: "assistant", content: "" },
+      { id: assistantId, role: "assistant", kind: "chat", content: "" },
     ]);
     try {
       await streamCreativeChat(
@@ -1449,15 +1684,21 @@ export default function EditorPage() {
           },
           onDone: (event) => {
             setConversationId(event.conversationId);
+            let hasInsertableMessage = false;
             setChatMessages((items) =>
               items.map((item) =>
                 item.id === assistantId
-                  ? { ...item, id: event.messageId, insertable: true }
+                  ? (() => {
+                      const insertable = shouldOfferChatActions(item);
+                      hasInsertableMessage = hasInsertableMessage || insertable;
+                      return { ...item, id: event.messageId, insertable };
+                    })()
                   : item,
               ),
             );
-            setStatusMessage("AI 回复完成，可插入正文或生成配图");
+            setStatusMessage(hasInsertableMessage ? "AI 回复完成，可插入正文或生成配图" : "AI 回复完成");
           },
+          onSkill: (event) => handleCreativeChatSkillEvent(event, assistantId),
           onError: (text) => setStatusMessage(text),
         },
       );
@@ -1609,6 +1850,27 @@ export default function EditorPage() {
     setShowPreview(true);
   }
 
+  function applyReviewJobResult(reviewed: {
+    content: ContentSummary;
+    audit: AuditResult;
+    quality: null;
+    rewrite: ReviewRewrite;
+  }) {
+    setEditingStatus(reviewed.content.status);
+    setLastContentSummary(reviewed.content);
+    setReviewResult({ content: reviewed.content, audit: reviewed.audit });
+    setQualityResult(null);
+    if (reviewed.rewrite && !reviewed.audit.passed) {
+      setReviewRewrite(reviewed.rewrite);
+    }
+    if (reviewed.audit.passed) setShowPreview(false);
+    setStatusMessage(
+      reviewed.audit.passed
+        ? "安全审核通过，可直接发布；也可以先做质量评估作为分发参考"
+        : `审核未通过：${reviewed.audit.reasons.join("；")}`,
+    );
+  }
+
   // 提交审核前先保存内容；这里只做安全合规，安全通过后即可发布。
   async function submitForReview() {
     if (isBusy) return;
@@ -1646,19 +1908,7 @@ export default function EditorPage() {
 
       console.log("审核结果", reviewed);
 
-      setEditingStatus(reviewed.content.status);
-      setLastContentSummary(reviewed.content);
-      setReviewResult({ content: reviewed.content, audit: reviewed.audit });
-      setQualityResult(null);
-      if (reviewed.rewrite && !reviewed.audit.passed) {
-        setReviewRewrite(reviewed.rewrite);
-      }
-      if (reviewed.audit.passed) setShowPreview(false);
-      setStatusMessage(
-        reviewed.audit.passed
-          ? "安全审核通过，可直接发布；也可以先做质量评估作为分发参考"
-          : `审核未通过：${reviewed.audit.reasons.join("；")}`,
-      );
+      applyReviewJobResult(reviewed);
       await loadDraftCards();
     } catch (error) {
       setStatusMessage(
@@ -1938,7 +2188,7 @@ export default function EditorPage() {
                 />
                 <button
                   type="button"
-                  onClick={() => void createAiDraft("brief")}
+                  onClick={() => void runBriefDraftSkill()}
                   disabled={isBusy}
                   className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[#ff2442] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#e91635] disabled:cursor-not-allowed disabled:opacity-60"
                 >
@@ -2862,136 +3112,101 @@ export default function EditorPage() {
               <MessageCircle size={18} className="text-[#ff2442]" />
               <h2 className="font-bold">AI 交互中心</h2>
             </div>
-            <div className="mb-4 flex rounded-2xl bg-slate-100 p-1">
-              <button
-                type="button"
-                onClick={() => setAiMode("brainstorm")}
-                className={`flex-1 rounded-xl px-3 py-2 text-sm font-semibold ${aiMode === "brainstorm" ? "bg-white text-[#ff2442] shadow-sm" : "text-slate-500"}`}
-              >
-                碰撞思路
-              </button>
-              <button
-                type="button"
-                onClick={() => setAiMode("direct")}
-                className={`flex-1 rounded-xl px-3 py-2 text-sm font-semibold ${aiMode === "direct" ? "bg-white text-[#ff2442] shadow-sm" : "text-slate-500"}`}
-              >
-                直接生成
-              </button>
-            </div>
-
-            {aiMode === "brainstorm" ? (
-              <div>
-                {!chatMessages.length ? (
-                  <div className="space-y-2">
-                    {defaultIdeas.map((idea) => (
-                      <button
-                        key={idea}
-                        type="button"
-                        onClick={() => setChatInput(idea)}
-                        className="w-full rounded-2xl bg-slate-50 px-4 py-3 text-left text-sm text-slate-600 hover:bg-[#fff3f5] hover:text-[#ff2442]"
-                      >
-                        {idea}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-                {chatMessages.length ? (
-                  <div className="max-h-[58vh] min-h-80 space-y-3 overflow-y-auto pr-1">
-                    {chatMessages.map((message) => (
-                      <div
-                        key={message.id}
-                        className={`rounded-2xl px-4 py-3 text-sm leading-6 ${message.role === "user" ? "bg-[#fff3f5] text-rose-900" : "border border-slate-100 bg-white text-slate-700 shadow-sm"}`}
-                      >
-                        <div className="mb-1 text-xs font-semibold text-slate-400">
-                          {message.role === "user" ? "你" : "AI"}
-                        </div>
-                        {message.role === "assistant" ? (
-                          <div className="[&_li]:my-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:pl-5">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                              {message.content || "AI 正在思考..."}
-                            </ReactMarkdown>
-                          </div>
-                        ) : (
-                          <p className="whitespace-pre-wrap">
-                            {message.content}
-                          </p>
-                        )}
-                        {message.role === "assistant" &&
-                        message.insertable &&
-                        message.content.trim() ? (
-                          <div className="mt-3 flex flex-wrap gap-2">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                insertHtml(
-                                  markdownToEditorHtml(message.content),
-                                  "AI 回复已插入正文",
-                                )
-                              }
-                              className="inline-flex items-center gap-1 rounded-full bg-[#ff2442] px-3 py-1 text-xs font-medium text-white"
-                            >
-                              <Copy size={13} />
-                              插入正文
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                void generateInlineImageFromText(
-                                  message.content,
-                                )
-                              }
-                              disabled={isBusy}
-                              className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600 hover:bg-[#fff3f5] hover:text-[#ff2442] disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              <ImagePlus size={13} />
-                              {isOperation("inline-image")
-                                ? "生成中..."
-                                : "生成配图"}
-                            </button>
-                          </div>
-                        ) : null}
+            <div>
+              {!chatMessages.length ? (
+                <div className="space-y-2">
+                  {defaultIdeas.map((idea) => (
+                    <button
+                      key={idea}
+                      type="button"
+                      onClick={() => setChatInput(idea)}
+                      className="w-full rounded-2xl bg-slate-50 px-4 py-3 text-left text-sm text-slate-600 hover:bg-[#fff3f5] hover:text-[#ff2442]"
+                    >
+                      {idea}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              {chatMessages.length ? (
+                <div className="max-h-[58vh] min-h-80 space-y-3 overflow-y-auto pr-1">
+                  {chatMessages.map((message) => (
+                    <div
+                      key={message.id}
+                      className={`rounded-2xl px-4 py-3 text-sm leading-6 ${message.role === "user" ? "bg-[#fff3f5] text-rose-900" : "border border-slate-100 bg-white text-slate-700"}`}
+                    >
+                      <div className="mb-1 text-xs font-semibold text-slate-400">
+                        {message.role === "user" ? "你" : "AI"}
                       </div>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            ) : (
-              <div className="rounded-2xl bg-[#fff3f5] p-4 text-sm leading-6 text-rose-900">
-                输入最终确定的主题或思路，AI
-                会直接把完整图文、标签和图片资产填入中央编辑区。
-              </div>
-            )}
+                      {message.role === "assistant" ? (
+                        <div className="overflow-x-auto [&_code]:rounded [&_code]:bg-slate-100 [&_code]:px-1 [&_code]:py-0.5 [&_li]:my-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_strong]:font-semibold [&_table]:my-3 [&_table]:min-w-full [&_table]:border-collapse [&_td]:border [&_td]:border-slate-200 [&_td]:px-3 [&_td]:py-2 [&_td]:align-top [&_th]:border [&_th]:border-slate-200 [&_th]:bg-slate-50 [&_th]:px-3 [&_th]:py-2 [&_th]:text-left [&_th]:font-semibold [&_ul]:list-disc [&_ul]:pl-5">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {normalizeChatMarkdown(message.content) || "AI 正在思考..."}
+                          </ReactMarkdown>
+                        </div>
+                      ) : (
+                        <p className="whitespace-pre-wrap">
+                          {message.content}
+                        </p>
+                      )}
+                      {message.role === "assistant" &&
+                      message.kind !== "skill_status" &&
+                      message.insertable &&
+                      message.content.trim() ? (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              insertHtml(
+                                markdownToEditorHtml(message.content),
+                                "AI 回复已插入正文",
+                              )
+                            }
+                            className="inline-flex items-center gap-1 rounded-full bg-[#ff2442] px-3 py-1 text-xs font-medium text-white"
+                          >
+                            <Copy size={13} />
+                            插入正文
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void generateInlineImageFromText(
+                                message.content,
+                              )
+                            }
+                            disabled={isBusy}
+                            className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600 hover:bg-[#fff3f5] hover:text-[#ff2442] disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <ImagePlus size={13} />
+                            {isOperation("inline-image")
+                              ? "生成中..."
+                              : "生成配图"}
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
 
             <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50 p-2">
               <textarea
                 value={chatInput}
                 onChange={(event) => setChatInput(event.target.value)}
                 rows={4}
-                placeholder={
-                  aiMode === "brainstorm"
-                    ? "输入你的疑问，和 AI 一起拆角度..."
-                    : "输入最终主题，AI 将生成完整图文..."
-                }
+                placeholder="和 AI 讨论选题、修改正文，或直接说生成完整图文/审核当前内容..."
                 className="w-full resize-none bg-transparent p-2 text-sm outline-none placeholder:text-slate-400"
               />
               <button
                 type="button"
-                onClick={() =>
-                  aiMode === "direct"
-                    ? void createAiDraft("direct")
-                    : void sendCreativeChatMessage()
-                }
+                onClick={() => void sendCreativeChatMessage()}
                 disabled={isBusy || isChatStreaming}
                 className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-[#ff2442] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <Sparkles size={16} />
                 {isChatStreaming
                   ? "AI 输出中..."
-                  : aiMode === "direct"
-                    ? isOperation("draft")
-                      ? "生成中..."
-                      : "生成到编辑区"
-                    : "发送给 AI"}
+                  : "发送给 AI"}
               </button>
             </div>
           </section>

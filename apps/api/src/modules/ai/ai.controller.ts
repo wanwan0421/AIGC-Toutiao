@@ -81,8 +81,11 @@ export class AiController {
 
     try {
       for await (const event of this.workflow.streamCreativeChat({ ...body, userId: user.id })) {
-        response.write(`event: ${event.type}\n`);
-        response.write(`data: ${JSON.stringify(event.data)}\n\n`);
+        if (event.type === "skill") {
+          await this.writeSkillEvent(response, user.id, event.data as Record<string, unknown>);
+          continue;
+        }
+        this.writeSse(response, event);
       }
     } catch (error) {
       response.write("event: error\n");
@@ -150,7 +153,34 @@ export class AiController {
     return this.workflow.attachCreativeConversation(id, { ...body, userId: user.id });
   }
 
-  private writeSse(response: Response, event: AiJobEvent) {
+  private async writeSkillEvent(response: Response, userId: string, data: Record<string, unknown>) {
+    const { jobRequest, ...publicData } = data;
+    this.writeSse(response, { type: "skill", data: publicData });
+
+    const request = jobRequest as
+      | { type?: AiJobType; payload?: Record<string, unknown>; contentId?: string }
+      | undefined;
+    if (!request?.type) return;
+
+    const job = await this.jobs.create({
+      userId,
+      type: request.type,
+      payload: request.payload ?? {},
+      contentId: request.contentId,
+    });
+    const skillKey = typeof publicData.skillKey === "string" ? publicData.skillKey : undefined;
+    this.writeSse(response, {
+      type: "skill",
+      data: {
+        type: "job_started",
+        skillKey,
+        message: "Skill 任务已开始",
+        job,
+      },
+    });
+  }
+
+  private writeSse(response: Response, event: AiJobEvent | { type: string; data: unknown }) {
     response.write(`event: ${event.type}\n`);
     response.write(`data: ${JSON.stringify(event.data)}\n\n`);
   }

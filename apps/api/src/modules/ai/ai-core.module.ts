@@ -7,6 +7,7 @@ import { IdeaAssistantAgent } from "./agents/idea-assistant.agent";
 import { QualityScoringAgent } from "./agents/quality-scoring.agent";
 import { SafetyReviewAgent } from "./agents/safety-review.agent";
 import { SelectionRewriterAgent } from "./agents/selection-rewriter.agent";
+import { SkillRouterAgent } from "./agents/skill-router.agent";
 import { TitleAgent } from "./agents/title.agent";
 import { ContextBuilderService } from "./context-builder.service";
 import { ConversationArchiveService } from "./conversation-archive.service";
@@ -17,6 +18,8 @@ import { PromptTemplateService } from "./prompt-template.service";
 import { SafetyResultMerger } from "./safety/safety-result-merger.service";
 import { SafetyRuleEngine } from "./safety/safety-rule-engine.service";
 import { SafetyRuleLoader } from "./safety/safety-rule-loader.service";
+import { SkillExecutorService } from "./skills-runtime/skill-executor.service";
+import { SkillRegistryService } from "./skills-runtime/skill-registry.service";
 import { ContentQualitySkill } from "./skills/content-quality.skill";
 import { CreativeAssistantSkill } from "./skills/creative-assistant.skill";
 import { CreativeProductionSkill } from "./skills/creative-production.skill";
@@ -35,11 +38,14 @@ const providers = [
   SafetyResultMerger,
   DraftGeneratorAgent,
   IdeaAssistantAgent,
+  SkillRouterAgent,
   SelectionRewriterAgent,
   TitleAgent,
   SafetyReviewAgent,
   QualityScoringAgent,
   ComplianceRewriteAgent,
+  SkillRegistryService,
+  SkillExecutorService,
   SafetyReviewSkill,
   ContentQualitySkill,
   CreativeAssistantSkill,

@@ -1,8 +1,9 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
-import { AiJobStatus, AiJobType, type DirectGenerateRequest, type GeneratedImageAsset } from "@aicp/shared";
+import { AiJobStatus, AiJobType, type DirectGenerateRequest } from "@aicp/shared";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { CreativeProductionSkill } from "../ai/skills/creative-production.skill";
+import { SkillExecutorService } from "../ai/skills-runtime/skill-executor.service";
 import { ContentWorkflowEngine } from "./content-workflow.engine";
 import { WorkflowJobEventsService } from "./workflow-job-events.service";
 import { toAiJobSnapshot, type AiJobRecord } from "./workflow-job.mapper";
@@ -26,7 +27,8 @@ export class WorkflowJobRunner {
     private readonly prisma: PrismaService,
     private readonly events: WorkflowJobEventsService,
     private readonly workflow: ContentWorkflowEngine,
-    private readonly productionSkill: CreativeProductionSkill
+    private readonly productionSkill: CreativeProductionSkill,
+    private readonly skillExecutor: SkillExecutorService
   ) {}
 
   async run(jobId: string) {
@@ -76,50 +78,25 @@ export class WorkflowJobRunner {
   }
 
   private async runCreativeDirectGenerate(jobId: string, input: DirectGenerateRequest, userId: string) {
-    await this.progress(jobId, 10, "生成图文初稿", "AI 正在生成标题、正文和配图提示词");
-    const draft = await this.productionSkill.generateDraft({ ...input, userId });
-    await this.partial(jobId, "draft", draft);
-    await this.assertNotCancelled(jobId);
-
-    const imageTasks: Array<{ position: string; prompt: string; cover?: boolean }> = [];
-    if (draft.coverSuggestion) {
-      imageTasks.push({ position: "封面", prompt: draft.coverSuggestion, cover: true });
-    }
-    for (const item of draft.imagePrompts) {
-      imageTasks.push({ position: item.position, prompt: item.prompt });
-    }
-
-    const imageAssets: GeneratedImageAsset[] = [];
-    let coverAsset: GeneratedImageAsset | undefined;
-    const total = Math.max(imageTasks.length, 1);
-
-    for (let index = 0; index < imageTasks.length; index += 1) {
-      const task = imageTasks[index];
-      await this.progress(jobId, 45 + Math.round((index / total) * 45), `生成${task.position}`, `正在生成${task.position}图片`);
-      try {
-        const asset = await this.productionSkill.generateSingleImage({
-          userId,
-          contentId: input.contentId,
-          position: task.position,
-          prompt: task.prompt,
-        });
-        if (task.cover) {
-          coverAsset = asset;
-        } else {
-          imageAssets.push(asset);
-        }
-        await this.partial(jobId, "imageAsset", { asset, cover: Boolean(task.cover) });
-      } catch (error: unknown) {
-        await this.warning(jobId, `${task.position}生成失败：${(error as Error).message}`);
-      }
-      await this.assertNotCancelled(jobId);
-    }
-
-    return {
-      ...draft,
-      coverAsset,
-      imageAssets,
+    const payload = input as DirectGenerateRequest & {
+      conversationId?: string;
+      source?: "button" | "conversation";
     };
+    return this.skillExecutor.runContentProductionLine(
+      payload,
+      {
+        userId,
+        contentId: payload.contentId,
+        conversationId: payload.conversationId,
+        source: payload.source === "conversation" ? "conversation" : "button",
+      },
+      {
+        progress: (progress, currentStep, message) => this.progress(jobId, progress, currentStep, message),
+        partial: (kind, value) => this.partial(jobId, kind, value),
+        warning: (message) => this.warning(jobId, message),
+        assertNotCancelled: () => this.assertNotCancelled(jobId),
+      }
+    );
   }
 
   private async runCreativeImageGenerate(
