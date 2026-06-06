@@ -11,6 +11,7 @@ import { AiCallLogService } from "../ai-call-log.service";
 import { ModelClientService } from "../model-client.service";
 import { AI_PROMPT_NAMES } from "../prompt-names";
 import { PromptTemplateService } from "../prompt-template.service";
+import { promptTemperature } from "../prompt-model-options";
 import { parseJsonObject } from "../structured-output";
 
 const AUDIT_RISK_TYPES: AuditRiskType[] = [
@@ -92,7 +93,7 @@ export class SafetyReviewAgent {
     try {
       const content = await this.modelClient.complete({
         model: rendered.model,
-        temperature: 0.15,
+        temperature: promptTemperature(rendered.modelOptions, 0.15),
         messages: [
           {
             role: "system",

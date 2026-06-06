@@ -137,7 +137,7 @@ async function cropAvatarImage(cropState: AvatarCropState) {
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { profile: sessionProfile, status: authStatus } = useAuth();
+  const { profile: sessionProfile, status: authStatus, setSession } = useAuth();
   const [contents, setContents] = useState<ContentSummary[]>([]);
   const [rankings, setRankings] = useState<ContentSummary[]>([]);
   const [topicCards, setTopicCards] = useState<OfficialTopicSummary[]>([]);
@@ -197,18 +197,15 @@ export default function DashboardPage() {
       totalCollects,
       totalHeat,
       averageScore,
-      follows: 0,
-      fans: 0,
+      follows: profile?.followingCount ?? sessionProfile?.followingCount ?? 0,
+      fans: profile?.followerCount ?? sessionProfile?.followerCount ?? 0,
     };
-  }, [contents]);
+  }, [contents, profile?.followerCount, profile?.followingCount, sessionProfile?.followerCount, sessionProfile?.followingCount]);
 
   const loadingProfile = authStatus === "loading" || loading;
   const displayAccountId = useMemo(() => {
-    if (!profile?.createdAt) return "请先登录";
-
-    const numericId = String(new Date(profile.createdAt).getTime()).replace(/\D/g, "").slice(-10);
-    return numericId || "请先登录";
-  }, [profile]);
+    return profile?.accountNo ? String(profile.accountNo) : "请先登录";
+  }, [profile?.accountNo]);
 
   function LoadingStatSkeleton() {
     return <div className="mx-auto h-5 w-12 animate-pulse rounded-full bg-slate-200/80" />;
@@ -616,6 +613,7 @@ export default function DashboardPage() {
           onClose={() => setProfileOpen(false)}
           onSaved={(nextProfile) => {
             setProfile(nextProfile);
+            setSession(nextProfile);
             setProfileOpen(false);
             setMessage("个人资料已保存");
           }}

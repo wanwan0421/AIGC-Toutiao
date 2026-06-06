@@ -2,6 +2,7 @@ import { Injectable } from "@nestjs/common";
 import { ModelClientService } from "../model-client.service";
 import { PromptTemplateService } from "../prompt-template.service";
 import { AI_PROMPT_NAMES } from "../prompt-names";
+import { promptTemperature } from "../prompt-model-options";
 
 @Injectable()
 export class IdeaAssistantAgent {
@@ -18,11 +19,12 @@ export class IdeaAssistantAgent {
     selectedText?: string;
     historyText?: string;
   }) {
-    const { prompt, model } = await this.prompts.render(AI_PROMPT_NAMES.creativeChat, input);
+    const rendered = await this.prompts.render(AI_PROMPT_NAMES.creativeChat, input);
+    const { prompt, model } = rendered;
 
     yield* this.modelClient.stream({
       model,
-      temperature: 0.75,
+      temperature: promptTemperature(rendered.modelOptions, 0.75),
       messages: [
         {
           role: "system",

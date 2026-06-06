@@ -4,6 +4,7 @@ import { AiCallLogService } from "../ai-call-log.service";
 import { ModelClientService } from "../model-client.service";
 import { PromptTemplateService } from "../prompt-template.service";
 import { AI_PROMPT_NAMES } from "../prompt-names";
+import { promptTemperature } from "../prompt-model-options";
 import { parseJsonObject } from "../structured-output";
 
 @Injectable()
@@ -19,14 +20,15 @@ export class DraftGeneratorAgent {
   async run(input: DirectGenerateRequest): Promise<DirectGenerateResult> {
     const startedAt = Date.now();
     // 渲染结构化图文创作提示词，模型结果只负责内容，不处理任务进度。
-    const { prompt, model } = await this.prompts.render(
+    const rendered = await this.prompts.render(
       AI_PROMPT_NAMES.directGenerate,
       input as unknown as Record<string, unknown>
     );
+    const { prompt, model } = rendered;
 
     const content = await this.modelClient.complete({
       model,
-      temperature: 0.75,
+      temperature: promptTemperature(rendered.modelOptions, 0.75),
       messages: [
         {
           role: "system",

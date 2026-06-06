@@ -29,12 +29,13 @@ export default function LoginPage() {
   const registerLabel = registerMethod === "phone" ? "手机号" : "邮箱";
   const registerPlaceholder = registerMethod === "phone" ? "请输入手机号" : "请输入邮箱";
   const registerIcon = registerMethod === "phone" ? <Phone className="h-4 w-4" /> : <Mail className="h-4 w-4" />;
+  const passwordMismatch = mode === "register" && Boolean(confirmPassword) && password !== confirmPassword;
 
   const canSubmit = useMemo(() => {
     if (!password) return false;
     if (mode === "login") return Boolean(loginAccount.trim());
-    return Boolean(registerAccount.trim() && verificationCode.trim() && confirmPassword.trim() && password === confirmPassword);
-  }, [confirmPassword, loginAccount, mode, password, registerAccount, verificationCode]);
+    return Boolean(registerAccount.trim() && verificationCode.trim() && confirmPassword.trim() && !passwordMismatch);
+  }, [confirmPassword, loginAccount, mode, password, passwordMismatch, registerAccount, verificationCode]);
 
   function switchMode(nextMode: AuthMode) {
     setMode(nextMode);
@@ -257,6 +258,11 @@ export default function LoginPage() {
                     </button>
                   }
                 />
+                {passwordMismatch ? (
+                  <p className="-mt-3 text-xs font-semibold text-rose-600">两次输入的密码不一致，请重新确认。</p>
+                ) : confirmPassword ? (
+                  <p className="-mt-3 text-xs font-semibold text-emerald-600">两次密码一致</p>
+                ) : null}
               </>
             )}
 

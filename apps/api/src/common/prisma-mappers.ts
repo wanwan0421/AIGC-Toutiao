@@ -15,6 +15,7 @@ import {
 
 type UserLike = {
   id: string;
+  accountNo?: number | null;
   nickname: string;
   avatarUrl: string | null;
 };
@@ -95,6 +96,7 @@ export function toContentSummary(content: ContentLike): ContentSummary {
     status: toApiContentStatus(content.status),
     author: {
       id: content.author.id,
+      accountNo: content.author.accountNo ?? undefined,
       nickname: content.author.nickname,
       avatarUrl: content.author.avatarUrl ?? undefined
     },

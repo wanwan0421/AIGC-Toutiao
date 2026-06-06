@@ -5,8 +5,8 @@ import {
   PromptScene,
   type PromptDefinitionSummary,
   type PromptEvalRunSummary,
+  type PromptRenderPreviewResult,
   type PromptTestCaseSummary,
-  type PromptValidationIssue,
   type PromptVersionSummary,
 } from "@aicp/shared";
 import {
@@ -18,7 +18,6 @@ import {
   Loader2,
   Play,
   Plus,
-  Save,
   Search,
   Send,
 } from "lucide-react";
@@ -99,17 +98,7 @@ const defaultTemplate = `你是 AI 内容创作平台的中文 Prompt 工程助�
 
 请根据任务要求返回结果。`;
 
-const defaultPreviewInput = JSON.stringify(
-  {
-    title: "示例标题",
-    body: "这里是一段用于测试 Prompt 渲染的正文。",
-    materialNotes: "补充素材：用户希望内容更清晰、更有结构。",
-  },
-  null,
-  2
-);
-
-type BusyState = null | "save" | "activate" | "preview" | "test" | "eval";
+type BusyState = null | "activate" | "preview" | "test" | "eval";
 
 export default function PromptManagePage() {
   const [definitions, setDefinitions] = useState<PromptDefinitionSummary[]>([]);
@@ -117,7 +106,7 @@ export default function PromptManagePage() {
   const [versions, setVersions] = useState<PromptVersionSummary[]>([]);
   const [testCases, setTestCases] = useState<PromptTestCaseSummary[]>([]);
   const [evalRun, setEvalRun] = useState<PromptEvalRunSummary | null>(null);
-  const [preview, setPreview] = useState<{ prompt: string; issues: PromptValidationIssue[] } | null>(null);
+  const [preview, setPreview] = useState<PromptRenderPreviewResult | null>(null);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<BusyState>(null);
@@ -129,12 +118,11 @@ export default function PromptManagePage() {
     scene: PromptScene.Generate,
     status: "draft",
     model: "",
-    variables: "",
     temperature: "0.7",
     outputSchema: "",
     template: defaultTemplate,
     changeNote: "",
-    previewInput: defaultPreviewInput,
+    previewInput: buildPreviewInput(defaultTemplate),
   });
 
   const selected = useMemo(
@@ -143,7 +131,7 @@ export default function PromptManagePage() {
   );
 
   const extractedVariables = useMemo(() => extractVariables(form.template), [form.template]);
-  const declaredVariablesList = useMemo(() => declaredVariablesFromText(form.variables), [form.variables]);
+  const variableSignature = useMemo(() => extractedVariables.join("\u0000"), [extractedVariables]);
   const filteredDefinitions = useMemo(() => {
     const keyword = query.trim().toLowerCase();
     if (!keyword) return definitions;
@@ -182,17 +170,24 @@ export default function PromptManagePage() {
       scene: selected.scene,
       status: selected.status,
       model: active?.model ?? "",
-      variables: active?.variables?.join(", ") ?? "",
       temperature: String(active?.modelOptions?.temperature ?? "0.7"),
       outputSchema: active?.outputSchema ? JSON.stringify(active.outputSchema, null, 2) : "",
       template: active?.template ?? defaultTemplate,
       changeNote: "",
-      previewInput: defaultPreviewInput,
+      previewInput: buildPreviewInput(active?.template ?? defaultTemplate),
     });
     setPreview(null);
     setEvalRun(null);
     void loadPromptArtifacts(selected.key);
   }, [selected]);
+
+  useEffect(() => {
+    setForm((prev) => {
+      const nextPreviewInput = buildPreviewInput(prev.template, prev.previewInput);
+      return nextPreviewInput === prev.previewInput ? prev : { ...prev, previewInput: nextPreviewInput };
+    });
+    setPreview(null);
+  }, [variableSignature]);
 
   async function loadDefinitions(nextKey?: string) {
     setLoading(true);
@@ -232,36 +227,32 @@ export default function PromptManagePage() {
       scene: PromptScene.Generate,
       status: "draft",
       model: "",
-      variables: "",
       temperature: "0.7",
       outputSchema: "",
       template: defaultTemplate,
       changeNote: "创建新的 Prompt",
-      previewInput: defaultPreviewInput,
+      previewInput: buildPreviewInput(defaultTemplate),
     });
   }
 
   async function handleSave(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    await saveVersion("draft");
+    await saveVersion();
   }
 
-  async function saveVersion(status: "draft" | "active") {
-    setBusy(status === "active" ? "activate" : "save");
+  async function saveVersion() {
+    setBusy("activate");
     try {
-      const payload = buildVersionPayload(status);
+      const payload = buildVersionPayload();
       if (selected) {
         await updatePrompt(selected.id, {
           name: form.displayName.trim() || form.key.trim(),
           description: form.description.trim(),
           scene: form.scene,
-          status: status === "active" ? "active" : (form.status as "active" | "draft" | "disabled"),
+          status: "active",
         });
-        const version = await createPromptVersion(selected.key, payload);
-        if (status === "active") {
-          await activatePromptVersion(selected.key, version.id);
-        }
-        setMessage(status === "active" ? "新版本已保存并激活，后续 LLM 调用会使用它。" : "草稿版本已保存，暂不影响运行时调用。");
+        await createPromptVersion(selected.key, payload);
+        setMessage("新版本已保存并激活，后续 LLM 调用会使用它。");
         await loadDefinitions(selected.key);
         await loadPromptArtifacts(selected.key);
       } else {
@@ -269,19 +260,17 @@ export default function PromptManagePage() {
           name: form.key.trim(),
           scene: form.scene,
           template: form.template,
-          variables: declaredVariablesList,
+          variables: extractedVariables,
           model: form.model.trim() || undefined,
-          modelOptions: { temperature: Number(form.temperature) || 0.7 },
+          modelOptions: { temperature: parseTemperature(form.temperature) },
           outputSchema: parseOptionalJson(form.outputSchema),
           description: form.description.trim() || undefined,
           changeNote: form.changeNote.trim() || "创建新的 Prompt",
         });
-        if (status === "active") {
-          const newVersions = await getPromptVersions(created.name);
-          const latest = newVersions[0];
-          if (latest) await activatePromptVersion(created.name, latest.id);
-        }
-        setMessage(status === "active" ? "Prompt 已创建并激活" : "Prompt 已创建为草稿");
+        const newVersions = await getPromptVersions(created.name);
+        const latest = newVersions[0];
+        if (latest) await activatePromptVersion(created.name, latest.id);
+        setMessage("Prompt 已创建并激活");
         await loadDefinitions(created.name);
       }
     } catch (error) {
@@ -293,20 +282,20 @@ export default function PromptManagePage() {
 
   async function handlePreview() {
     if (!selected) {
-      setMessage("新建 Prompt 需要先保存草稿，再进行渲染预览。");
+      setMessage("新建 Prompt 需要先保存并激活，再进行渲染预览。");
       return;
     }
     setBusy("preview");
     try {
       const result = await renderPromptPreview(selected.key, {
         template: form.template,
-        variables: declaredVariablesList,
+        variables: extractedVariables,
         model: form.model.trim() || undefined,
-        modelOptions: { temperature: Number(form.temperature) || 0.7 },
+        modelOptions: { temperature: parseTemperature(form.temperature) },
         outputSchema: parseOptionalJson(form.outputSchema),
-        input: parseJsonObject(form.previewInput, "预览输入"),
+        input: parsePreviewInput(form.previewInput, extractedVariables, "预览输入"),
       });
-      setPreview({ prompt: result.prompt, issues: result.issues });
+      setPreview(result);
       setMessage("渲染预览已生成");
     } catch (error) {
       setMessage(errorMessage(error, "渲染预览失败"));
@@ -321,7 +310,7 @@ export default function PromptManagePage() {
     try {
       await createPromptTestCase(selected.key, {
         name: `测试用例 ${testCases.length + 1}`,
-        input: parseJsonObject(form.previewInput, "测试输入"),
+        input: parsePreviewInput(form.previewInput, extractedVariables, "测试输入"),
         assertions: { mustContain: extractedVariables.map((item) => `{{${item}}}`).slice(0, 1) },
         enabled: true,
       });
@@ -363,15 +352,15 @@ export default function PromptManagePage() {
     }
   }
 
-  function buildVersionPayload(status: "draft" | "active") {
+  function buildVersionPayload() {
     return {
       template: form.template,
-      variables: declaredVariablesList,
+      variables: extractedVariables,
       model: form.model.trim() || undefined,
-      modelOptions: { temperature: Number(form.temperature) || 0.7 },
+      modelOptions: { temperature: parseTemperature(form.temperature) },
       outputSchema: parseOptionalJson(form.outputSchema),
-      changeNote: form.changeNote.trim() || (status === "active" ? "保存并激活版本" : "保存草稿版本"),
-      status,
+      changeNote: form.changeNote.trim() || "保存并激活版本",
+      status: "active" as const,
     };
   }
 
@@ -379,11 +368,11 @@ export default function PromptManagePage() {
     setForm((prev) => ({
       ...prev,
       model: version.model ?? "",
-      variables: version.variables.join(", "),
       temperature: String(version.modelOptions?.temperature ?? "0.7"),
       outputSchema: version.outputSchema ? JSON.stringify(version.outputSchema, null, 2) : "",
       template: version.template,
       changeNote: `基于 v${version.version} 修改`,
+      previewInput: buildPreviewInput(version.template, prev.previewInput),
     }));
     setPreview(null);
   }
@@ -439,7 +428,7 @@ export default function PromptManagePage() {
                         >
                           <div className="flex items-center justify-between gap-2">
                             <div className="min-w-0 flex items-center gap-2">
-                              <span className="truncate text-sm text-slate-900">{displayName(item)}</span>
+                              <span className="truncate text-sm text-slate-900">{item.displayName}</span>
                               <p className="truncate text-xs text-slate-500">{item.key}</p>
                             </div>                            
                             <StatusBadge status={item.status} />
@@ -482,11 +471,7 @@ export default function PromptManagePage() {
                         {busy === "preview" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}
                         预览
                       </button>
-                      <button type="submit" disabled={Boolean(busy) || !form.template.trim()} className={secondaryButton()}>
-                        {busy === "save" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                        存草稿
-                      </button>
-                      <button type="button" onClick={() => void saveVersion("active")} disabled={Boolean(busy) || !form.template.trim()} className={primaryButton()}>
+                      <button type="submit" disabled={Boolean(busy) || !form.template.trim()} className={primaryButton()}>
                         {busy === "activate" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                         保存并激活
                       </button>
@@ -517,7 +502,7 @@ export default function PromptManagePage() {
                       <Field label="模型" value={form.model} placeholder="默认使用 ARK_MODEL" onChange={(value) => setForm((prev) => ({ ...prev, model: value }))} />
                     </div>
                     <div className="mt-4 grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_160px]">
-                      <Field label="变量声明，用逗号分隔" value={form.variables} onChange={(value) => setForm((prev) => ({ ...prev, variables: value }))} />
+                      <VariableTags variables={extractedVariables} />
                       <Field label="temperature" value={form.temperature} onChange={(value) => setForm((prev) => ({ ...prev, temperature: value }))} />
                     </div>
                     <div className="mt-4">
@@ -552,9 +537,10 @@ export default function PromptManagePage() {
                         onChange={(value) => setForm((prev) => ({ ...prev, outputSchema: value }))}
                       />
                       <TextareaField
-                        label="测试输入 Schema JSON"
+                        label="预览输入 JSON"
                         value={form.previewInput}
                         rows={8}
+                        placeholder='{"body":"这里粘贴正文"}'
                         onChange={(value) => setForm((prev) => ({ ...prev, previewInput: value }))}
                       />
                     </div>
@@ -562,29 +548,13 @@ export default function PromptManagePage() {
 
                   <section className="rounded-2xl border border-slate-100 bg-white p-4">
                     <h3 className="text-base font-bold text-slate-900">版本说明</h3>
-                    <div className="mt-4 grid min-w-0 grid-cols-1 gap-4 2xl:grid-cols-2">
+                    <div className="mt-4">
                       <Field
                         label="变更说明"
                         value={form.changeNote}
                         placeholder="说明这次 Prompt 改了什么、为什么改"
                         onChange={(value) => setForm((prev) => ({ ...prev, changeNote: value }))}
                       />
-                      <div className="grid min-w-0 gap-2">
-                        <p className="text-sm font-semibold text-slate-700">自动提取变量</p>
-                        <div className="min-h-11 py-2 text-sm text-slate-700">
-                          {extractedVariables.length ? (
-                            <div className="flex min-w-0 flex-wrap gap-2">
-                              {extractedVariables.map((item) => (
-                                <span key={item} className="max-w-full break-all rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">
-                                  {`{{${item}}}`}
-                                </span>
-                              ))}
-                            </div>
-                          ) : (
-                            <span className="text-slate-400">模板中暂未发现变量</span>
-                          )}
-                        </div>
-                      </div>
                     </div>
                   </section>
                 </div>
@@ -614,6 +584,15 @@ export default function PromptManagePage() {
                         暂未发现变量问题
                       </div>
                     )}
+                  </div>
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <PreviewMeta label="模板变量" values={preview.variables.map((item) => `{{${item}}}`)} empty="无变量" />
+                    <PreviewMeta label="输入变量" values={preview.inputKeys} empty="无输入" />
+                    <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm">
+                      <p className="text-xs font-semibold text-slate-400">模型参数</p>
+                      <p className="mt-2 font-semibold text-slate-700">{preview.model || "默认模型"}</p>
+                      <p className="mt-1 text-xs text-slate-500">temperature: {formatTemperature(preview.modelOptions)}</p>
+                    </div>
                   </div>
                   <pre className="max-h-96 overflow-auto rounded-2xl bg-slate-950 p-4 text-sm leading-7 text-slate-100">
                     {preview.prompt}
@@ -714,15 +693,6 @@ export default function PromptManagePage() {
   );
 }
 
-function SectionTitle({ title, description }: { title: string; description: string }) {
-  return (
-    <div>
-      <h3 className="text-sm font-bold text-slate-900">{title}</h3>
-      <p className="mt-1 text-xs leading-5 text-slate-500">{description}</p>
-    </div>
-  );
-}
-
 function Field({
   label,
   value,
@@ -777,6 +747,46 @@ function TextareaField({
   );
 }
 
+function VariableTags({ variables }: { variables: string[] }) {
+  return (
+    <div className="grid min-w-0 gap-2">
+      <span className="text-sm font-semibold text-slate-700">模板变量</span>
+      <div className="min-h-11 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
+        {variables.length ? (
+          <div className="flex min-w-0 flex-wrap gap-2">
+            {variables.map((item) => (
+              <span key={item} className="max-w-full break-all rounded-full bg-slate-200 px-2 py-1 text-sm text-slate-800">
+                {`{{${item}}}`}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <span className="text-sm text-slate-400">模板中暂未发现变量</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PreviewMeta({ label, values, empty }: { label: string; values: string[]; empty: string }) {
+  return (
+    <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm">
+      <p className="text-xs font-semibold text-slate-400">{label}</p>
+      {values.length ? (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {values.map((item) => (
+            <span key={item} className="max-w-full break-all rounded-full bg-white px-2 py-1 text-xs font-semibold text-slate-600">
+              {item}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-2 text-xs text-slate-400">{empty}</p>
+      )}
+    </div>
+  );
+}
+
 function StatusBadge({ status }: { status: string }) {
   const color =
     status === "active"
@@ -816,11 +826,95 @@ function extractVariables(template: string) {
   return Array.from(new Set(Array.from(template.matchAll(/\{\{\s*([\w.]+)\s*\}\}/g)).map((match) => match[1])));
 }
 
-function declaredVariablesFromText(value: string) {
-  return value
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
+function buildPreviewInput(template: string, previousValue = "") {
+  const variables = extractVariables(template);
+  const previous = tryParseJsonObject(previousValue) ?? {};
+  const input: Record<string, unknown> = {};
+
+  for (const variable of variables) {
+    const previousVariableValue = resolvePath(previous, variable);
+    assignPath(input, variable, previousVariableValue ?? defaultPreviewValue(variable));
+  }
+
+  return JSON.stringify(input, null, 2);
+}
+
+function defaultPreviewValue(variable: string) {
+  const lower = variable.toLowerCase();
+  if (lower.includes("title")) return "示例标题";
+  if (lower.includes("body") || lower.includes("text") || lower.includes("content")) {
+    return "这里是一段用于测试 Prompt 渲染的正文。";
+  }
+  if (lower.includes("tone")) return "专业严谨";
+  if (lower.includes("style")) return "清晰自然";
+  if (lower.includes("tag")) return ["#示例标签"];
+  if (lower.includes("risk")) return [];
+  if (lower.includes("material") || lower.includes("note")) return "补充素材：用户希望内容更清晰、更有结构。";
+  return "";
+}
+
+function parsePreviewInput(value: string, variables: string[], label: string): Record<string, unknown> {
+  const parsed = tryParseJsonObject(value);
+  if (parsed) return parsed;
+
+  const text = value.trim();
+  const bodyVariable =
+    variables.find((item) => item === "body") ??
+    variables.find((item) => item.toLowerCase().includes("body")) ??
+    variables.find((item) => item.toLowerCase().includes("text")) ??
+    variables[0];
+
+  if (text && bodyVariable) {
+    return { [bodyVariable]: text };
+  }
+
+  throw new Error(`${label} 格式不是合法 JSON；正文类 Prompt 可直接粘贴纯文本，多个变量时请填写 JSON 对象。`);
+}
+
+function tryParseJsonObject(value: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(value || "{}") as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function assignPath(target: Record<string, unknown>, key: string, value: unknown) {
+  const parts = key.split(".");
+  let current = target;
+  parts.forEach((part, index) => {
+    if (index === parts.length - 1) {
+      current[part] = value;
+      return;
+    }
+    if (!current[part] || typeof current[part] !== "object" || Array.isArray(current[part])) {
+      current[part] = {};
+    }
+    current = current[part] as Record<string, unknown>;
+  });
+}
+
+function resolvePath(source: Record<string, unknown>, key: string) {
+  return key.split(".").reduce<unknown>((current, part) => {
+    if (current && typeof current === "object" && part in current) {
+      return (current as Record<string, unknown>)[part];
+    }
+    return undefined;
+  }, source);
+}
+
+function formatTemperature(modelOptions?: Record<string, unknown> | null) {
+  const value = modelOptions?.temperature;
+  const numberValue = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numberValue) ? String(numberValue) : "默认";
+}
+
+function parseTemperature(value: string) {
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue)) return 0.7;
+  return Math.min(2, Math.max(0, numberValue));
 }
 
 function parseOptionalJson(value: string) {

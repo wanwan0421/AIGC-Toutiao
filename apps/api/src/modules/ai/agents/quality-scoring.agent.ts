@@ -4,6 +4,7 @@ import { AiCallLogService } from "../ai-call-log.service";
 import { ModelClientService } from "../model-client.service";
 import { AI_PROMPT_NAMES } from "../prompt-names";
 import { PromptTemplateService } from "../prompt-template.service";
+import { promptTemperature } from "../prompt-model-options";
 import { parseJsonObject } from "../structured-output";
 
 const QUALITY_SCORE_FALLBACK_PROMPT = `你是中文图文内容质量评估专家，只负责多维质量评分，不做安全审核，也不做改写。
@@ -41,12 +42,13 @@ export class QualityScoringAgent {
 
   async run(input: { title: string; body: string }): Promise<QualityScoreResult> {
     const startedAt = Date.now();
-    const { prompt, model } = await this.prompts.render(AI_PROMPT_NAMES.qualityScore, input, QUALITY_SCORE_FALLBACK_PROMPT);
+    const rendered = await this.prompts.render(AI_PROMPT_NAMES.qualityScore, input, QUALITY_SCORE_FALLBACK_PROMPT);
+    const { prompt, model } = rendered;
 
     try {
       const content = await this.modelClient.complete({
         model,
-        temperature: 0.25,
+        temperature: promptTemperature(rendered.modelOptions, 0.25),
         messages: [
           {
             role: "system",

@@ -9,6 +9,7 @@ datasource db {
 
 model User {
   id           String            @id @default(cuid())
+  accountNo    Int               @unique
   email        String?           @unique
   phone        String?           @unique
   passwordHash String
@@ -23,6 +24,9 @@ model User {
   contents     Content[]
   prompts      PromptTemplate[]
   events       UserActionEvent[]
+  contentReactions ContentReaction[]
+  followers    UserFollow[]      @relation("UserFollowers")
+  following    UserFollow[]      @relation("UserFollowing")
   aiConversations AiConversation[]
   aiJobs       AiJob[]
   preferences  UserPreference?
@@ -66,8 +70,36 @@ model Content {
   drafts       Draft[]
   scores       QualityScore[]
   events       UserActionEvent[]
+  reactions    ContentReaction[]
   aiConversations AiConversation[]
   aiJobs       AiJob[]
+}
+
+model UserFollow {
+  id          String   @id @default(cuid())
+  followerId  String
+  followingId String
+  createdAt   DateTime @default(now())
+  follower    User     @relation("UserFollowing", fields: [followerId], references: [id], onDelete: Cascade)
+  following   User     @relation("UserFollowers", fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@unique([followerId, followingId])
+  @@index([followerId, createdAt])
+  @@index([followingId, createdAt])
+}
+
+model ContentReaction {
+  id        String              @id @default(cuid())
+  userId    String
+  contentId String
+  type      ContentReactionType
+  createdAt DateTime            @default(now())
+  user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content   Content             @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, contentId, type])
+  @@index([contentId, type])
+  @@index([userId, type, createdAt])
 }
 
 model Draft {
@@ -363,6 +395,11 @@ enum AssetAuditStatus {
   pending
   approved
   rejected
+}
+
+enum ContentReactionType {
+  like
+  collect
 }
 
 enum AiMessageRole {

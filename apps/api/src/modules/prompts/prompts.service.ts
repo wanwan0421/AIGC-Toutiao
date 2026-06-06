@@ -229,11 +229,15 @@ export class PromptsService {
     }
 
     const template = body.template ?? version?.template ?? "";
-    const declaredVariables = body.variables ?? this.jsonStringArray(version?.variables);
-    const issues = this.validateTemplate(template, declaredVariables, body.input ?? {});
+    const variables = this.extractVariables(template);
+    const declaredVariables = body.variables ?? variables;
+    const input = body.input ?? {};
+    const issues = this.validateTemplate(template, declaredVariables, input);
     return {
-      prompt: this.interpolate(template, body.input ?? {}),
-      variables: this.extractVariables(template),
+      prompt: this.interpolate(template, input),
+      variables,
+      declaredVariables,
+      inputKeys: this.flattenObjectKeys(input),
       issues,
       model: body.model ?? version?.model ?? null,
       modelOptions: body.modelOptions ?? this.jsonObject(version?.modelOptions),
@@ -618,7 +622,26 @@ export class PromptsService {
   }
 
   private extractVariables(template: string) {
-    return Array.from(template.matchAll(/\{\{\s*([\w.]+)\s*\}\}/g)).map((match) => match[1]);
+    return Array.from(new Set(Array.from(template.matchAll(/\{\{\s*([\w.]+)\s*\}\}/g)).map((match) => match[1])));
+  }
+
+  private flattenObjectKeys(input: Record<string, unknown>) {
+    const keys: string[] = [];
+    const visit = (value: unknown, prefix: string) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        if (prefix) keys.push(prefix);
+        return;
+      }
+
+      const entries = Object.entries(value as Record<string, unknown>);
+      if (!entries.length && prefix) keys.push(prefix);
+      for (const [key, child] of entries) {
+        visit(child, prefix ? `${prefix}.${key}` : key);
+      }
+    };
+
+    visit(input, "");
+    return keys;
   }
 
   private interpolate(template: string, variables: Record<string, unknown>) {

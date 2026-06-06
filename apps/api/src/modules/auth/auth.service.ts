@@ -8,6 +8,7 @@ import {
   Logger,
   UnauthorizedException
 } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { RedisService } from "../../infra/redis/redis.service";
 
@@ -35,6 +36,7 @@ type NormalizedAccount = {
 
 type LoadedUser = {
   id: string;
+  accountNo: number;
   email: string | null;
   phone: string | null;
   nickname: string;
@@ -42,6 +44,10 @@ type LoadedUser = {
   avatarUrl: string | null;
   createdAt: Date;
   updatedAt: Date;
+  _count?: {
+    followers: number;
+    following: number;
+  };
   preferences: {
     defaultPlatform: string | null;
     writingStyles: string[];
@@ -120,22 +126,11 @@ export class AuthService {
 
       await this.assertVerificationCode(normalized, body.verificationCode, REGISTER_CODE_PURPOSE);
 
-      const user = await this.prisma.user.create({
-        data: {
-          email: normalized.kind === "email" ? normalized.account : undefined,
-          phone: normalized.kind === "phone" ? normalized.account : undefined,
-          passwordHash: await bcrypt.hash(body.password, 10),
-          nickname: body.nickname?.trim() || "新创作者",
-          preferences: {
-            create: {
-              defaultPlatform: "short-note",
-              writingStyles: [],
-              domains: [],
-              blockedWords: []
-            }
-          }
-        },
-        include: { preferences: true }
+      const user = await this.createRegisteredUser({
+        email: normalized.kind === "email" ? normalized.account : undefined,
+        phone: normalized.kind === "phone" ? normalized.account : undefined,
+        passwordHash: await bcrypt.hash(body.password, 10),
+        nickname: body.nickname?.trim() || "新创作者",
       });
 
       await this.clearVerificationCode(normalized, REGISTER_CODE_PURPOSE);
@@ -158,7 +153,10 @@ export class AuthService {
 
       const user = await this.prisma.user.findFirst({
         where: this.accountWhere(normalized),
-        include: { preferences: true }
+        include: {
+          preferences: true,
+          _count: { select: { followers: true, following: true } },
+        }
       });
 
       if (!user || !(await bcrypt.compare(body.password, user.passwordHash))) {
@@ -182,7 +180,10 @@ export class AuthService {
 
       const user = await this.prisma.user.findUnique({
         where: { id: session.userId },
-        include: { preferences: true }
+        include: {
+          preferences: true,
+          _count: { select: { followers: true, following: true } },
+        }
       });
       if (!user) {
         throw new UnauthorizedException("session expired");
@@ -226,7 +227,10 @@ export class AuthService {
 
     const user = await this.prisma.user.findUnique({
       where: { id: parsed.sub },
-      include: { preferences: true }
+      include: {
+        preferences: true,
+        _count: { select: { followers: true, following: true } },
+      }
     });
     if (!user) {
       throw new UnauthorizedException("session expired");
@@ -310,6 +314,62 @@ export class AuthService {
     return `${randomInt(100000, 1000000)}`;
   }
 
+  private async createRegisteredUser(input: {
+    email?: string;
+    phone?: string;
+    passwordHash: string;
+    nickname: string;
+  }) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          async (tx) => {
+            const accountNo = await this.nextAccountNo(tx);
+            return tx.user.create({
+              data: {
+                accountNo,
+                email: input.email,
+                phone: input.phone,
+                passwordHash: input.passwordHash,
+                nickname: input.nickname,
+                preferences: {
+                  create: {
+                    defaultPlatform: "short-note",
+                    writingStyles: [],
+                    domains: [],
+                    blockedWords: [],
+                  },
+                },
+              },
+              include: {
+                preferences: true,
+                _count: { select: { followers: true, following: true } },
+              },
+            });
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+        );
+      } catch (error) {
+        if (attempt < 2 && this.isRetryableAccountNoError(error)) continue;
+        throw error;
+      }
+    }
+
+    throw new ConflictException("account number allocation failed");
+  }
+
+  private async nextAccountNo(tx: Prisma.TransactionClient) {
+    const aggregate = await tx.user.aggregate({ _max: { accountNo: true } });
+    return (aggregate._max.accountNo ?? 100000) + 1;
+  }
+
+  private isRetryableAccountNoError(error: unknown) {
+    return (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      (error.code === "P2002" || error.code === "P2034")
+    );
+  }
+
   private async storeVerificationCode(account: NormalizedAccount, purpose: string, verificationCode: string) {
     await this.redisService.getClient().set(
       this.buildVerificationCodeKey(account, purpose),
@@ -357,7 +417,10 @@ export class AuthService {
       userRecord ??
       (await this.prisma.user.findUnique({
         where: { id: userId },
-        include: { preferences: true }
+        include: {
+          preferences: true,
+          _count: { select: { followers: true, following: true } },
+        }
       }));
 
     if (!user) {
@@ -580,6 +643,7 @@ export class AuthService {
 
   private safeUser(user: {
     id: string;
+    accountNo: number;
     email: string | null;
     phone: string | null;
     nickname: string;
@@ -587,6 +651,10 @@ export class AuthService {
     avatarUrl: string | null;
     createdAt: Date;
     updatedAt: Date;
+    _count?: {
+      followers: number;
+      following: number;
+    };
     preferences: {
       defaultPlatform: string | null;
       writingStyles: string[];
@@ -596,12 +664,15 @@ export class AuthService {
   }) {
     return {
       id: user.id,
+      accountNo: user.accountNo,
       account: user.email ?? user.phone ?? undefined,
       email: user.email ?? undefined,
       phone: user.phone ?? undefined,
       nickname: user.nickname,
       bio: user.bio ?? undefined,
       avatarUrl: user.avatarUrl ?? undefined,
+      followerCount: user._count?.followers ?? 0,
+      followingCount: user._count?.following ?? 0,
       preferences: user.preferences ?? {
         defaultPlatform: "short-note",
         writingStyles: [],

@@ -4,6 +4,7 @@ import { AiCallLogService } from "../ai-call-log.service";
 import { ModelClientService } from "../model-client.service";
 import { PromptTemplateService } from "../prompt-template.service";
 import { AI_PROMPT_NAMES } from "../prompt-names";
+import { promptTemperature } from "../prompt-model-options";
 import { parseJsonObject } from "../structured-output";
 
 @Injectable()
@@ -16,14 +17,15 @@ export class TitleAgent {
 
   async run(input: TitleGenerateRequest): Promise<TitleGenerateResult> {
     const startedAt = Date.now();
-    const { prompt, model } = await this.prompts.render(
+    const rendered = await this.prompts.render(
       AI_PROMPT_NAMES.titleGenerate,
       input as unknown as Record<string, unknown>
     );
+    const { prompt, model } = rendered;
 
     const content = await this.modelClient.complete({
       model,
-      temperature: 0.65,
+      temperature: promptTemperature(rendered.modelOptions, 0.65),
       messages: [
         {
           role: "system",

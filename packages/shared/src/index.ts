@@ -56,6 +56,8 @@ export interface PromptDefinitionSummary {
 export interface PromptRenderPreviewResult {
   prompt: string;
   variables: string[];
+  declaredVariables: string[];
+  inputKeys: string[];
   issues: PromptValidationIssue[];
   model?: string | null;
   modelOptions?: Record<string, unknown> | null;
@@ -160,6 +162,7 @@ export type AuditCategoryScores = Partial<Record<Exclude<AuditRiskType, "none">,
 
 export interface CreatorProfile {
   id: string;
+  accountNo?: number;
   nickname: string;
   avatarUrl?: string;
 }
@@ -172,12 +175,15 @@ export interface UserPreferenceSummary {
 
 export interface UserProfileSummary {
   id: string;
+  accountNo?: number;
   account?: string;
   email?: string;
   phone?: string;
   nickname: string;
   bio?: string;
   avatarUrl?: string;
+  followerCount?: number;
+  followingCount?: number;
   preferences: UserPreferenceSummary;
   createdAt?: string;
   updatedAt?: string;
@@ -215,6 +221,30 @@ export interface ContentDetail extends ContentSummary {
   bodyJson?: Record<string, unknown> | null;
   tags: string[];
   assets: AssetSummary[];
+  viewerState?: ContentViewerState;
+}
+
+export interface ContentViewerState {
+  liked: boolean;
+  collected: boolean;
+  followingAuthor: boolean;
+  isAuthor: boolean;
+}
+
+export interface ContentReactionToggleResult {
+  contentId: string;
+  type: "like" | "collect";
+  active: boolean;
+  likeCount: number;
+  collectCount: number;
+  heatScore: number;
+}
+
+export interface UserFollowToggleResult {
+  userId: string;
+  following: boolean;
+  followingCount: number;
+  followerCount: number;
 }
 
 export interface OfficialTopicSummary {

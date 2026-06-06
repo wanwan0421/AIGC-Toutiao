@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { ContentStatus as ApiContentStatus } from "@aicp/shared";
-import { ContentStatus as DbContentStatus, Prisma } from "@prisma/client";
+import { ContentReactionType as DbContentReactionType, ContentStatus as DbContentStatus, Prisma } from "@prisma/client";
 import { toContentDetail, toContentSummary, toDbContentStatus } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 
@@ -84,7 +84,75 @@ export class ContentsService {
       throw new NotFoundException("content not found");
     }
 
-    return toContentDetail(content);
+    return {
+      ...toContentDetail(content),
+      viewerState: await this.viewerState(userId, content.authorId, content.id),
+    };
+  }
+
+  async toggleReaction(userId: string, id: string, type: "like" | "collect") {
+    const content = await this.prisma.content.findUnique({ where: { id } });
+    if (!content || (content.status !== DbContentStatus.published && content.authorId !== userId)) {
+      throw new NotFoundException("content not found");
+    }
+
+    const reactionType = type === "like" ? DbContentReactionType.like : DbContentReactionType.collect;
+    const result = await this.prisma.$transaction(async (tx) => {
+      const where = {
+        userId_contentId_type: {
+          userId,
+          contentId: id,
+          type: reactionType,
+        },
+      };
+      const existing = await tx.contentReaction.findUnique({ where });
+      const active = !existing;
+
+      if (existing) {
+        await tx.contentReaction.delete({ where });
+        if (type === "like") {
+          await tx.content.updateMany({ where: { id, likeCount: { gt: 0 } }, data: { likeCount: { decrement: 1 } } });
+        } else {
+          await tx.content.updateMany({ where: { id, collectCount: { gt: 0 } }, data: { collectCount: { decrement: 1 } } });
+        }
+        await tx.content.updateMany({ where: { id, heatScore: { gt: 1 } }, data: { heatScore: { decrement: 2 } } });
+      } else {
+        await tx.contentReaction.create({
+          data: {
+            userId,
+            contentId: id,
+            type: reactionType,
+          },
+        });
+        await tx.content.update({
+          where: { id },
+          data:
+            type === "like"
+              ? { likeCount: { increment: 1 }, heatScore: { increment: 2 } }
+              : { collectCount: { increment: 1 }, heatScore: { increment: 2 } },
+        });
+      }
+
+      await tx.userActionEvent.create({
+        data: {
+          userId,
+          contentId: id,
+          eventType: active ? type : `${type}_cancel`,
+        },
+      });
+
+      const updated = await tx.content.findUniqueOrThrow({ where: { id } });
+      return { active, updated };
+    });
+
+    return {
+      contentId: id,
+      type,
+      active: result.active,
+      likeCount: result.updated.likeCount,
+      collectCount: result.updated.collectCount,
+      heatScore: result.updated.heatScore,
+    };
   }
 
   async versions(userId: string, id: string) {
@@ -139,6 +207,7 @@ export class ContentsService {
       await tx.auditRecord.deleteMany({ where: { contentId: id } });
       await tx.qualityScore.deleteMany({ where: { contentId: id } });
       await tx.userActionEvent.deleteMany({ where: { contentId: id } });
+      await tx.contentReaction.deleteMany({ where: { contentId: id } });
       await tx.aiConversation.updateMany({
         where: { contentId: id },
         data: { contentId: null },
@@ -197,6 +266,47 @@ export class ContentsService {
     if (count === 0) {
       throw new NotFoundException("content not found");
     }
+  }
+
+  private async viewerState(userId: string, authorId: string, contentId: string) {
+    const isAuthor = userId === authorId;
+    const [like, collect, follow] = await Promise.all([
+      this.prisma.contentReaction.findUnique({
+        where: {
+          userId_contentId_type: {
+            userId,
+            contentId,
+            type: DbContentReactionType.like,
+          },
+        },
+      }),
+      this.prisma.contentReaction.findUnique({
+        where: {
+          userId_contentId_type: {
+            userId,
+            contentId,
+            type: DbContentReactionType.collect,
+          },
+        },
+      }),
+      isAuthor
+        ? Promise.resolve(null)
+        : this.prisma.userFollow.findUnique({
+            where: {
+              followerId_followingId: {
+                followerId: userId,
+                followingId: authorId,
+              },
+            },
+          }),
+    ]);
+
+    return {
+      liked: Boolean(like),
+      collected: Boolean(collect),
+      followingAuthor: Boolean(follow),
+      isAuthor,
+    };
   }
 
   private async createVersion(

@@ -14,6 +14,7 @@ async function seedUsers() {
   const creator = await prisma.user.upsert({
     where: { email: "creator@example.com" },
     create: {
+      accountNo: 100001,
       email: "creator@example.com",
       phone: "13800000001",
       passwordHash: demoPasswordHash,
@@ -30,6 +31,7 @@ async function seedUsers() {
       },
     },
     update: {
+      accountNo: 100001,
       phone: "13800000001",
       passwordHash: demoPasswordHash,
       nickname: "Luna Studio",
@@ -58,6 +60,7 @@ async function seedUsers() {
   const official = await prisma.user.upsert({
     where: { email: "topics@toutiao.example.com" },
     create: {
+      accountNo: 100002,
       email: "topics@toutiao.example.com",
       passwordHash: demoPasswordHash,
       nickname: "今日头条创作中心",
@@ -65,6 +68,7 @@ async function seedUsers() {
       avatarUrl: "",
     },
     update: {
+      accountNo: 100002,
       passwordHash: demoPasswordHash,
       nickname: "今日头条创作中心",
       bio: "提供官方创作活动、热点话题与优质内容样例。",
@@ -75,6 +79,7 @@ async function seedUsers() {
   const travelCreator = await prisma.user.upsert({
     where: { email: "northcity@example.com" },
     create: {
+      accountNo: 100003,
       email: "northcity@example.com",
       passwordHash: demoPasswordHash,
       nickname: "北城小鹿",
@@ -82,6 +87,7 @@ async function seedUsers() {
       avatarUrl: "",
     },
     update: {
+      accountNo: 100003,
       passwordHash: demoPasswordHash,
       nickname: "北城小鹿",
       bio: "城市微旅行与周末生活方式创作者。",

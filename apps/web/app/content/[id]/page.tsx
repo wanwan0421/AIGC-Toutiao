@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { ContentDetail } from "@aicp/shared";
+import type { ContentDetail, ContentReactionToggleResult } from "@aicp/shared";
 import { RichTextRenderer } from "../../editor/rich-text-editor";
 import { ContentDetailActions } from "../../../components/content-detail-actions";
 import { StatusBadge } from "../../../components/status-badge";
-import { getContentDetail } from "../../../lib/api";
+import { getContentDetail, toggleUserFollow } from "../../../lib/api";
 
 function formatDate(value?: string) {
   if (!value) return "暂未发布";
@@ -18,6 +18,7 @@ export default function ContentDetailPage({ params }: { params: { id: string } }
   const [detail, setDetail] = useState<ContentDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [followBusy, setFollowBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -47,6 +48,48 @@ export default function ContentDetailPage({ params }: { params: { id: string } }
     return <div className="rounded-2xl bg-rose-50 p-5 text-sm font-semibold text-rose-600">{error || "内容不存在"}</div>;
   }
 
+  function handleReactionChange(result: ContentReactionToggleResult) {
+    setDetail((current) =>
+      current
+        ? {
+            ...current,
+            likeCount: result.likeCount,
+            collectCount: result.collectCount,
+            heatScore: result.heatScore,
+            viewerState: {
+              liked: result.type === "like" ? result.active : Boolean(current.viewerState?.liked),
+              collected: result.type === "collect" ? result.active : Boolean(current.viewerState?.collected),
+              followingAuthor: Boolean(current.viewerState?.followingAuthor),
+              isAuthor: Boolean(current.viewerState?.isAuthor),
+            },
+          }
+        : current
+    );
+  }
+
+  async function handleFollowAuthor() {
+    if (!detail || followBusy || detail.viewerState?.isAuthor) return;
+    setFollowBusy(true);
+    try {
+      const result = await toggleUserFollow(detail.author.id);
+      setDetail((current) =>
+        current
+          ? {
+              ...current,
+              viewerState: {
+                liked: Boolean(current.viewerState?.liked),
+                collected: Boolean(current.viewerState?.collected),
+                followingAuthor: result.following,
+                isAuthor: Boolean(current.viewerState?.isAuthor),
+              },
+            }
+          : current
+      );
+    } finally {
+      setFollowBusy(false);
+    }
+  }
+
   return (
     <article className="mx-auto grid max-w-350 gap-5 px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
       <div className="flex flex-wrap items-start justify-between gap-4">
@@ -58,7 +101,12 @@ export default function ContentDetailPage({ params }: { params: { id: string } }
           <h1 className="m-0 text-3xl font-black leading-tight tracking-tight text-slate-950">{detail.title}</h1>
           <p className="mt-3 text-sm leading-7 text-slate-500">发布时间：{formatDate(detail.publishedAt)}</p>
         </div>
-        <ContentDetailActions contentId={params.id} title={detail.title} />
+        <ContentDetailActions
+          contentId={params.id}
+          title={detail.title}
+          viewerState={detail.viewerState}
+          onReactionChange={handleReactionChange}
+        />
       </div>
 
       <div className="grid grid-cols-[minmax(0,1fr)_320px] items-start gap-5 max-lg:grid-cols-1">
@@ -119,9 +167,25 @@ export default function ContentDetailPage({ params }: { params: { id: string } }
               )}
               <div className="min-w-0">
                 <p className="truncate text-sm font-bold text-slate-900">{detail.author.nickname}</p>
-                <p className="text-xs text-slate-400">持续更新优质图文内容</p>
+                <p className="text-xs text-slate-400">
+                  {detail.author.accountNo ? `账号ID：${detail.author.accountNo}` : "持续更新优质图文内容"}
+                </p>
               </div>
             </div>
+            {!detail.viewerState?.isAuthor ? (
+              <button
+                type="button"
+                onClick={() => void handleFollowAuthor()}
+                disabled={followBusy}
+                className={`mt-4 h-10 w-full rounded-full text-sm font-bold transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                  detail.viewerState?.followingAuthor
+                    ? "border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100"
+                    : "bg-rose-600 text-white hover:bg-rose-700"
+                }`}
+              >
+                {followBusy ? "处理中..." : detail.viewerState?.followingAuthor ? "已关注" : "关注作者"}
+              </button>
+            ) : null}
           </section>
         </aside>
       </div>

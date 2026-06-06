@@ -136,6 +136,51 @@ export class UsersService {
     };
   }
 
+  async toggleFollow(authorization: string | undefined, cookieHeader: string | undefined, targetUserId: string) {
+    const user = await this.resolveCurrentUser(authorization, cookieHeader);
+    if (user.id === targetUserId) {
+      throw new BadRequestException("cannot follow yourself");
+    }
+
+    const target = await this.prisma.user.findUnique({ where: { id: targetUserId } });
+    if (!target) {
+      throw new NotFoundException("user not found");
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const where = {
+        followerId_followingId: {
+          followerId: user.id,
+          followingId: targetUserId,
+        },
+      };
+      const existing = await tx.userFollow.findUnique({ where });
+      const following = !existing;
+      if (existing) {
+        await tx.userFollow.delete({ where });
+      } else {
+        await tx.userFollow.create({
+          data: {
+            followerId: user.id,
+            followingId: targetUserId,
+          },
+        });
+      }
+
+      const [followingCount, followerCount] = await Promise.all([
+        tx.userFollow.count({ where: { followerId: user.id } }),
+        tx.userFollow.count({ where: { followingId: targetUserId } }),
+      ]);
+
+      return {
+        userId: targetUserId,
+        following,
+        followingCount,
+        followerCount,
+      };
+    });
+  }
+
   private async resolveCurrentUser(authorization?: string, cookieHeader?: string) {
     const currentUser = await this.authService.me(authorization, cookieHeader).catch((error) => {
       if (error instanceof UnauthorizedException) {
@@ -145,7 +190,10 @@ export class UsersService {
     });
     const user = await this.prisma.user.findUnique({
       where: { id: currentUser.id },
-      include: { preferences: true }
+      include: {
+        preferences: true,
+        _count: { select: { followers: true, following: true } },
+      }
     });
 
     if (!user) {
@@ -157,12 +205,15 @@ export class UsersService {
   private toProfile(user: Awaited<ReturnType<UsersService["resolveCurrentUser"]>>) {
     return {
       id: user.id,
+      accountNo: user.accountNo,
       account: user.email ?? user.phone ?? undefined,
       nickname: user.nickname,
       bio: user.bio ?? undefined,
       email: user.email ?? undefined,
       phone: user.phone ?? undefined,
       avatarUrl: user.avatarUrl ?? undefined,
+      followerCount: user._count.followers,
+      followingCount: user._count.following,
       preferences: user.preferences ?? {
         defaultPlatform: "toutiao",
         writingStyles: [],

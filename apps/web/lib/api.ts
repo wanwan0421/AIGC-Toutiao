@@ -4,6 +4,7 @@ import type {
   AiJobStartRequest,
   AiJobType,
   ContentDetail,
+  ContentReactionToggleResult,
   ContentSummary,
   CreativeChatDone,
   CreativeConversationSummary,
@@ -25,6 +26,7 @@ import type {
   TitleGenerateRequest,
   TitleGenerateResult,
   UpdateUserProfileRequest,
+  UserFollowToggleResult,
   UserProfileSummary
 } from "@aicp/shared";
 
@@ -209,6 +211,18 @@ export async function getTopicDetail(title: string, limit = 30): Promise<TopicDe
 // 内容详情接口会包含用户的草稿信息，用户点击后就可以把之前的草稿内容恢复到编辑器中，避免用户在编辑过程中丢失之前的修改内容
 export async function getContentDetail(id: string): Promise<ContentDetail> {
   return apiRequest<ContentDetail>(`/contents/${id}`, {}, true);
+}
+
+export async function toggleContentReaction(id: string, type: "like" | "collect") {
+  return apiRequest<ContentReactionToggleResult>(
+    `/contents/${id}/reactions/${type}/toggle`,
+    { method: "POST" },
+    true
+  );
+}
+
+export async function toggleUserFollow(id: string) {
+  return apiRequest<UserFollowToggleResult>(`/users/${id}/follow/toggle`, { method: "POST" }, true);
 }
 
 type ContentWriteBody = {

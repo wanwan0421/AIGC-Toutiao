@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Patch, Post, Req } from "@nestjs/common";
+import { Body, Controller, Get, Headers, Param, Patch, Post, Req } from "@nestjs/common";
 import type { Request } from "express";
 import { UsersService } from "./users.service";
 
@@ -54,5 +54,14 @@ export class UsersController {
     }>
   ) {
     return this.usersService.updatePreferences(authorization, request.headers.cookie, body);
+  }
+
+  @Post(":id/follow/toggle")
+  toggleFollow(
+    @Headers("authorization") authorization: string | undefined,
+    @Req() request: Request,
+    @Param("id") id: string
+  ) {
+    return this.usersService.toggleFollow(authorization, request.headers.cookie, id);
   }
 }

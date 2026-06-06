@@ -8,6 +8,7 @@ export function hashPassword(password: string) {
 }
 
 export const DEFAULT_USER = {
+  accountNo: 100001,
   email: DEFAULT_USER_EMAIL,
   passwordHash: hashPassword(DEFAULT_USER_PASSWORD),
   nickname: "Luna Studio",

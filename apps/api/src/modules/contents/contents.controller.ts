@@ -116,6 +116,16 @@ export class ContentsController {
     return this.workflow.publish(user.id, id);
   }
 
+  @Post(":id/reactions/like/toggle")
+  toggleLike(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
+    return this.contentsService.toggleReaction(user.id, id, "like");
+  }
+
+  @Post(":id/reactions/collect/toggle")
+  toggleCollect(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
+    return this.contentsService.toggleReaction(user.id, id, "collect");
+  }
+
   @Post(":id/offline")
   offline(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
     return this.workflow.offline(user.id, id);
