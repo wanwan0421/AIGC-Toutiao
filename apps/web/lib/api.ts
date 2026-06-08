@@ -3,16 +3,19 @@ import type {
   AiJobSnapshot,
   AiJobStartRequest,
   AiJobType,
+  CommentListResponse,
+  ContentCommentSummary,
   ContentDetail,
   ContentReactionToggleResult,
   ContentSummary,
+  CreateContentCommentRequest,
   CreativeChatDone,
   CreativeChatSkillEvent,
   CreativeConversationSummary,
   CreativeChatRequest,
   DirectGenerateRequest,
   AssetSummary,
-  OfficialTopicSummary,
+  OfficialTopicListResponse,
   LocationSearchResponse,
   NearbyLocationsResponse,
   PromptDefinitionSummary,
@@ -21,6 +24,8 @@ import type {
   PromptScene,
   PromptTestCaseSummary,
   PromptVersionSummary,
+  RankingListResponse,
+  RankingQuery,
   SelectionRewriteRequest,
   SelectionRewriteResult,
   TopicDetail,
@@ -28,6 +33,8 @@ import type {
   TitleGenerateResult,
   UpdateUserProfileRequest,
   UserFollowToggleResult,
+  UserContentListResponse,
+  UserPublicProfileResponse,
   UserProfileSummary
 } from "@aicp/shared";
 
@@ -195,23 +202,48 @@ export async function getContents(): Promise<ContentSummary[]> {
   return apiRequest<ContentSummary[]>("/contents", {}, true);
 }
 
-export async function getRankings(): Promise<ContentSummary[]> {
-  const response = await apiRequest<{ items: ContentSummary[] }>("/rankings?type=hot&limit=20");
-  return response.items;
+export async function getRankings(params: { type?: RankingQuery["type"]; cursor?: string; limit?: number } = {}): Promise<RankingListResponse> {
+  const query = new URLSearchParams({
+    type: params.type ?? "hot",
+    limit: String(params.limit ?? 20),
+  });
+  if (params.cursor) query.set("cursor", params.cursor);
+  return apiRequest<RankingListResponse>(`/rankings?${query.toString()}`);
 }
 
-export async function getOfficialTopics(limit = 8): Promise<OfficialTopicSummary[]> {
-  const response = await apiRequest<{ items: OfficialTopicSummary[] }>(`/rankings/topics?limit=${limit}`);
-  return response.items;
+export async function getOfficialTopics(params: number | { limit?: number; cursor?: string } = 8): Promise<OfficialTopicListResponse> {
+  const options = typeof params === "number" ? { limit: params } : params;
+  const query = new URLSearchParams({ limit: String(options.limit ?? 8) });
+  if (options.cursor) query.set("cursor", options.cursor);
+  return apiRequest<OfficialTopicListResponse>(`/rankings/topics?${query.toString()}`);
 }
 
-export async function getTopicDetail(title: string, limit = 30): Promise<TopicDetail> {
-  return apiRequest<TopicDetail>(`/rankings/topics/${encodeURIComponent(title)}?limit=${limit}`);
+export async function getTopicDetail(title: string, limit = 30, cursor?: string): Promise<TopicDetail> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (cursor) query.set("cursor", cursor);
+  return apiRequest<TopicDetail>(`/rankings/topics/${encodeURIComponent(title)}?${query.toString()}`);
 }
 
 // 内容详情接口会包含用户的草稿信息，用户点击后就可以把之前的草稿内容恢复到编辑器中，避免用户在编辑过程中丢失之前的修改内容
 export async function getContentDetail(id: string): Promise<ContentDetail> {
   return apiRequest<ContentDetail>(`/contents/${id}`, {}, true);
+}
+
+export async function getContentComments(id: string, params: { cursor?: string; limit?: number } = {}) {
+  const query = new URLSearchParams({ limit: String(params.limit ?? 20) });
+  if (params.cursor) query.set("cursor", params.cursor);
+  return apiRequest<CommentListResponse>(`/contents/${id}/comments?${query.toString()}`, {}, true);
+}
+
+export async function createContentComment(id: string, body: CreateContentCommentRequest) {
+  return apiRequest<ContentCommentSummary>(
+    `/contents/${id}/comments`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+    true
+  );
 }
 
 export async function toggleContentReaction(id: string, type: "like" | "collect") {
@@ -224,6 +256,14 @@ export async function toggleContentReaction(id: string, type: "like" | "collect"
 
 export async function toggleUserFollow(id: string) {
   return apiRequest<UserFollowToggleResult>(`/users/${id}/follow/toggle`, { method: "POST" }, true);
+}
+
+export async function getUserPublicProfile(id: string) {
+  return apiRequest<UserPublicProfileResponse>(`/users/${encodeURIComponent(id)}/public-profile`, {}, true);
+}
+
+export async function getUserContents(id: string) {
+  return apiRequest<UserContentListResponse>(`/users/${encodeURIComponent(id)}/contents`, {}, true);
 }
 
 type ContentWriteBody = {

@@ -56,6 +56,24 @@ export class UsersController {
     return this.usersService.updatePreferences(authorization, request.headers.cookie, body);
   }
 
+  @Get(":id/public-profile")
+  getPublicProfile(
+    @Headers("authorization") authorization: string | undefined,
+    @Req() request: Request,
+    @Param("id") id: string
+  ) {
+    return this.usersService.getPublicProfile(authorization, request.headers.cookie, id);
+  }
+
+  @Get(":id/contents")
+  listPublicContents(
+    @Headers("authorization") authorization: string | undefined,
+    @Req() request: Request,
+    @Param("id") id: string
+  ) {
+    return this.usersService.listPublicContents(authorization, request.headers.cookie, id);
+  }
+
   @Post(":id/follow/toggle")
   toggleFollow(
     @Headers("authorization") authorization: string | undefined,

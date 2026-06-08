@@ -19,6 +19,7 @@ export type EditorDraftCache = {
   viewpoint: string;
   selectedTopics: string[];
   coverPreview: string;
+  coverAssetId?: string | null;
   coverMode: "single" | "none";
   assetIds: string[];
   publishTimeMode: "now" | "scheduled";
@@ -139,6 +140,7 @@ export function useDraftAutosave(options: UseDraftAutosaveOptions) {
           json: data.json,
           tags: data.selectedTopics,
           coverPreview: data.coverPreview,
+          coverAssetId: data.coverAssetId,
           coverMode: data.coverMode,
           assetIds: data.assetIds,
           briefTheme: data.briefTheme,

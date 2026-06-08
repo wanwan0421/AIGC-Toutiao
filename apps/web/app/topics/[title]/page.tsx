@@ -4,7 +4,7 @@ import { getTopicDetail } from "../../../lib/api";
 
 function compactNumber(value: number) {
   if (value >= 10000) return `${(value / 10000).toFixed(1)}万`;
-  return `${value}`;
+  return value.toLocaleString();
 }
 
 export default async function TopicDetailPage({ params }: { params: { title: string } }) {
@@ -24,7 +24,7 @@ export default async function TopicDetailPage({ params }: { params: { title: str
           <div className="relative max-w-3xl">
             <span className="inline-flex items-center gap-2 rounded-full bg-[#fff3f5] px-4 py-2 text-sm font-bold text-[#ff2442]">
               <Hash size={16} />
-              创作话题
+              热点
             </span>
             <h1 className="mt-5 text-4xl font-black text-slate-950">#{topic.title}</h1>
             <p className="mt-4 max-w-2xl text-base leading-8 text-slate-600">{topic.description}</p>
@@ -48,7 +48,7 @@ export default async function TopicDetailPage({ params }: { params: { title: str
         <div className="mb-5 flex items-center justify-between">
           <div>
             <h2 className="text-xl font-black text-slate-950">相关作品</h2>
-            <p className="mt-1 text-sm text-slate-400">围绕当前话题的创作内容</p>
+            <p className="mt-1 text-sm text-slate-400">围绕当前热点的创作内容</p>
           </div>
           <TrendingUp className="text-[#ff2442]" size={22} />
         </div>
@@ -78,7 +78,7 @@ export default async function TopicDetailPage({ params }: { params: { title: str
         ) : (
           <div className="rounded-3xl bg-slate-50 p-10 text-center">
             <Hash className="mx-auto text-[#ff2442]" size={28} />
-            <p className="mt-3 text-sm font-semibold text-slate-700">当前话题还没有相关作品</p>
+            <p className="mt-3 text-sm font-semibold text-slate-700">当前热点还没有相关作品</p>
             <Link href={`/editor?topic=${encodeURIComponent(topic.title)}`} className="mt-5 inline-flex rounded-2xl bg-[#ff2442] px-5 py-2 text-sm font-bold text-white">
               发布第一篇
             </Link>

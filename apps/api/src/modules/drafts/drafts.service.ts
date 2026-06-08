@@ -90,6 +90,19 @@ export class DraftsService {
       }
     });
 
+    const assetIds = this.payloadStringArray(body.payload, "assetIds");
+    if (assetIds) {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.contentAsset.deleteMany({ where: { contentId } });
+        if (assetIds.length) {
+          await tx.contentAsset.createMany({
+            data: assetIds.map((assetId, index) => ({ contentId, assetId, sortOrder: index })),
+            skipDuplicates: true,
+          });
+        }
+      });
+    }
+
     const payload = {
       source: "postgres-and-redis",
       ...this.serializeDraft(draft)
@@ -124,5 +137,11 @@ export class DraftsService {
       clientHash: draft.clientHash ?? undefined,
       savedAt: draft.savedAt.toISOString()
     };
+  }
+
+  private payloadStringArray(payload: Record<string, unknown> | undefined, key: string) {
+    const value = payload?.[key];
+    if (!Array.isArray(value)) return null;
+    return Array.from(new Set(value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)));
   }
 }

@@ -211,6 +211,8 @@ export interface ContentSummary {
   viewCount: number;
   likeCount: number;
   collectCount: number;
+  commentCount?: number;
+  createdAt?: string;
   publishedAt?: string;
   updatedAt: string;
 }
@@ -240,11 +242,53 @@ export interface ContentReactionToggleResult {
   heatScore: number;
 }
 
+export interface ContentCommentSummary {
+  id: string;
+  contentId: string;
+  body: string;
+  author: CreatorProfile;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateContentCommentRequest {
+  body: string;
+}
+
+export interface CommentListResponse {
+  items: ContentCommentSummary[];
+  nextCursor?: string;
+}
+
 export interface UserFollowToggleResult {
   userId: string;
   following: boolean;
   followingCount: number;
   followerCount: number;
+}
+
+export interface UserPublicProfile {
+  id: string;
+  accountNo?: number;
+  nickname: string;
+  bio?: string;
+  avatarUrl?: string;
+  followerCount: number;
+  followingCount: number;
+  contentCount: number;
+  createdAt?: string;
+}
+
+export interface UserPublicProfileResponse {
+  profile: UserPublicProfile;
+  viewerState: {
+    following: boolean;
+    isSelf: boolean;
+  };
+}
+
+export interface UserContentListResponse {
+  items: ContentSummary[];
 }
 
 export interface OfficialTopicSummary {
@@ -260,6 +304,17 @@ export interface OfficialTopicSummary {
 export interface TopicDetail {
   topic: OfficialTopicSummary;
   items: ContentSummary[];
+  nextCursor?: string;
+}
+
+export interface RankingListResponse {
+  items: ContentSummary[];
+  nextCursor?: string;
+}
+
+export interface OfficialTopicListResponse {
+  items: OfficialTopicSummary[];
+  nextCursor?: string;
 }
 
 export interface AssetSummary {
@@ -268,6 +323,8 @@ export interface AssetSummary {
   mimeType: string;
   url: string;
   auditStatus: "pending" | "approved" | "rejected";
+  auditReason?: string;
+  createdAt?: string;
   source?: string;
   metadata?: Record<string, unknown>;
 }
@@ -504,5 +561,5 @@ export interface AiJobEvent {
 export interface RankingQuery {
   type: "hot" | "viral" | "recommended";
   cursor?: string;
-  limit?: number;
+  limit?: number | string;
 }

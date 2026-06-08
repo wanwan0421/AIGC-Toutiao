@@ -308,6 +308,11 @@ function isTextAsset(asset: AssetSummary) {
   return asset.mimeType.startsWith("text/");
 }
 
+function assetIdFromUrl(assets: AssetSummary[], url?: string) {
+  if (!url) return null;
+  return assets.find((asset) => asset.url === url)?.id ?? null;
+}
+
 function textAssetPreview(asset: AssetSummary) {
   const preview = asset.metadata?.previewText ?? asset.metadata?.preview ?? asset.metadata?.text;
   return typeof preview === "string" ? preview : asset.fileName;
@@ -485,6 +490,7 @@ function snapshotFromCloudDraft(draft: CloudDraft, detail: ContentDetailForDraft
     assetPreviews: detail.assets,
     selectedTopics: payloadStringArray(payload, "tags", detail.tags),
     coverPreview: payloadString(payload, "coverPreview", detail.coverUrl ?? ""),
+    coverAssetId: payloadString(payload, "coverAssetId") || assetIdFromUrl(detail.assets, detail.coverUrl),
     coverMode: payloadCoverMode(payload, fallbackCoverMode),
     assetIds: payloadStringArray(payload, "assetIds", detail.assets.map((item) => item.id)),
     briefTheme: payloadString(payload, "briefTheme"),
@@ -516,6 +522,7 @@ export default function EditorPage() {
   const snapshotRef = useRef<() => DraftCache>(() => snapshot());
   const bodyRef = useRef("");
   const contentIdRef = useRef<string | null>(editingContentId);
+  const coverAssetIdRef = useRef<string | null>(null);
   const conversationIdRef = useRef<string | undefined>();
   const publishRedirectTimerRef = useRef<number | null>(null);
 
@@ -550,6 +557,7 @@ export default function EditorPage() {
   const [selectedTopics, setSelectedTopics] = useState<string[]>([]);
   const [customTopicInput, setCustomTopicInput] = useState("");
   const [coverPreview, setCoverPreview] = useState("");
+  const [coverAssetId, setCoverAssetId] = useState<string | null>(null);
   const [coverMode, setCoverMode] = useState<CoverMode>("single");
   const [assetIds, setAssetIds] = useState<string[]>([]);
   const [publishTimeMode, setPublishTimeMode] =
@@ -716,6 +724,7 @@ export default function EditorPage() {
     body,
     briefTheme,
     contentStatement,
+    coverAssetId,
     coverMode,
     coverPreview,
     editorHtmlContent,
@@ -764,6 +773,49 @@ export default function EditorPage() {
     setScheduledAt(date && value ? `${date}T${value}` : scheduledAt);
   }
 
+  function rememberCoverAssetId(id: string | null) {
+    coverAssetIdRef.current = id;
+    setCoverAssetId(id);
+  }
+
+  function setCoverFromAsset(asset: AssetSummary) {
+    rememberCoverAssetId(asset.id);
+    setCoverPreview(asset.url);
+    setCoverMode("single");
+  }
+
+  function clearCover() {
+    rememberCoverAssetId(null);
+    setCoverPreview("");
+  }
+
+  function resolveCoverAssetId(
+    sourceIds = assetIds,
+    sourceCoverAssetId: string | null | undefined = coverAssetIdRef.current,
+    sourceCoverPreview = coverPreview,
+    sourceCoverMode = coverMode,
+  ) {
+    if (sourceCoverMode === "none") return null;
+    if (sourceCoverAssetId) return sourceCoverAssetId;
+    return assetIdFromUrl(assets, sourceCoverPreview) ?? sourceIds.find((id) => id === assetIdFromUrl(assets, sourceCoverPreview)) ?? null;
+  }
+
+  function buildContentAssetIds(
+    sourceIds = assetIds,
+    sourceCoverAssetId: string | null | undefined = coverAssetIdRef.current,
+    sourceCoverPreview = coverPreview,
+    sourceCoverMode = coverMode,
+  ) {
+    return Array.from(
+      new Set(
+        [
+          resolveCoverAssetId(sourceIds, sourceCoverAssetId, sourceCoverPreview, sourceCoverMode),
+          ...sourceIds,
+        ].filter((id): id is string => Boolean(id)),
+      ),
+    );
+  }
+
   function snapshot(): DraftCache {
     const currentBody = editorText();
     const currentHtml = editorHtml();
@@ -780,8 +832,9 @@ export default function EditorPage() {
       viewpoint,
       selectedTopics,
       coverPreview,
+      coverAssetId: resolveCoverAssetId(),
       coverMode,
-      assetIds,
+      assetIds: buildContentAssetIds(),
       publishTimeMode,
       scheduledAt,
       selectedLocation,
@@ -808,8 +861,10 @@ export default function EditorPage() {
     setViewpoint(data.viewpoint ?? "");
     setSelectedTopics(normalizeTopicList(data.selectedTopics ?? []));
     setCoverPreview(data.coverPreview ?? "");
+    const nextCoverAssetId = data.coverAssetId || assetIdFromUrl(data.assetPreviews ?? assets, data.coverPreview ?? "");
+    rememberCoverAssetId(nextCoverAssetId);
     setCoverMode(data.coverMode ?? "single");
-    setAssetIds(data.assetIds ?? []);
+    setAssetIds(buildContentAssetIds(data.assetIds ?? [], nextCoverAssetId, data.coverPreview ?? "", data.coverMode ?? "single"));
     setPublishTimeMode(data.publishTimeMode ?? "now");
     setScheduledAt(data.scheduledAt ?? "");
     setSelectedLocation(data.selectedLocation ?? "");
@@ -848,6 +903,7 @@ export default function EditorPage() {
       setSelectedTopics(normalizeTopicList(detail.tags));
       setAssetIds(detail.assets.map((item) => item.id));
       setCoverPreview(detail.coverUrl ?? "");
+      rememberCoverAssetId(assetIdFromUrl(detail.assets, detail.coverUrl));
       setCoverMode(detail.coverUrl ? "single" : "none");
       writeEditorContent({
         html: detail.bodyHtml || contentToEditorHtml(detail.body, detail.assets),
@@ -909,6 +965,7 @@ export default function EditorPage() {
         setSelectedTopics(normalizeTopicList(detail.tags));
         setAssetIds(detail.assets.map((item) => item.id));
         setCoverPreview(detail.coverUrl ?? "");
+        rememberCoverAssetId(assetIdFromUrl(detail.assets, detail.coverUrl));
         setCoverMode(detail.coverUrl ? "single" : "none");
         writeEditorContent({
           html: detail.bodyHtml || contentToEditorHtml(detail.body, detail.assets),
@@ -973,7 +1030,7 @@ export default function EditorPage() {
     setBody("");
     setSelectedTopics([]);
     setAssetIds([]);
-    setCoverPreview("");
+    clearCover();
     setCoverMode("single");
     setConversationId(undefined);
     setChatMessages([]);
@@ -1033,8 +1090,8 @@ export default function EditorPage() {
   }
 
   async function loadTopics() {
-    const topics = await getOfficialTopics(8).catch(() => []);
-    setHotTopics(topics);
+    const response = await getOfficialTopics(8).catch(() => ({ items: [] }));
+    setHotTopics(response.items);
   }
 
   async function loadAssets() {
@@ -1115,7 +1172,7 @@ export default function EditorPage() {
       bodyHtml: editorHtml(),
       bodyJson: editorJson(),
       tags: selectedTopics,
-      assetIds,
+      assetIds: buildContentAssetIds(),
     };
     if (contentId) {
       const updated = await updateContent(contentId, payload);
@@ -1146,7 +1203,7 @@ export default function EditorPage() {
       bodyHtml: data.html,
       bodyJson: data.json,
       tags: data.selectedTopics,
-      assetIds: data.assetIds,
+      assetIds: buildContentAssetIds(data.assetIds, data.coverAssetId ?? null, data.coverPreview, data.coverMode),
     });
     setContentId(created.id);
     contentIdRef.current = created.id;
@@ -1250,8 +1307,7 @@ export default function EditorPage() {
     setAssets((items) => [asset, ...items.filter((item) => item.id !== asset.id)]);
     setAssetIds((items) => Array.from(new Set([...generatedAssetIds, ...items])));
     if (value.cover) {
-      setCoverPreview(asset.url);
-      setCoverMode("single");
+      setCoverFromAsset(asset);
       setCoverPickerOpen(false);
     } else {
       insertAsset(asset);
@@ -1265,9 +1321,8 @@ export default function EditorPage() {
       ...generatedAssetIds,
     ].filter((id): id is string => Boolean(id));
     if (ids.length) setAssetIds((items) => Array.from(new Set([...ids, ...items])));
-    if (generated.coverAsset?.url) {
-      setCoverPreview(generated.coverAsset.url);
-      setCoverMode("single");
+    if (generated.coverAsset) {
+      setCoverFromAsset(generated.coverAsset);
     }
     setStatusMessage(ids.length ? "AI 初稿和图片已填充到编辑区" : "AI 初稿已填充，图片稍后可单独生成");
   }
@@ -1379,8 +1434,7 @@ export default function EditorPage() {
         setStatusMessage("图片模型暂未返回封面图");
         return;
       }
-      setCoverPreview(finalAsset.url);
-      setCoverMode("single");
+      setCoverFromAsset(finalAsset);
       setCoverPickerOpen(false);
       setAssetIds((items) => Array.from(new Set([finalAsset.id, ...items])));
       await loadAssets();
@@ -1761,14 +1815,13 @@ export default function EditorPage() {
       setAssetIds((items) => Array.from(new Set([asset.id, ...items])));
       if (isImageAsset(asset)) {
         if (intent === "cover") {
-          setCoverPreview(asset.url);
-          setCoverMode("single");
+          setCoverFromAsset(asset);
           setCoverPickerOpen(false);
           setStatusMessage(`封面图已上传：${asset.fileName}`);
         } else if (intent === "insert") {
           insertAsset(asset);
         } else {
-          if (!coverPreview) setCoverPreview(asset.url);
+          if (!coverPreview) setCoverFromAsset(asset);
           setStatusMessage(`图片素材已上传：${asset.fileName}`);
         }
       } else {
@@ -1793,13 +1846,13 @@ export default function EditorPage() {
         const figure = `<figure><img src="${asset.url}" alt="${escapeHtml(asset.fileName)}" /></figure>`;
         writeEditorMarkup(`${editorHtml()}${figure}`, editorText());
         setStatusMessage("图片素材已插入正文");
-        if (!coverPreview) setCoverPreview(asset.url);
+        if (!coverPreview) setCoverFromAsset(asset);
         return;
       } else {
         editorRef.current.insertImage(asset.url, asset.fileName);
       }
       syncBodyFromEditor("图片素材已插入正文");
-      if (!coverPreview) setCoverPreview(asset.url);
+      if (!coverPreview) setCoverFromAsset(asset);
       return;
     }
     const preview = textAssetPreview(asset);
@@ -1810,7 +1863,7 @@ export default function EditorPage() {
   }
 
   function removeCover() {
-    setCoverPreview("");
+    clearCover();
     setCoverMode("none");
     setCoverPickerOpen(false);
     setStatusMessage("已移除封面");
@@ -1832,8 +1885,8 @@ export default function EditorPage() {
       await deleteAsset(asset.id);
       setAssets((items) => items.filter((item) => item.id !== asset.id));
       setAssetIds((items) => items.filter((id) => id !== asset.id));
-      if (coverPreview === asset.url) setCoverPreview("");
-      setStatusMessage("素材已删除");
+      if (coverPreview === asset.url) clearCover();
+        setStatusMessage("素材已删除");
     } catch (error) {
       setStatusMessage(
         error instanceof Error
@@ -2236,9 +2289,6 @@ export default function EditorPage() {
                   </span>
                   <span>{textAssets.length}</span>
                 </button>
-                <p className="text-xs leading-5 text-slate-400">
-                  素材会保存到个人素材库，可在素材库中统一管理。
-                </p>
               </div>
             )}
           </section>
@@ -2593,7 +2643,7 @@ export default function EditorPage() {
                           <img
                             src={coverPreview}
                             alt="封面预览"
-                            onError={() => setCoverPreview("")}
+                            onError={clearCover}
                             className="h-24 w-36 rounded-2xl object-cover"
                           />
                           <span className="absolute left-2 top-2 rounded-full bg-black/45 px-2 py-1 text-sm font-semibold text-white">
@@ -3331,7 +3381,7 @@ export default function EditorPage() {
                 <img
                   src={coverPreview}
                   alt="封面预览"
-                  onError={() => setCoverPreview("")}
+                  onError={clearCover}
                   className="mb-5 h-56 w-full rounded-2xl object-cover"
                 />
               ) : null}

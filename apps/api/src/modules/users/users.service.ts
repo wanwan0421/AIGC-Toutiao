@@ -1,6 +1,17 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException, UnauthorizedException } from "@nestjs/common";
+import { ContentStatus as DbContentStatus } from "@prisma/client";
+import { toContentSummary } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { AuthService } from "../auth/auth.service";
+
+const publicContentInclude = {
+  author: true,
+  assets: {
+    include: { asset: true },
+    orderBy: { sortOrder: "asc" as const },
+  },
+  _count: { select: { comments: true } },
+};
 
 type UserProfileUpdate = Partial<{
   nickname: string;
@@ -134,6 +145,73 @@ export class UsersService {
       ok: true,
       preferences
     };
+  }
+
+  async getPublicProfile(authorization: string | undefined, cookieHeader: string | undefined, targetUserId: string) {
+    const viewer = await this.resolveCurrentUser(authorization, cookieHeader);
+    const target = await this.prisma.user.findUnique({
+      where: { id: targetUserId },
+      include: {
+        _count: {
+          select: {
+            followers: true,
+            following: true,
+            contents: { where: { status: DbContentStatus.published } },
+          },
+        },
+      },
+    });
+
+    if (!target) {
+      throw new NotFoundException("user not found");
+    }
+
+    const following =
+      viewer.id === targetUserId
+        ? null
+        : await this.prisma.userFollow.findUnique({
+            where: {
+              followerId_followingId: {
+                followerId: viewer.id,
+                followingId: targetUserId,
+              },
+            },
+          });
+
+    return {
+      profile: {
+        id: target.id,
+        accountNo: target.accountNo,
+        nickname: target.nickname,
+        bio: target.bio ?? undefined,
+        avatarUrl: target.avatarUrl ?? undefined,
+        followerCount: target._count.followers,
+        followingCount: target._count.following,
+        contentCount: target._count.contents,
+        createdAt: target.createdAt.toISOString(),
+      },
+      viewerState: {
+        following: Boolean(following),
+        isSelf: viewer.id === targetUserId,
+      },
+    };
+  }
+
+  async listPublicContents(authorization: string | undefined, cookieHeader: string | undefined, targetUserId: string) {
+    await this.resolveCurrentUser(authorization, cookieHeader);
+    const target = await this.prisma.user.findUnique({ where: { id: targetUserId }, select: { id: true } });
+    if (!target) {
+      throw new NotFoundException("user not found");
+    }
+
+    const items = await this.prisma.content.findMany({
+      where: { authorId: targetUserId, status: DbContentStatus.published },
+      include: publicContentInclude,
+      orderBy: [{ publishedAt: "desc" }, { updatedAt: "desc" }],
+      take: 48,
+    });
+
+    return { items: items.map(toContentSummary) };
   }
 
   async toggleFollow(authorization: string | undefined, cookieHeader: string | undefined, targetUserId: string) {

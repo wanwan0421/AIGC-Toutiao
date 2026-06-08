@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
-import { AiJobType, ContentStatus, type UserProfileSummary } from "@aicp/shared";
+import { AiJobType, ContentStatus, type CreateContentCommentRequest, type UserProfileSummary } from "@aicp/shared";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { ContentWorkflowEngine } from "../workflow/content-workflow.engine";
@@ -40,6 +40,25 @@ export class ContentsController {
   @Get(":id")
   detail(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
     return this.contentsService.detail(user.id, id);
+  }
+
+  @Get(":id/comments")
+  comments(
+    @CurrentUser() user: UserProfileSummary,
+    @Param("id") id: string,
+    @Query("limit") limit?: string,
+    @Query("cursor") cursor?: string
+  ) {
+    return this.contentsService.listComments(user.id, id, limit, cursor);
+  }
+
+  @Post(":id/comments")
+  createComment(
+    @CurrentUser() user: UserProfileSummary,
+    @Param("id") id: string,
+    @Body() body: CreateContentCommentRequest
+  ) {
+    return this.contentsService.createComment(user.id, id, body);
   }
 
   @Get(":id/versions")

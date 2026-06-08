@@ -7,13 +7,13 @@ export class RankingsController {
   constructor(private readonly rankingsService: RankingsService) {}
 
   @Get("topics")
-  topics(@Query("limit") limit?: string) {
-    return this.rankingsService.topics(limit);
+  topics(@Query("limit") limit?: string, @Query("cursor") cursor?: string) {
+    return this.rankingsService.topics(limit, cursor);
   }
 
   @Get("topics/:title")
-  topicDetail(@Param("title") title: string, @Query("limit") limit?: string) {
-    return this.rankingsService.topicDetail(title, limit);
+  topicDetail(@Param("title") title: string, @Query("limit") limit?: string, @Query("cursor") cursor?: string) {
+    return this.rankingsService.topicDetail(title, limit, cursor);
   }
 
   @Get()

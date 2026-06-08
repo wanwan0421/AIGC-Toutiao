@@ -9,6 +9,7 @@ import {
   ContentStatus,
   PromptScene,
   type AssetSummary,
+  type ContentCommentSummary,
   type ContentDetail,
   type ContentSummary
 } from "@aicp/shared";
@@ -34,10 +35,14 @@ type ContentLike = {
   viewCount: number;
   likeCount: number;
   collectCount: number;
+  createdAt: Date;
   publishedAt: Date | null;
   updatedAt: Date;
   author: UserLike;
   assets?: ContentAssetLike[];
+  _count?: {
+    comments?: number;
+  };
 };
 
 type AssetLike = {
@@ -46,12 +51,23 @@ type AssetLike = {
   mimeType: string;
   url: string;
   auditStatus: DbAssetAuditStatus;
+  auditReason?: string | null;
+  createdAt?: Date;
   source?: string;
   metadata?: unknown;
 };
 
 type ContentAssetLike = {
   asset: AssetLike;
+};
+
+type ContentCommentLike = {
+  id: string;
+  contentId: string;
+  body: string;
+  createdAt: Date;
+  updatedAt: Date;
+  author: UserLike;
 };
 
 export function toDbContentStatus(status: ContentStatus | string): DbContentStatus {
@@ -81,6 +97,8 @@ export function toAssetSummary(asset: AssetLike): AssetSummary {
     mimeType: asset.mimeType,
     url: asset.url,
     auditStatus: asset.auditStatus,
+    auditReason: asset.auditReason ?? undefined,
+    createdAt: asset.createdAt?.toISOString(),
     source: asset.source,
     metadata: asset.metadata && typeof asset.metadata === "object" ? (asset.metadata as Record<string, unknown>) : undefined
   };
@@ -105,6 +123,8 @@ export function toContentSummary(content: ContentLike): ContentSummary {
     viewCount: content.viewCount,
     likeCount: content.likeCount,
     collectCount: content.collectCount,
+    commentCount: content._count?.comments,
+    createdAt: content.createdAt.toISOString(),
     publishedAt: content.publishedAt?.toISOString(),
     updatedAt: content.updatedAt.toISOString()
   };
@@ -123,5 +143,21 @@ export function toContentDetail(content: ContentLike & { assets: ContentAssetLik
     bodyJson,
     tags: content.tags,
     assets: content.assets.map((item) => toAssetSummary(item.asset))
+  };
+}
+
+export function toContentCommentSummary(comment: ContentCommentLike): ContentCommentSummary {
+  return {
+    id: comment.id,
+    contentId: comment.contentId,
+    body: comment.body,
+    author: {
+      id: comment.author.id,
+      accountNo: comment.author.accountNo ?? undefined,
+      nickname: comment.author.nickname,
+      avatarUrl: comment.author.avatarUrl ?? undefined
+    },
+    createdAt: comment.createdAt.toISOString(),
+    updatedAt: comment.updatedAt.toISOString()
   };
 }

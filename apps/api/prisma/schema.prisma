@@ -25,6 +25,7 @@ model User {
   prompts      PromptTemplate[]
   events       UserActionEvent[]
   contentReactions ContentReaction[]
+  comments     ContentComment[]
   followers    UserFollow[]      @relation("UserFollowers")
   following    UserFollow[]      @relation("UserFollowing")
   aiConversations AiConversation[]
@@ -71,6 +72,7 @@ model Content {
   scores       QualityScore[]
   events       UserActionEvent[]
   reactions    ContentReaction[]
+  comments     ContentComment[]
   aiConversations AiConversation[]
   aiJobs       AiJob[]
 }
@@ -100,6 +102,20 @@ model ContentReaction {
   @@unique([userId, contentId, type])
   @@index([contentId, type])
   @@index([userId, type, createdAt])
+}
+
+model ContentComment {
+  id        String   @id @default(cuid())
+  contentId String
+  authorId  String
+  body      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  content   Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([contentId, createdAt])
+  @@index([authorId, createdAt])
 }
 
 model Draft {

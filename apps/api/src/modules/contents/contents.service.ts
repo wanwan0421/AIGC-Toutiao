@@ -1,7 +1,7 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
-import { ContentStatus as ApiContentStatus } from "@aicp/shared";
+import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { ContentStatus as ApiContentStatus, type CreateContentCommentRequest } from "@aicp/shared";
 import { ContentReactionType as DbContentReactionType, ContentStatus as DbContentStatus, Prisma } from "@prisma/client";
-import { toContentDetail, toContentSummary, toDbContentStatus } from "../../common/prisma-mappers";
+import { toContentCommentSummary, toContentDetail, toContentSummary, toDbContentStatus } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 
 const contentInclude = {
@@ -9,6 +9,18 @@ const contentInclude = {
   assets: {
     include: { asset: true },
     orderBy: { sortOrder: "asc" as const },
+  },
+  _count: { select: { comments: true } },
+};
+
+const commentInclude = {
+  author: {
+    select: {
+      id: true,
+      accountNo: true,
+      nickname: true,
+      avatarUrl: true,
+    },
   },
 };
 
@@ -37,7 +49,7 @@ export class ContentsService {
         ...(status ? { status: toDbContentStatus(status) } : {}),
       },
       include: contentInclude,
-      orderBy: { updatedAt: "desc" },
+      orderBy: { createdAt: "desc" },
     });
 
     return items.map(toContentSummary);
@@ -88,6 +100,59 @@ export class ContentsService {
       ...toContentDetail(content),
       viewerState: await this.viewerState(userId, content.authorId, content.id),
     };
+  }
+
+  async listComments(userId: string, id: string, rawLimit?: string | number, cursor?: string) {
+    await this.assertContentVisible(userId, id);
+    const limit = this.parseLimit(rawLimit, 20);
+    const comments = await this.prisma.contentComment.findMany({
+      where: { contentId: id },
+      include: commentInclude,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit,
+      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+    });
+
+    return {
+      items: comments.map(toContentCommentSummary),
+      nextCursor: comments.length === limit ? comments.at(-1)?.id : undefined,
+    };
+  }
+
+  async createComment(userId: string, id: string, body: CreateContentCommentRequest) {
+    await this.assertContentVisible(userId, id);
+    const text = body.body?.trim() ?? "";
+    if (!text) {
+      throw new BadRequestException("comment body is required");
+    }
+    if (text.length > 1000) {
+      throw new BadRequestException("comment body is too long");
+    }
+
+    const comment = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.contentComment.create({
+        data: {
+          contentId: id,
+          authorId: userId,
+          body: text,
+        },
+        include: commentInclude,
+      });
+      await tx.content.update({
+        where: { id },
+        data: { heatScore: { increment: 1 } },
+      });
+      await tx.userActionEvent.create({
+        data: {
+          userId,
+          contentId: id,
+          eventType: "comment",
+        },
+      });
+      return created;
+    });
+
+    return toContentCommentSummary(comment);
   }
 
   async toggleReaction(userId: string, id: string, type: "like" | "collect") {
@@ -208,6 +273,7 @@ export class ContentsService {
       await tx.qualityScore.deleteMany({ where: { contentId: id } });
       await tx.userActionEvent.deleteMany({ where: { contentId: id } });
       await tx.contentReaction.deleteMany({ where: { contentId: id } });
+      await tx.contentComment.deleteMany({ where: { contentId: id } });
       await tx.aiConversation.updateMany({
         where: { contentId: id },
         data: { contentId: null },
@@ -266,6 +332,22 @@ export class ContentsService {
     if (count === 0) {
       throw new NotFoundException("content not found");
     }
+  }
+
+  private async assertContentVisible(userId: string, id: string) {
+    const content = await this.prisma.content.findUnique({
+      where: { id },
+      select: { authorId: true, status: true },
+    });
+    if (!content || (content.status !== DbContentStatus.published && content.authorId !== userId)) {
+      throw new NotFoundException("content not found");
+    }
+  }
+
+  private parseLimit(raw: string | number | undefined, fallback: number) {
+    const value = Number(raw ?? fallback);
+    if (!Number.isFinite(value)) return fallback;
+    return Math.min(Math.max(Math.trunc(value), 1), 50);
   }
 
   private async viewerState(userId: string, authorId: string, contentId: string) {

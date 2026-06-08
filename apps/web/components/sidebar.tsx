@@ -11,7 +11,7 @@ const navItems = [
   { href: "/dashboard", label: "首页", icon: <Icons.Grid className="h-5 w-5" /> },
   { href: "/editor", label: "创作中心", icon: <Icons.PenTool className="h-5 w-5" /> },
   { href: "/content", label: "作品管理", icon: <Icons.Book className="h-5 w-5" /> },
-  { href: "/analytics", label: "数据中心", icon: <Icons.Chart className="h-5 w-5" /> },
+  { href: "/analytics", label: "素材管理", icon: <Icons.Image className="h-5 w-5" /> },
   { href: "/prompts", label: "Prompt 管理", icon: <Icons.Sparkles className="h-5 w-5" /> },
   { href: "/growth", label: "成长指南", icon: <Icons.Compass className="h-5 w-5" /> },
 ];
