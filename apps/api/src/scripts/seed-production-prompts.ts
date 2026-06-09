@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { DEFAULT_PROMPT_SEEDS } from "../modules/ai/default-prompt-seeds";
 
 const prisma = new PrismaClient();
@@ -40,7 +40,7 @@ async function main() {
         template: seed.template,
         variables: seed.variables,
         model,
-        modelOptions: seed.modelOptions as any,
+        modelOptions: seed.modelOptions as Prisma.InputJsonObject,
         status: "active",
         changeNote: forceUpdate ? "Production prompt refresh" : "Production prompt initialization",
       },

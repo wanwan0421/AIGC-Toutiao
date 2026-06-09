@@ -7,9 +7,7 @@ import type {
   SelectionRewriteRequest,
   TitleGenerateRequest,
 } from "@aicp/shared";
-import { Prisma } from "@prisma/client";
-const DbContentStatus = { pending_review: "pending_review", approved: "approved", rejected: "rejected", draft: "draft", published: "published", offline: "offline", scheduled: "scheduled", updated: "updated" } as const;
-const DbContentVisibility = { private: "private", public: "public" } as const;
+import { ContentStatus as DbContentStatus, ContentVisibility as DbContentVisibility, Prisma } from "@prisma/client";
 import { toContentSummary, toDbAuditRiskLevel } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { ContextBuilderService } from "../ai/context-builder.service";
@@ -148,7 +146,7 @@ export class ContentWorkflowEngine {
 
   async scoreQuality(userId: string, id: string): Promise<ContentApprovalResult> {
     const content = await this.getOwnedContent(userId, id);
-    const allowed = new Set<string>([
+    const allowed = new Set<DbContentStatus>([
       DbContentStatus.approved,
       DbContentStatus.updated,
       DbContentStatus.published,
@@ -166,9 +164,9 @@ export class ContentWorkflowEngine {
         data: {
           contentId: id,
           total: quality.total,
-          dimensions: quality.dimensions as any,
+          dimensions: quality.dimensions as unknown as Prisma.InputJsonValue,
           reason: quality.reason,
-          rawResponse: quality as any,
+          rawResponse: quality as unknown as Prisma.InputJsonValue,
         },
       }),
       this.prisma.content.update({
@@ -247,7 +245,7 @@ export class ContentWorkflowEngine {
           riskLevel: toDbAuditRiskLevel(audit.riskLevel),
           riskTypes: audit.riskTypes,
           reasons: audit.reasons,
-          rawResponse: { audit, rewrite } as any,
+          rawResponse: { audit, rewrite } as unknown as Prisma.InputJsonValue,
         },
       });
 
@@ -333,7 +331,7 @@ export class ContentWorkflowEngine {
   private parseVisibility(value: ContentVisibility | undefined) {
     if (value === undefined) return undefined;
     if (value === "public" || value === "followers" || value === "private") {
-      return value;
+      return value as DbContentVisibility;
     }
     throw new BadRequestException("invalid visibility");
   }

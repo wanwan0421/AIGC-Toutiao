@@ -313,6 +313,6 @@ export class WorkflowJobRunner {
   }
 
   private toJson(value: unknown) {
-    return JSON.parse(JSON.stringify(value ?? null));
+    return JSON.parse(JSON.stringify(value ?? null)) as Prisma.InputJsonValue;
   }
 }

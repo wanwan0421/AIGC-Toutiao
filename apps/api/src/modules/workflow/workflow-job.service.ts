@@ -198,6 +198,6 @@ export class WorkflowJobService implements OnModuleInit {
   }
 
   private toJson(value: unknown) {
-    return JSON.parse(JSON.stringify(value ?? {}));
+    return JSON.parse(JSON.stringify(value ?? {})) as Prisma.InputJsonValue;
   }
 }
