@@ -206,15 +206,18 @@ export class SafetyReviewAgent {
     const record = value as Record<string, unknown>;
     const evidence = typeof record.evidence === "string" ? record.evidence.trim() : "";
     if (!evidence) return null;
-    const type = AUDIT_RISK_TYPES.includes(record.type as AuditRiskType) && record.type !== "none"
-      ? (record.type as AuditRiskType)
-      : "sensitive";
+    const type =
+      AUDIT_RISK_TYPES.includes(record.type as AuditRiskType) && record.type !== "none"
+        ? (record.type as AuditRiskType)
+        : "sensitive";
     const severity = AUDIT_SEVERITIES.includes(record.severity as AuditRiskSeverity)
       ? (record.severity as AuditRiskSeverity)
       : "medium";
     const field = record.field === "title" || record.field === "body" ? record.field : undefined;
-    const startOffset = typeof record.startOffset === "number" && Number.isFinite(record.startOffset) ? record.startOffset : undefined;
-    const endOffset = typeof record.endOffset === "number" && Number.isFinite(record.endOffset) ? record.endOffset : undefined;
+    const startOffset =
+      typeof record.startOffset === "number" && Number.isFinite(record.startOffset) ? record.startOffset : undefined;
+    const endOffset =
+      typeof record.endOffset === "number" && Number.isFinite(record.endOffset) ? record.endOffset : undefined;
 
     return {
       id: typeof record.id === "string" && record.id.trim() ? record.id.trim() : `llm_${index + 1}`,
@@ -251,7 +254,7 @@ export class SafetyReviewAgent {
   }
 
   private shouldUseFallback(prompt: string) {
-    return !prompt.includes("riskItems") || /浣犳槸|歿|鍙繑|鏍囬|姝ｆ枃/.test(prompt);
+    return !prompt.includes("riskItems");
   }
 
   private interpolate(template: string, variables: Record<string, unknown>) {

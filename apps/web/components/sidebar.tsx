@@ -46,7 +46,7 @@ export function Sidebar() {
         <Link
           href="/editor"
           title="发布作品"
-          className={`flex h-12 items-center justify-center gap-2 rounded-full bg-[#ff3b30] text-base font-semibold text-white shadow-sm transition hover:bg-[#e6352b] ${collapsed ? "px-0" : "px-5"}`}
+          className={`flex h-12 items-center justify-center gap-2 rounded-full bg-[#ff2442] text-base font-semibold text-white shadow-sm transition hover:bg-[#e6352b] ${collapsed ? "px-0" : "px-5"}`}
         >
           <Icons.Plus className="h-4 w-4" />
           {collapsed ? null : <span>发布作品</span>}

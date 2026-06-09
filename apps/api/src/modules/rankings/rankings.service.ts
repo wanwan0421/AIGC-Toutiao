@@ -1,5 +1,5 @@
 import { Injectable } from "@nestjs/common";
-import { ContentStatus as DbContentStatus } from "@prisma/client";
+import { ContentStatus as DbContentStatus, ContentVisibility as DbContentVisibility } from "@prisma/client";
 import type {
   ContentSummary,
   OfficialTopicListResponse,
@@ -57,6 +57,7 @@ export class RankingsService {
     const items = await this.prisma.content.findMany({
       where: {
         status: DbContentStatus.published,
+        visibility: DbContentVisibility.public,
         author: { email: { not: OFFICIAL_TOPIC_EMAIL } },
       },
       include: contentInclude,
@@ -78,6 +79,7 @@ export class RankingsService {
     const contents = await this.prisma.content.findMany({
       where: {
         status: DbContentStatus.published,
+        visibility: DbContentVisibility.public,
         author: { email: { not: OFFICIAL_TOPIC_EMAIL } },
       },
       include: contentInclude,
@@ -162,6 +164,7 @@ export class RankingsService {
     const contents = await this.prisma.content.findMany({
       where: {
         status: DbContentStatus.published,
+        visibility: DbContentVisibility.public,
         author: { email: { not: OFFICIAL_TOPIC_EMAIL } },
         OR: [
           { tags: { has: title } },

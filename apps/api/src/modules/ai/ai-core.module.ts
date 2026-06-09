@@ -20,10 +20,10 @@ import { SafetyRuleEngine } from "./safety/safety-rule-engine.service";
 import { SafetyRuleLoader } from "./safety/safety-rule-loader.service";
 import { SkillExecutorService } from "./skills-runtime/skill-executor.service";
 import { SkillRegistryService } from "./skills-runtime/skill-registry.service";
-import { ContentQualitySkill } from "./skills/content-quality.skill";
-import { CreativeAssistantSkill } from "./skills/creative-assistant.skill";
-import { CreativeProductionSkill } from "./skills/creative-production.skill";
-import { SafetyReviewSkill } from "./skills/safety-review.skill";
+import { ContentQualityCapability } from "./capabilities/content-quality.capability";
+import { CreativeAssistantCapability } from "./capabilities/creative-assistant.capability";
+import { CreativeProductionCapability } from "./capabilities/creative-production.capability";
+import { SafetyReviewCapability } from "./capabilities/safety-review.capability";
 
 const providers = [
   AiCallLogService,
@@ -46,10 +46,10 @@ const providers = [
   ComplianceRewriteAgent,
   SkillRegistryService,
   SkillExecutorService,
-  SafetyReviewSkill,
-  ContentQualitySkill,
-  CreativeAssistantSkill,
-  CreativeProductionSkill,
+  SafetyReviewCapability,
+  ContentQualityCapability,
+  CreativeAssistantCapability,
+  CreativeProductionCapability,
 ];
 
 @Module({

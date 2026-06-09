@@ -2,7 +2,8 @@ import { Injectable, Logger } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { AiJobStatus, AiJobType, type DirectGenerateRequest } from "@aicp/shared";
 import { PrismaService } from "../../infra/prisma/prisma.service";
-import { CreativeProductionSkill } from "../ai/skills/creative-production.skill";
+import { ConversationArchiveService } from "../ai/conversation-archive.service";
+import { CreativeProductionCapability } from "../ai/capabilities/creative-production.capability";
 import { SkillExecutorService } from "../ai/skills-runtime/skill-executor.service";
 import { ContentWorkflowEngine } from "./content-workflow.engine";
 import { WorkflowJobEventsService } from "./workflow-job-events.service";
@@ -27,8 +28,9 @@ export class WorkflowJobRunner {
     private readonly prisma: PrismaService,
     private readonly events: WorkflowJobEventsService,
     private readonly workflow: ContentWorkflowEngine,
-    private readonly productionSkill: CreativeProductionSkill,
-    private readonly skillExecutor: SkillExecutorService
+    private readonly productionCapability: CreativeProductionCapability,
+    private readonly skillExecutor: SkillExecutorService,
+    private readonly conversations: ConversationArchiveService
   ) {}
 
   async run(jobId: string) {
@@ -83,7 +85,7 @@ export class WorkflowJobRunner {
       source?: "button" | "conversation";
     };
     return this.skillExecutor.runContentProductionLine(
-      payload,
+      { ...payload, operationId: jobId },
       {
         userId,
         contentId: payload.contentId,
@@ -111,7 +113,7 @@ export class WorkflowJobRunner {
     }
 
     await this.progress(jobId, 30, "生成图片", "AI 正在生成图片素材");
-    const asset = await this.productionSkill.generateSingleImage({
+    const asset = await this.productionCapability.generateSingleImage({
       userId,
       contentId: typeof payload.contentId === "string" ? payload.contentId : contentId,
       position: typeof payload.position === "string" ? payload.position : "正文配图",
@@ -219,7 +221,46 @@ export class WorkflowJobRunner {
       },
     });
     const snapshot = toAiJobSnapshot(updated);
+    await this.archiveSkillCompletion(updated, result);
     await this.events.publish(jobId, { type: "done", data: { job: snapshot, result } });
+  }
+
+  private async archiveSkillCompletion(job: AiJobRecord, result: unknown) {
+    const input = this.asPayload(job.input);
+    const conversationId = typeof input.conversationId === "string" ? input.conversationId : undefined;
+    if (!conversationId) return;
+
+    const content = this.skillCompletionMessage(job.type as `${AiJobType}`, result);
+    if (!content) return;
+
+    await this.conversations
+      .appendMessage({
+        conversationId,
+        role: "assistant",
+        content,
+        metadata: {
+          jobId: job.id,
+          jobType: job.type,
+          contentId: job.contentId,
+        },
+      })
+      .catch((error: unknown) => {
+        this.logger.debug(`AI job ${job.id} completion archive skipped: ${(error as Error).message}`);
+      });
+  }
+
+  private skillCompletionMessage(type: `${AiJobType}`, result: unknown) {
+    if (type === AiJobType.CreativeDirectGenerate) {
+      const title =
+        result && typeof result === "object" && "title" in result && typeof (result as { title?: unknown }).title === "string"
+          ? (result as { title: string }).title
+          : "";
+      return title ? `完整图文已生成并同步到编辑器：${title}` : "完整图文已生成并同步到编辑器。";
+    }
+    if (type === AiJobType.ContentSubmitReview) {
+      return "内容审核已完成，结果已同步到发布流转面板。";
+    }
+    return undefined;
   }
 
   private async fail(jobId: string, message: string) {

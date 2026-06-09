@@ -88,8 +88,7 @@ export class AiController {
         this.writeSse(response, event);
       }
     } catch (error) {
-      response.write("event: error\n");
-      response.write(`data: ${JSON.stringify({ message: (error as Error).message })}\n\n`);
+      this.writeSse(response, { type: "error", data: { message: (error as Error).message } });
     } finally {
       response.end();
     }
@@ -155,29 +154,44 @@ export class AiController {
 
   private async writeSkillEvent(response: Response, userId: string, data: Record<string, unknown>) {
     const { jobRequest, ...publicData } = data;
-    this.writeSse(response, { type: "skill", data: publicData });
-
     const request = jobRequest as
       | { type?: AiJobType; payload?: Record<string, unknown>; contentId?: string }
       | undefined;
-    if (!request?.type) return;
 
-    const job = await this.jobs.create({
-      userId,
-      type: request.type,
-      payload: request.payload ?? {},
-      contentId: request.contentId,
-    });
+    if (!request?.type) {
+      this.writeSse(response, { type: "skill", data: publicData });
+      return;
+    }
+
     const skillKey = typeof publicData.skillKey === "string" ? publicData.skillKey : undefined;
-    this.writeSse(response, {
-      type: "skill",
-      data: {
-        type: "job_started",
-        skillKey,
-        message: "Skill 任务已开始",
-        job,
-      },
-    });
+    try {
+      const job = await this.jobs.create({
+        userId,
+        type: request.type,
+        payload: request.payload ?? {},
+        contentId: request.contentId,
+      });
+
+      this.writeSse(response, { type: "skill", data: publicData });
+      this.writeSse(response, {
+        type: "skill",
+        data: {
+          type: "job_started",
+          skillKey,
+          message: "Skill 任务已开始",
+          job,
+        },
+      });
+    } catch (error) {
+      this.writeSse(response, {
+        type: "skill",
+        data: {
+          type: "skill_error",
+          skillKey,
+          message: `Skill 任务创建失败：${(error as Error).message}`,
+        },
+      });
+    }
   }
 
   private writeSse(response: Response, event: AiJobEvent | { type: string; data: unknown }) {

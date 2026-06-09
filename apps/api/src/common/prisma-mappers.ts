@@ -2,6 +2,7 @@ import {
   AssetAuditStatus as DbAssetAuditStatus,
   AuditRiskLevel as DbAuditRiskLevel,
   ContentStatus as DbContentStatus,
+  ContentVisibility as DbContentVisibility,
   PromptScene as DbPromptScene
 } from "@prisma/client";
 import {
@@ -29,6 +30,7 @@ type ContentLike = {
   bodyJson?: unknown;
   excerpt: string | null;
   status: DbContentStatus;
+  visibility: DbContentVisibility;
   tags: string[];
   qualityScore: number;
   heatScore: number;
@@ -37,6 +39,7 @@ type ContentLike = {
   collectCount: number;
   createdAt: Date;
   publishedAt: Date | null;
+  scheduledAt?: Date | null;
   updatedAt: Date;
   author: UserLike;
   assets?: ContentAssetLike[];
@@ -52,6 +55,8 @@ type AssetLike = {
   url: string;
   auditStatus: DbAssetAuditStatus;
   auditReason?: string | null;
+  riskLevel?: string | null;
+  riskTypes?: string[];
   createdAt?: Date;
   source?: string;
   metadata?: unknown;
@@ -98,6 +103,8 @@ export function toAssetSummary(asset: AssetLike): AssetSummary {
     url: asset.url,
     auditStatus: asset.auditStatus,
     auditReason: asset.auditReason ?? undefined,
+    riskLevel: (asset.riskLevel as AssetSummary["riskLevel"]) ?? undefined,
+    riskTypes: asset.riskTypes ?? undefined,
     createdAt: asset.createdAt?.toISOString(),
     source: asset.source,
     metadata: asset.metadata && typeof asset.metadata === "object" ? (asset.metadata as Record<string, unknown>) : undefined
@@ -112,6 +119,7 @@ export function toContentSummary(content: ContentLike): ContentSummary {
     excerpt: content.excerpt ?? content.body.slice(0, 72),
     coverUrl: coverAsset?.url,
     status: toApiContentStatus(content.status),
+    visibility: content.visibility,
     author: {
       id: content.author.id,
       accountNo: content.author.accountNo ?? undefined,
@@ -126,6 +134,7 @@ export function toContentSummary(content: ContentLike): ContentSummary {
     commentCount: content._count?.comments,
     createdAt: content.createdAt.toISOString(),
     publishedAt: content.publishedAt?.toISOString(),
+    scheduledAt: content.scheduledAt?.toISOString(),
     updatedAt: content.updatedAt.toISOString()
   };
 }

@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException, UnauthorizedException } from "@nestjs/common";
-import { ContentStatus as DbContentStatus } from "@prisma/client";
+import { ContentStatus as DbContentStatus, ContentVisibility as DbContentVisibility } from "@prisma/client";
 import { toContentSummary } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { AuthService } from "../auth/auth.service";
@@ -156,7 +156,7 @@ export class UsersService {
           select: {
             followers: true,
             following: true,
-            contents: { where: { status: DbContentStatus.published } },
+            contents: { where: { status: DbContentStatus.published, visibility: DbContentVisibility.public } },
           },
         },
       },
@@ -205,7 +205,7 @@ export class UsersService {
     }
 
     const items = await this.prisma.content.findMany({
-      where: { authorId: targetUserId, status: DbContentStatus.published },
+      where: { authorId: targetUserId, status: DbContentStatus.published, visibility: DbContentVisibility.public },
       include: publicContentInclude,
       orderBy: [{ publishedAt: "desc" }, { updatedAt: "desc" }],
       take: 48,

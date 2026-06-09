@@ -1,8 +1,24 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
-import { ContentStatus as ApiContentStatus, type CreateContentCommentRequest } from "@aicp/shared";
-import { ContentReactionType as DbContentReactionType, ContentStatus as DbContentStatus, Prisma } from "@prisma/client";
+import {
+  AuditRiskLevel,
+  ContentStatus as ApiContentStatus,
+  type AuditResult,
+  type ComplianceRewriteResult,
+  type ContentVisibility,
+  type ContentWorkflowQualityState,
+  type ContentWorkflowState,
+  type CreateContentCommentRequest,
+  type QualityScoreResult,
+} from "@aicp/shared";
+import {
+  ContentReactionType as DbContentReactionType,
+  ContentStatus as DbContentStatus,
+  ContentVisibility as DbContentVisibility,
+  Prisma,
+} from "@prisma/client";
 import { toContentCommentSummary, toContentDetail, toContentSummary, toDbContentStatus } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
+import { ContentAccessPolicyService } from "./content-access-policy.service";
 
 const contentInclude = {
   author: true,
@@ -31,6 +47,8 @@ type ContentWriteBody = {
   bodyJson?: Record<string, unknown> | null;
   tags?: string[];
   assetIds?: string[];
+  visibility?: ContentVisibility;
+  scheduledAt?: string | null;
 };
 
 function toJsonInput(value: Record<string, unknown> | null | undefined) {
@@ -38,9 +56,29 @@ function toJsonInput(value: Record<string, unknown> | null | undefined) {
   return value === null ? Prisma.JsonNull : (value as Prisma.InputJsonValue);
 }
 
+function toDbContentVisibility(value?: ContentVisibility): DbContentVisibility | undefined {
+  if (value === "followers" || value === "private" || value === "public") {
+    return value as DbContentVisibility;
+  }
+  return undefined;
+}
+
+function toDateOrNull(value: string | null | undefined) {
+  if (value === undefined) return undefined;
+  if (value === null || !value.trim()) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new BadRequestException("invalid scheduledAt");
+  }
+  return date;
+}
+
 @Injectable()
 export class ContentsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly accessPolicy: ContentAccessPolicyService
+  ) {}
 
   async list(userId: string, status?: ApiContentStatus) {
     const items = await this.prisma.content.findMany({
@@ -66,6 +104,8 @@ export class ContentsService {
         bodyJson: toJsonInput(body.bodyJson),
         excerpt: contentBody.slice(0, 72),
         status: DbContentStatus.draft,
+        visibility: toDbContentVisibility(body.visibility) ?? DbContentVisibility.public,
+        scheduledAt: toDateOrNull(body.scheduledAt),
         tags: body.tags ?? [],
         assets: body.assetIds?.length
           ? {
@@ -92,7 +132,7 @@ export class ContentsService {
       throw new NotFoundException("content not found");
     }
 
-    if (content.status !== DbContentStatus.published && content.authorId !== userId) {
+    if (!(await this.accessPolicy.canView(userId, content))) {
       throw new NotFoundException("content not found");
     }
 
@@ -116,6 +156,37 @@ export class ContentsService {
     return {
       items: comments.map(toContentCommentSummary),
       nextCursor: comments.length === limit ? comments.at(-1)?.id : undefined,
+    };
+  }
+
+  async workflowState(userId: string, id: string): Promise<ContentWorkflowState> {
+    const content = await this.getContent(userId, id);
+    const summary = toContentSummary(content);
+    const [auditRecord, qualityRecord] = await Promise.all([
+      this.prisma.auditRecord.findFirst({
+        where: { contentId: id },
+        orderBy: { createdAt: "desc" },
+      }),
+      this.prisma.qualityScore.findFirst({
+        where: { contentId: id },
+        orderBy: { createdAt: "desc" },
+      }),
+    ]);
+    const canPublish = this.canPublishStatus(content.status);
+
+    return {
+      content: summary,
+      latestAudit: auditRecord
+        ? {
+            content: summary,
+            audit: this.auditResultFromRecord(auditRecord),
+            rewrite: this.rewriteFromAuditRecord(auditRecord),
+            checkedAt: auditRecord.createdAt.toISOString(),
+          }
+        : undefined,
+      latestQuality: qualityRecord ? this.qualityResultFromRecord(qualityRecord) : undefined,
+      canPublish,
+      publishBlockReason: canPublish ? undefined : this.publishBlockReason(content.status),
     };
   }
 
@@ -156,10 +227,7 @@ export class ContentsService {
   }
 
   async toggleReaction(userId: string, id: string, type: "like" | "collect") {
-    const content = await this.prisma.content.findUnique({ where: { id } });
-    if (!content || (content.status !== DbContentStatus.published && content.authorId !== userId)) {
-      throw new NotFoundException("content not found");
-    }
+    await this.assertContentVisible(userId, id);
 
     const reactionType = type === "like" ? DbContentReactionType.like : DbContentReactionType.collect;
     const result = await this.prisma.$transaction(async (tx) => {
@@ -240,6 +308,8 @@ export class ContentsService {
       bodyJson: toJsonInput(body.bodyJson),
       excerpt: body.body !== undefined ? nextBody.slice(0, 72) : undefined,
       tags: body.tags,
+      visibility: toDbContentVisibility(body.visibility),
+      scheduledAt: toDateOrNull(body.scheduledAt),
       status: current.status === DbContentStatus.published ? DbContentStatus.updated : undefined,
     };
 
@@ -260,6 +330,22 @@ export class ContentsService {
     });
 
     return toContentDetail(updated);
+  }
+
+  async updateVisibility(userId: string, id: string, visibility: ContentVisibility) {
+    const current = await this.getContent(userId, id);
+    const nextVisibility = toDbContentVisibility(visibility);
+    if (!nextVisibility) {
+      throw new BadRequestException("invalid visibility");
+    }
+
+    const updated = await this.prisma.content.update({
+      where: { id: current.id },
+      data: { visibility: nextVisibility },
+      include: contentInclude,
+    });
+
+    return toContentSummary(updated);
   }
 
   async delete(userId: string, id: string) {
@@ -337,9 +423,9 @@ export class ContentsService {
   private async assertContentVisible(userId: string, id: string) {
     const content = await this.prisma.content.findUnique({
       where: { id },
-      select: { authorId: true, status: true },
+      select: { authorId: true, status: true, visibility: true },
     });
-    if (!content || (content.status !== DbContentStatus.published && content.authorId !== userId)) {
+    if (!content || !(await this.accessPolicy.canView(userId, content))) {
       throw new NotFoundException("content not found");
     }
   }
@@ -348,6 +434,104 @@ export class ContentsService {
     const value = Number(raw ?? fallback);
     if (!Number.isFinite(value)) return fallback;
     return Math.min(Math.max(Math.trunc(value), 1), 50);
+  }
+
+  private canPublishStatus(status: DbContentStatus) {
+    return (
+      status === DbContentStatus.approved ||
+      status === DbContentStatus.updated ||
+      status === DbContentStatus.pending_review ||
+      status === DbContentStatus.scheduled
+    );
+  }
+
+  private publishBlockReason(status: DbContentStatus) {
+    if (status === DbContentStatus.rejected) return "内容安全审核未通过，请先修改后重新审核";
+    if (status === DbContentStatus.draft) return "内容需要先通过安全审核后才能发布";
+    if (status === DbContentStatus.published) return "内容已经发布";
+    if (status === DbContentStatus.offline) return "内容已下线，需要重新编辑审核后发布";
+    return "当前状态暂不可发布";
+  }
+
+  private auditResultFromRecord(record: {
+    passed: boolean;
+    riskLevel: string;
+    riskTypes: string[];
+    reasons: string[];
+    rawResponse: Prisma.JsonValue | null;
+  }): AuditResult {
+    const raw = this.asRecord(record.rawResponse);
+    const audit = this.asRecord(raw?.audit);
+    if (this.isAuditResult(audit)) {
+      return audit;
+    }
+
+    return {
+      passed: record.passed,
+      riskLevel: record.riskLevel as AuditRiskLevel,
+      riskTypes: record.riskTypes as AuditResult["riskTypes"],
+      reasons: record.reasons,
+      rewriteAvailable: !record.passed,
+      riskItems: [],
+      categoryScores: {},
+    };
+  }
+
+  private rewriteFromAuditRecord(record: { rawResponse: Prisma.JsonValue | null }) {
+    const raw = this.asRecord(record.rawResponse);
+    const rewrite = this.asRecord(raw?.rewrite);
+    if (!rewrite || typeof rewrite.title !== "string" || typeof rewrite.body !== "string") {
+      return null;
+    }
+    return rewrite as unknown as ComplianceRewriteResult;
+  }
+
+  private qualityResultFromRecord(record: {
+    total: number;
+    dimensions: Prisma.JsonValue;
+    reason: string;
+    rawResponse: Prisma.JsonValue | null;
+    createdAt: Date;
+  }): ContentWorkflowQualityState {
+    const raw = this.asRecord(record.rawResponse);
+    const dimensions = this.asRecord(raw?.dimensions) ?? this.asRecord(record.dimensions);
+    const quality: QualityScoreResult = {
+      total: typeof raw?.total === "number" ? raw.total : record.total,
+      dimensions: {
+        structure: this.numberValue(dimensions?.structure),
+        clarity: this.numberValue(dimensions?.clarity),
+        value: this.numberValue(dimensions?.value),
+        attraction: this.numberValue(dimensions?.attraction),
+        compliance: this.numberValue(dimensions?.compliance),
+      },
+      reason: typeof raw?.reason === "string" ? raw.reason : record.reason,
+    };
+
+    return {
+      ...quality,
+      scoredAt: record.createdAt.toISOString(),
+    };
+  }
+
+  private isAuditResult(value: unknown): value is AuditResult {
+    const record = this.asRecord(value);
+    return Boolean(
+      record &&
+        typeof record.passed === "boolean" &&
+        typeof record.riskLevel === "string" &&
+        Array.isArray(record.riskTypes) &&
+        Array.isArray(record.reasons) &&
+        Array.isArray(record.riskItems)
+    );
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+  }
+
+  private numberValue(value: unknown) {
+    const number = typeof value === "number" ? value : Number(value ?? 0);
+    return Number.isFinite(number) ? number : 0;
   }
 
   private async viewerState(userId: string, authorId: string, contentId: string) {

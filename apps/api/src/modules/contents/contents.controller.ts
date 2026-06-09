@@ -1,5 +1,11 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
-import { AiJobType, ContentStatus, type CreateContentCommentRequest, type UserProfileSummary } from "@aicp/shared";
+import {
+  AiJobType,
+  ContentStatus,
+  type ContentVisibility,
+  type CreateContentCommentRequest,
+  type UserProfileSummary,
+} from "@aicp/shared";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { ContentWorkflowEngine } from "../workflow/content-workflow.engine";
@@ -13,6 +19,13 @@ type ContentWriteBody = {
   bodyJson?: Record<string, unknown> | null;
   tags?: string[];
   assetIds?: string[];
+  visibility?: ContentVisibility;
+  scheduledAt?: string | null;
+};
+
+type PublishBody = {
+  scheduledAt?: string | null;
+  visibility?: ContentVisibility;
 };
 
 @UseGuards(AuthGuard)
@@ -40,6 +53,11 @@ export class ContentsController {
   @Get(":id")
   detail(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
     return this.contentsService.detail(user.id, id);
+  }
+
+  @Get(":id/workflow-state")
+  workflowState(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
+    return this.contentsService.workflowState(user.id, id);
   }
 
   @Get(":id/comments")
@@ -82,6 +100,15 @@ export class ContentsController {
     @Body() body: ContentWriteBody
   ) {
     return this.contentsService.update(user.id, id, body);
+  }
+
+  @Patch(":id/visibility")
+  updateVisibility(
+    @CurrentUser() user: UserProfileSummary,
+    @Param("id") id: string,
+    @Body() body: { visibility: ContentVisibility }
+  ) {
+    return this.contentsService.updateVisibility(user.id, id, body.visibility);
   }
 
   @Delete(":id")
@@ -131,8 +158,8 @@ export class ContentsController {
   }
 
   @Post(":id/publish")
-  publish(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
-    return this.workflow.publish(user.id, id);
+  publish(@CurrentUser() user: UserProfileSummary, @Param("id") id: string, @Body() body: PublishBody = {}) {
+    return this.workflow.publish(user.id, id, body);
   }
 
   @Post(":id/reactions/like/toggle")

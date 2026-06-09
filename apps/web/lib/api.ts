@@ -4,12 +4,16 @@ import type {
   AiJobStartRequest,
   AiJobType,
   CommentListResponse,
+  ContentVisibility,
   ContentCommentSummary,
   ContentDetail,
   ContentReactionToggleResult,
   ContentSummary,
+  ContentWorkflowState,
   CreateContentCommentRequest,
   CreativeChatDone,
+  DashboardAnalyticsResponse,
+  DashboardMetric,
   CreativeChatSkillEvent,
   CreativeConversationSummary,
   CreativeChatRequest,
@@ -229,6 +233,10 @@ export async function getContentDetail(id: string): Promise<ContentDetail> {
   return apiRequest<ContentDetail>(`/contents/${id}`, {}, true);
 }
 
+export async function getContentWorkflowState(id: string): Promise<ContentWorkflowState> {
+  return apiRequest<ContentWorkflowState>(`/contents/${id}/workflow-state`, {}, true);
+}
+
 export async function getContentComments(id: string, params: { cursor?: string; limit?: number } = {}) {
   const query = new URLSearchParams({ limit: String(params.limit ?? 20) });
   if (params.cursor) query.set("cursor", params.cursor);
@@ -273,6 +281,8 @@ type ContentWriteBody = {
   bodyJson?: Record<string, unknown> | null;
   tags?: string[];
   assetIds?: string[];
+  visibility?: ContentVisibility;
+  scheduledAt?: string | null;
 };
 
 export async function createContent(body: ContentWriteBody) {
@@ -301,8 +311,26 @@ export async function deleteContent(id: string) {
   return apiRequest<{ ok: boolean; id: string }>(`/contents/${id}`, { method: "DELETE" }, true);
 }
 
-export async function publishContent(id: string) {
-  return apiRequest<ContentSummary>(`/contents/${id}/publish`, { method: "POST" }, true);
+export async function publishContent(id: string, body: { scheduledAt?: string | null; visibility?: ContentVisibility } = {}) {
+  return apiRequest<ContentSummary>(
+    `/contents/${id}/publish`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+    true
+  );
+}
+
+export async function updateContentVisibility(id: string, visibility: ContentVisibility) {
+  return apiRequest<ContentSummary>(
+    `/contents/${id}/visibility`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ visibility }),
+    },
+    true
+  );
 }
 
 export async function offlineContent(id: string) {
@@ -590,7 +618,7 @@ async function streamAiJobEventsOnce(
   }
 
   if (!response.ok || !response.body) {
-    throw new Error(`AI job stream failed: ${response.status}`);
+    throw new Error(`AI 任务流连接失败：${response.status}`);
   }
 
   const reader = response.body.getReader();
@@ -609,8 +637,11 @@ async function streamAiJobEventsOnce(
       const event = parseSseEvent(eventBlock) as AiJobEvent | null;
       if (!event) continue;
       handlers.onEvent?.(event);
+      console.log("AI job event", event);
       const data = event.data ?? {};
+      console.log("AI job event data", data);
       const job = data.job as AiJobSnapshot | undefined;
+      console.log("AI job from event data", job);
 
       if (event.type === "snapshot" && job) {
         handlers.onSnapshot?.(job);
@@ -681,7 +712,7 @@ async function streamCreativeChatOnce(
       } else if (event.type === "skill") {
         handlers.onSkill?.(event.data as CreativeChatSkillEvent);
       } else if (event.type === "error") {
-        handlers.onError?.((event.data as { message?: string }).message ?? "AI stream failed");
+        handlers.onError?.((event.data as { message?: string }).message ?? "AI 对话流失败");
       }
     }
   }
@@ -769,6 +800,14 @@ export async function postNearbyLocations(body: { latitude: number; longitude: n
     },
     true
   );
+}
+
+export async function getDashboardAnalytics(params: { range?: 7 | 30; metric?: DashboardMetric } = {}) {
+  const query = new URLSearchParams({
+    range: String(params.range ?? 7),
+    metric: params.metric ?? "view",
+  });
+  return apiRequest<DashboardAnalyticsResponse>(`/analytics/dashboard?${query.toString()}`, {}, true);
 }
 
 export async function getPromptDefinitions(scene?: PromptScene) {

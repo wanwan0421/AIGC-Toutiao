@@ -1,21 +1,22 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import type {
   ContentApprovalResult,
+  ContentVisibility,
   CreativeChatRequest,
   DirectGenerateRequest,
   SelectionRewriteRequest,
   TitleGenerateRequest,
 } from "@aicp/shared";
-import { ContentStatus as DbContentStatus, Prisma } from "@prisma/client";
+import { ContentStatus as DbContentStatus, ContentVisibility as DbContentVisibility, Prisma } from "@prisma/client";
 import { toContentSummary, toDbAuditRiskLevel } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { ContextBuilderService } from "../ai/context-builder.service";
 import { ConversationArchiveService } from "../ai/conversation-archive.service";
 import { SkillExecutorService } from "../ai/skills-runtime/skill-executor.service";
-import { ContentQualitySkill } from "../ai/skills/content-quality.skill";
-import { CreativeAssistantSkill } from "../ai/skills/creative-assistant.skill";
-import { CreativeProductionSkill } from "../ai/skills/creative-production.skill";
-import { SafetyReviewSkill } from "../ai/skills/safety-review.skill";
+import { ContentQualityCapability } from "../ai/capabilities/content-quality.capability";
+import { CreativeAssistantCapability } from "../ai/capabilities/creative-assistant.capability";
+import { CreativeProductionCapability } from "../ai/capabilities/creative-production.capability";
+import { SafetyReviewCapability } from "../ai/capabilities/safety-review.capability";
 
 const contentInclude = {
   author: true,
@@ -29,13 +30,13 @@ const contentInclude = {
 export class ContentWorkflowEngine {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly productionSkill: CreativeProductionSkill,
-    private readonly assistantSkill: CreativeAssistantSkill,
+    private readonly productionSkill: CreativeProductionCapability,
+    private readonly assistantSkill: CreativeAssistantCapability,
     private readonly contextBuilder: ContextBuilderService,
     private readonly conversations: ConversationArchiveService,
     private readonly skillExecutor: SkillExecutorService,
-    private readonly safetyReviewSkill: SafetyReviewSkill,
-    private readonly contentQualitySkill: ContentQualitySkill
+    private readonly safetyReviewSkill: SafetyReviewCapability,
+    private readonly contentQualitySkill: ContentQualityCapability
   ) {}
 
   rewriteText(body: { title: string; body: string; reasons?: string[] }) {
@@ -184,21 +185,29 @@ export class ContentWorkflowEngine {
     };
   }
 
-  async publish(userId: string, id: string) {
+  async publish(userId: string, id: string, options: { scheduledAt?: string | null; visibility?: ContentVisibility } = {}) {
     const content = await this.getOwnedContent(userId, id);
     if (
       content.status !== DbContentStatus.approved &&
       content.status !== DbContentStatus.updated &&
-      content.status !== DbContentStatus.pending_review
+      content.status !== DbContentStatus.pending_review &&
+      content.status !== DbContentStatus.scheduled
     ) {
       throw new BadRequestException("content must be approved before publish");
     }
 
+    const scheduledAt = this.parseScheduledAt(options.scheduledAt);
+    const visibility = this.parseVisibility(options.visibility);
+    const now = new Date();
+    const shouldSchedule = scheduledAt !== undefined && scheduledAt !== null && scheduledAt.getTime() > now.getTime();
+
     const updated = await this.prisma.content.update({
       where: { id },
       data: {
-        status: DbContentStatus.published,
-        publishedAt: new Date(),
+        status: shouldSchedule ? DbContentStatus.scheduled : DbContentStatus.published,
+        publishedAt: shouldSchedule ? null : now,
+        scheduledAt: shouldSchedule ? scheduledAt : null,
+        visibility,
       },
       include: contentInclude,
     });
@@ -217,7 +226,7 @@ export class ContentWorkflowEngine {
     return toContentSummary(updated);
   }
 
-  // Workflow 负责业务状态和持久化；安全审核能力本身由 SafetyReviewSkill 提供。
+  // Workflow 负责业务状态和持久化；安全审核能力本身由 SafetyReviewCapability 提供。
   private async reviewAndPersist(input: {
     contentId: string;
     title: string;
@@ -307,5 +316,23 @@ export class ContentWorkflowEngine {
     if (count === 0) {
       throw new NotFoundException("content not found");
     }
+  }
+
+  private parseScheduledAt(value: string | null | undefined) {
+    if (value === undefined) return undefined;
+    if (value === null || !value.trim()) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      throw new BadRequestException("invalid scheduledAt");
+    }
+    return date;
+  }
+
+  private parseVisibility(value: ContentVisibility | undefined) {
+    if (value === undefined) return undefined;
+    if (value === "public" || value === "followers" || value === "private") {
+      return value as DbContentVisibility;
+    }
+    throw new BadRequestException("invalid visibility");
   }
 }

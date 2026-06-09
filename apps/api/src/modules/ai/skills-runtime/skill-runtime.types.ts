@@ -1,6 +1,6 @@
 import type { AiJobType, AiSkillKey, DirectGenerateRequest } from "@aicp/shared";
 
-export type SkillRouterAction = "chat" | "run_skill" | "ask_clarification";
+export type SkillRouterAction = "chat" | "run_skill" | "edit_current_content" | "ask_clarification";
 
 export type SkillRouterDecision = {
   action: SkillRouterAction;
@@ -45,6 +45,7 @@ export type ContentProductionLineInput = Partial<DirectGenerateRequest> & {
   currentTitle?: string;
   currentBody?: string;
   historyText?: string;
+  operationId?: string;
 };
 
 export type SkillProgressHooks = {

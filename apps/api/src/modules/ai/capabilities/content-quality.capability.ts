@@ -8,10 +8,9 @@ type ScoreInput = {
 };
 
 @Injectable()
-export class ContentQualitySkill {
+export class ContentQualityCapability {
   constructor(private readonly qualityScoring: QualityScoringAgent) {}
 
-  // 质量评分是分发/推荐参考，不参与安全审核是否通过的判断。
   score(input: ScoreInput): Promise<QualityScoreResult> {
     return this.qualityScoring.run(input);
   }

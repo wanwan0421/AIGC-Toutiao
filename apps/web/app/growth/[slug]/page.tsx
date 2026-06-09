@@ -12,7 +12,7 @@ export default function GrowthGuideDetailPage({ params }: { params: { slug: stri
   if (!guide) notFound();
 
   return (
-    <article className="mx-auto w-full max-w-5xl px-4 py-5 sm:px-6 lg:px-8">
+    <article className="mx-auto w-full max-w-350 px-4 py-5 sm:px-6 lg:px-8">
       <Link href="/growth" className="mb-5 inline-flex items-center gap-2 text-sm font-bold text-slate-500 transition hover:text-rose-600">
         <ArrowLeft className="h-4 w-4" />
         返回成长指南
@@ -27,8 +27,8 @@ export default function GrowthGuideDetailPage({ params }: { params: { slug: stri
         <p className="mt-4 max-w-3xl text-base leading-8 text-slate-600">{guide.summary}</p>
       </header>
 
-      <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_280px]">
-        <main className="rounded-2xl border border-slate-200 bg-white p-7 shadow-sm">
+      <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,840px)_320px]">
+        <main className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm lg:p-7">
           <div className="grid gap-7">
             {guide.sections.map((section) => (
               <section key={section.heading}>
@@ -53,7 +53,7 @@ export default function GrowthGuideDetailPage({ params }: { params: { slug: stri
 
           <Link
             href="/editor"
-            className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-[#ff3b30] px-5 text-sm font-bold text-white shadow-sm transition hover:bg-[#e6352b]"
+            className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-[#ff2442] px-5 text-sm font-bold text-white shadow-sm transition hover:bg-[#e6352b]"
           >
             <PenLine className="h-4 w-4" />
             开始创作

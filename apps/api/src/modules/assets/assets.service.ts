@@ -3,6 +3,7 @@ import { AssetAuditStatus } from "@prisma/client";
 import { toAssetSummary } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
+import { ImageModerationService } from "./image-moderation.service";
 
 type UploadFile = {
   originalname: string;
@@ -23,7 +24,8 @@ export class AssetsService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly storage: StorageService
+    private readonly storage: StorageService,
+    private readonly imageModeration: ImageModerationService
   ) {}
 
   async list(userId: string, contentId?: string) {
@@ -58,6 +60,8 @@ export class AssetsService {
         url: body.url,
         auditStatus: audit.auditStatus,
         auditReason: audit.auditReason,
+        riskLevel: audit.riskLevel,
+        riskTypes: audit.riskTypes,
       },
     });
 
@@ -105,6 +109,8 @@ export class AssetsService {
         },
         auditStatus: audit.auditStatus,
         auditReason: audit.auditReason,
+        riskLevel: audit.riskLevel,
+        riskTypes: audit.riskTypes,
       },
     });
 
@@ -207,9 +213,24 @@ export class AssetsService {
         ? [`命中基础敏感词：${Array.from(new Set(matchedTerms)).slice(0, 5).join("、")}`]
         : [];
 
+    if (reasons.length > 0) {
+      return {
+        auditStatus: AssetAuditStatus.rejected,
+        auditReason: reasons.join("；") || null,
+        riskLevel: "high",
+        riskTypes: ["blocked_term"],
+      };
+    }
+
+    if (this.isImageMimeType(mimeType)) {
+      return this.imageModeration.reviewImage();
+    }
+
     return {
-      auditStatus: reasons.length > 0 ? AssetAuditStatus.rejected : AssetAuditStatus.approved,
-      auditReason: reasons.join("；") || null
+      auditStatus: AssetAuditStatus.approved,
+      auditReason: null,
+      riskLevel: "low",
+      riskTypes: [],
     };
   }
 

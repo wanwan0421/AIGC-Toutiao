@@ -54,6 +54,7 @@ model Content {
   bodyJson     Json?
   excerpt      String?
   status       ContentStatus     @default(draft)
+  visibility   ContentVisibility @default(public)
   tags         String[]          @default([])
   qualityScore Int               @default(0)
   heatScore    Int               @default(0)
@@ -62,6 +63,7 @@ model Content {
   collectCount Int               @default(0)
   clickCount   Int               @default(0)
   publishedAt  DateTime?
+  scheduledAt  DateTime?
   createdAt    DateTime          @default(now())
   updatedAt    DateTime          @updatedAt
   audits       AuditRecord[]
@@ -267,6 +269,8 @@ model Asset {
   metadata    Json?
   auditStatus AssetAuditStatus @default(pending)
   auditReason String?
+  riskLevel   String?
+  riskTypes   String[]         @default([])
   createdAt   DateTime         @default(now())
   uploader    User             @relation(fields: [uploaderId], references: [id])
   contents    ContentAsset[]
@@ -389,9 +393,16 @@ enum ContentStatus {
   pending_review
   approved
   rejected
+  scheduled
   published
   updated
   offline
+}
+
+enum ContentVisibility {
+  public
+  followers
+  private
 }
 
 enum PromptScene {

@@ -3,7 +3,14 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ChangeEvent, useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
-import { ContentStatus, type ContentSummary, type OfficialTopicSummary, type UserProfileSummary } from "@aicp/shared";
+import {
+  ContentStatus,
+  type ContentSummary,
+  type DashboardAnalyticsResponse,
+  type DashboardMetric,
+  type OfficialTopicSummary,
+  type UserProfileSummary,
+} from "@aicp/shared";
 import {
   ArrowRight,
   BadgeCheck,
@@ -20,6 +27,7 @@ import {
 } from "lucide-react";
 import {
   getContents,
+  getDashboardAnalytics,
   getOfficialTopics,
   getRankings,
   sendContactVerificationCode,
@@ -32,6 +40,7 @@ const statusLabel: Record<ContentStatus, string> = {
   [ContentStatus.PendingReview]: "审核中",
   [ContentStatus.Approved]: "待发布",
   [ContentStatus.Rejected]: "未通过",
+  [ContentStatus.Scheduled]: "定时发布",
   [ContentStatus.Published]: "已发布",
   [ContentStatus.Updated]: "有更新",
   [ContentStatus.Offline]: "已下线",
@@ -70,7 +79,18 @@ type AvatarCropState = {
   offsetY: number;
 };
 
-type DataBoardTab = "overview" | "works" | "interaction";
+type DataBoardRange = 7 | 30;
+
+const dashboardMetricLabels: Record<DashboardMetric, string> = {
+  view: "阅读量",
+  click: "访问量",
+  like: "点赞数",
+  collect: "收藏数",
+  comment: "评论数",
+  heat: "热度",
+};
+
+const dashboardMetricOrder: DashboardMetric[] = ["view", "click", "like", "collect", "comment", "heat"];
 
 function loadImageSize(source: string) {
   return new Promise<{ width: number; height: number }>((resolve, reject) => {
@@ -144,19 +164,23 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("正在加载创作数据...");
   const [profileOpen, setProfileOpen] = useState(false);
-  const [boardTab, setBoardTab] = useState<DataBoardTab>("overview");
+  const [dashboardRange, setDashboardRange] = useState<DataBoardRange>(7);
+  const [dashboardMetric, setDashboardMetric] = useState<DashboardMetric>("view");
+  const [dashboardData, setDashboardData] = useState<DashboardAnalyticsResponse | null>(null);
 
   async function loadDashboard() {
     setLoading(true);
     try {
-      const [contentItems, rankingResponse, topicResponse] = await Promise.all([
+      const [contentItems, rankingResponse, topicResponse, dashboardResponse] = await Promise.all([
         getContents(),
         getRankings({ type: "viral", limit: 20 }),
         getOfficialTopics(6),
+        getDashboardAnalytics({ range: dashboardRange, metric: dashboardMetric }),
       ]);
       setContents(contentItems);
       setRankings(rankingResponse.items);
       setTopicCards(topicResponse.items);
+      setDashboardData(dashboardResponse);
       setProfile(sessionProfile);
       setMessage(`已加载 ${contentItems.length} 篇作品`);
     } catch (error) {
@@ -173,7 +197,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     void loadDashboard();
-  }, [sessionProfile]);
+  }, [sessionProfile, dashboardRange, dashboardMetric]);
 
   useEffect(() => {
     setProfile(sessionProfile);
@@ -224,8 +248,8 @@ export default function DashboardPage() {
     [contents]
   );
 
-  const trendPoints = useMemo(() => buildTrendPoints(contents), [contents]);
-  const primaryWork = latestWorks[0];
+  const primaryWork = dashboardData?.latestWork ?? latestWorks[0];
+  const trendPoints = dashboardData?.trend ?? [];
 
   return (
     <div className="min-h-full text-slate-950">
@@ -345,7 +369,20 @@ export default function DashboardPage() {
             <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-lg font-black">数据看板</h2>
-                <span className="text-xs text-slate-400">统计周期：近 7 日（每天 12 点更新）</span>
+              </div>
+              <div className="flex rounded-full bg-slate-100 p-1">
+                {([7, 30] as DataBoardRange[]).map((range) => (
+                  <button
+                    key={range}
+                    type="button"
+                    onClick={() => setDashboardRange(range)}
+                    className={`rounded-full px-3 py-1 text-xs font-bold transition ${
+                      dashboardRange === range ? "bg-white text-rose-600 shadow-sm" : "text-slate-500 hover:text-slate-900"
+                    }`}
+                  >
+                    近{range}日
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -353,44 +390,32 @@ export default function DashboardPage() {
               <LatestWorkCard work={primaryWork} />
               <div className="min-w-0 border-slate-100 lg:border-l lg:pl-7">
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
-                  <div className="flex flex-wrap items-center gap-6 text-sm font-bold">
-                    <DataBoardTabButton active={boardTab === "overview"} onClick={() => setBoardTab("overview")}>
-                      数据总览
-                    </DataBoardTabButton>
-                  </div>
-                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">时间　近7日</span>
+                  <div className="border-b-2 border-rose-500 pb-2 text-sm font-black text-slate-950">笔记数据总览</div>
+                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">
+                    当前指标：{dashboardMetricLabels[dashboardMetric]}
+                  </span>
                 </div>
 
-                {boardTab === "overview" ? (
-                  <>
-                    <TrendLineChart points={trendPoints} />
-                    <div className="mt-5 grid gap-x-10 gap-y-5 sm:grid-cols-2 xl:grid-cols-3">
-                      <DataBoardMetric label="阅读量" value={stats.totalViews} delta={0} accent />
-                      <DataBoardMetric label="主页访问量" value={stats.totalHeat} delta={0} />
-                      <DataBoardMetric label="作品点赞" value={stats.totalLikes} delta={0} />
-                      <DataBoardMetric label="作品收藏" value={stats.totalCollects} delta={0} />
-                      <DataBoardMetric label="作品评论" value={stats.totalComments} delta={0} />
-                      <DataBoardMetric label="粉丝数" value={stats.fans} delta={0} />
-                    </div>
-                  </>
-                ) : boardTab === "works" ? (
-                  <div className="mt-5 grid gap-3">
-                    {latestWorks.length ? (
-                      latestWorks.map((work) => <DashboardWorkRow key={work.id} work={work} />)
-                    ) : (
-                      <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 p-8 text-center text-sm font-semibold text-slate-400">
-                        暂无近期作品，先去创作中心发布第一篇吧。
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                    <InteractionMetric label="点赞" value={stats.totalLikes} />
-                    <InteractionMetric label="收藏" value={stats.totalCollects} />
-                    <InteractionMetric label="评论" value={stats.totalComments} />
-                    <InteractionMetric label="热度" value={stats.totalHeat} />
-                  </div>
-                )}
+                <TrendLineChart
+                  metric={dashboardMetric}
+                  label={dashboardMetricLabels[dashboardMetric]}
+                  points={trendPoints.map((point) => ({ label: point.label, value: point[dashboardMetric] }))}
+                />
+                <div className="mt-5 grid gap-x-4 gap-y-4 sm:grid-cols-2 xl:grid-cols-3">
+                  {dashboardMetricOrder.map((metric) => {
+                    const item = dashboardData?.metrics[metric];
+                    return (
+                      <DataBoardMetric
+                        key={metric}
+                        label={dashboardMetricLabels[metric]}
+                        value={item?.total ?? 0}
+                        delta={item?.delta ?? 0}
+                        active={dashboardMetric === metric}
+                        onClick={() => setDashboardMetric(metric)}
+                      />
+                    );
+                  })}
+                </div>
               </div>
             </div>
           </section>
@@ -504,7 +529,7 @@ export default function DashboardPage() {
             </div>
           </section>
 
-          <section className="rounded-2xl border border-rose-100 bg-white p-5 shadow-sm">
+          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex items-center justify-between">
               <h2 className="text-base font-black">创作成长任务</h2>
               <span className="rounded-full bg-rose-50 px-2 py-1 text-xs font-bold text-rose-600">
@@ -632,32 +657,10 @@ function CreationEntry({
   );
 }
 
-function DataBoardTabButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`border-b-2 pb-2 transition ${
-        active ? "border-rose-500 text-slate-950" : "border-transparent text-slate-400 hover:text-slate-700"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
-
 function LatestWorkCard({ work }: { work?: ContentSummary }) {
   if (!work) {
     return (
-      <div className="flex min-h-72 flex-col justify-between rounded-2xl bg-slate-100 p-5">
+      <div className="flex h-full min-h-72 flex-col justify-between rounded-2xl bg-slate-100 p-5">
         <div>
           <p className="text-sm font-black text-slate-900">最新作品</p>
           <p className="mt-8 text-sm font-semibold text-slate-500">暂无作品数据</p>
@@ -668,10 +671,10 @@ function LatestWorkCard({ work }: { work?: ContentSummary }) {
   }
 
   return (
-    <Link href={`/content/${work.id}`} className="group block overflow-hidden rounded-2xl bg-slate-950 text-white shadow-sm">
-      <div className="relative h-56 bg-slate-200">
+    <Link href={`/content/${work.id}`} className="group block h-full min-h-72 overflow-hidden rounded-2xl bg-slate-950 text-white shadow-sm">
+      <div className="relative h-full min-h-72 bg-slate-200">
         {work.coverUrl ? (
-          <img src={work.coverUrl} alt="" className="h-full object-cover transition duration-300 group-hover:scale-105" />
+          <img src={work.coverUrl} alt="" className="h-full w-full object-cover transition duration-300 group-hover:scale-105" />
         ) : (
           <div className="h-full bg-linear-to-br from-slate-700 via-slate-500 to-rose-400" />
         )}
@@ -705,16 +708,15 @@ function DashboardWorkRow({ work }: { work: ContentSummary }) {
   );
 }
 
-function InteractionMetric({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="rounded-2xl bg-slate-50 p-4">
-      <p className="text-xs font-bold text-slate-400">{label}</p>
-      <p className="mt-2 text-2xl font-black text-slate-950">{compactNumber(value)}</p>
-    </div>
-  );
-}
-
-function TrendLineChart({ points }: { points: Array<{ label: string; value: number }> }) {
+function TrendLineChart({
+  points,
+  label,
+}: {
+  metric: DashboardMetric;
+  label: string;
+  points: Array<{ label: string; value: number }>;
+}) {
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const chartPoints = points.length
     ? points
     : Array.from({ length: 7 }, (_, index) => ({ label: `06-0${index + 1}`, value: index === 0 ? 36 : 24 }));
@@ -728,49 +730,160 @@ function TrendLineChart({ points }: { points: Array<{ label: string; value: numb
   const areaPath = `${path} L 100 96 L 0 96 Z`;
 
   return (
-    <div className="mt-4 h-40">
-      <div className="mb-2 flex justify-end">
-        <span className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-500">
-          <span className="h-2.5 w-2.5 rounded-full bg-blue-500" />
-          播放量
-        </span>
+    <div className="mt-4">
+      <div className="relative h-32">
+        {/* 1. SVG 专职负责画线和面积（移除 circle） */}
+        <svg
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          className="h-28 w-full overflow-visible"
+        >
+          <defs>
+            <linearGradient id="dashboardTrendFill" x1="0" x2="0" y1="0" y2="1">
+              <stop offset="0%" stopColor="#4f7cff" stopOpacity="0.24" />
+              <stop offset="100%" stopColor="#4f7cff" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+          <path d={areaPath} fill="url(#dashboardTrendFill)" />
+          <path
+            d={path}
+            fill="none"
+            stroke="#4f7cff"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="2.2"
+            vectorEffect="non-scaling-stroke"
+          />
+          <line
+            x1="0"
+            x2="100"
+            y1="96"
+            y2="96"
+            stroke="#e5e7eb"
+            strokeDasharray="3 3"
+            vectorEffect="non-scaling-stroke"
+          />
+        </svg>
+
+        {/* 2. 新增：用绝对定位的 HTML DIV 渲染完美的圆形点 */}
+        <div className="absolute left-0 top-0 h-28 w-full pointer-events-none">
+          {coordinates.map((point, index) => (
+            <div
+              key={`dot-${point.label}-${index}`}
+              className="absolute rounded-full bg-[#4f7cff] transition-all duration-200"
+              style={{
+                left: `${point.x}%`,
+                top: `${point.y}%`,
+                // 模拟你原本 r={1.8} 和 hover 变大的效果
+                width: hoverIndex === index ? "8px" : "5px",
+                height: hoverIndex === index ? "8px" : "5px",
+                // 使用 translate 确保圆点中心精确对齐坐标
+                transform: "translate(-50%, -50%)",
+              }}
+            />
+          ))}
+        </div>
+
+        {/* 3. 悬浮交互层保持不变 */}
+        <div
+          className="absolute inset-0 grid"
+          style={{
+            gridTemplateColumns: `repeat(${chartPoints.length}, minmax(0, 1fr))`,
+          }}
+        >
+          {coordinates.map((point, index) => (
+            <div
+              key={point.label}
+              className="relative h-full"
+              onMouseEnter={() => setHoverIndex(index)}
+              onMouseLeave={() => setHoverIndex(null)}
+            >
+              {hoverIndex === index ? (
+                <div
+                  className="absolute top-0 z-10 -translate-x-1/2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-lg"
+                  style={{ left: "50%" }}
+                >
+                  <div className="whitespace-nowrap text-slate-400">
+                    {point.label}
+                  </div>
+                  <div className="mt-1 whitespace-nowrap">
+                    {label}：{compactNumber(point.value)}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
       </div>
-      <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-28 w-full overflow-visible">
-        <defs>
-          <linearGradient id="dashboardTrendFill" x1="0" x2="0" y1="0" y2="1">
-            <stop offset="0%" stopColor="#4f7cff" stopOpacity="0.24" />
-            <stop offset="100%" stopColor="#4f7cff" stopOpacity="0" />
-          </linearGradient>
-        </defs>
-        <path d={areaPath} fill="url(#dashboardTrendFill)" />
-        <path d={path} fill="none" stroke="#4f7cff" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" vectorEffect="non-scaling-stroke" />
-        <line x1="0" x2="100" y1="96" y2="96" stroke="#e5e7eb" strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />
-      </svg>
-      <div className="grid" style={{ gridTemplateColumns: `repeat(${chartPoints.length}, minmax(0, 1fr))` }}>
-        {chartPoints.map((point) => (
-          <span key={point.label} className="text-xs font-semibold text-slate-400">
-            {point.label}
-          </span>
-        ))}
+      <div className="relative mt-2 h-6 w-full">
+        {coordinates.map((point, index) => {
+          // 1. 动态计算间隔：假设大于15天就每隔 5 天显示一次刻度
+          const tickInterval = chartPoints.length > 7 ? 5 : 1;
+
+          // 2. 判断当前点是否需要渲染标签（必须显示第一个和最后一个，中间的按间隔显示）
+          const isFirst = index === 0;
+          const isLast = index === chartPoints.length - 1;
+          const isTick = index % tickInterval === 0;
+
+          // 如果不符合条件，直接不渲染该元素的 DOM
+          if (!isFirst && !isLast && !isTick) return null;
+
+          // 3. 边缘防溢出处理：确保首尾的文字不会超出图表容器被裁切
+          let transform = "translateX(-50%)"; // 默认居中对齐该点
+          if (isFirst)
+            transform = "translateX(0)"; // 第一个点左对齐
+          else if (isLast) transform = "translateX(-100%)"; // 最后一个点右对齐
+
+          return (
+            <span
+              key={`x-axis-${point.label}`}
+              className="absolute whitespace-nowrap text-xs font-semibold text-slate-400"
+              style={{
+                left: `${point.x}%`,
+                transform,
+              }}
+            >
+              {point.label}
+            </span>
+          );
+        })}
       </div>
     </div>
   );
 }
 
-function DataBoardMetric({ label, value, delta, accent = false }: { label: string; value: number; delta: number; accent?: boolean }) {
+function DataBoardMetric({
+  label,
+  value,
+  delta,
+  active = false,
+  onClick,
+}: {
+  label: string;
+  value: number;
+  delta: number;
+  active?: boolean;
+  onClick: () => void;
+}) {
   const deltaClass = delta > 0 ? "text-rose-500" : delta < 0 ? "text-emerald-600" : "text-slate-400";
   const deltaText = delta > 0 ? `+${delta}` : String(delta);
 
   return (
-    <div>
-      <p className={`text-sm font-black ${accent ? "text-rose-600" : "text-slate-950"}`}>{label}</p>
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-2xl border p-4 text-left transition ${
+        active ? "border-rose-200 bg-rose-50/70" : "border-slate-100 bg-white hover:border-slate-200 hover:bg-slate-50"
+      }`}
+    >
+      <p className={`text-sm font-black ${active ? "text-rose-600" : "text-slate-950"}`}>{label}</p>
       <div className="mt-1 flex items-end gap-2">
         <span className="text-2xl font-black text-slate-950">{compactNumber(value)}</span>
         <span className="pb-1 text-xs font-semibold text-slate-400">
-          较前7日 <span className={deltaClass}>{deltaText}</span>
+          环比 <span className={deltaClass}>{deltaText}</span>
         </span>
       </div>
-    </div>
+    </button>
   );
 }
 

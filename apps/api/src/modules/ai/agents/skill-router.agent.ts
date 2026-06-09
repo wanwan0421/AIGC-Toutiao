@@ -1,5 +1,4 @@
 import { Injectable, Logger } from "@nestjs/common";
-import type { AiSkillKey } from "@aicp/shared";
 import { ModelClientService } from "../model-client.service";
 import { parseJsonObject } from "../structured-output";
 import { SkillRegistryService } from "../skills-runtime/skill-registry.service";
@@ -13,7 +12,8 @@ type RouterInput = {
   historyText?: string;
 };
 
-const ALLOWED_SKILLS: AiSkillKey[] = ["content-production-line", "content-safety-reviewer"];
+const ROUTER_UNAVAILABLE_MESSAGE =
+  "暂时无法可靠判断应该调用哪个技能，请稍后重试，或直接使用页面上的对应功能按钮。";
 
 @Injectable()
 export class SkillRouterAgent {
@@ -25,9 +25,8 @@ export class SkillRouterAgent {
   ) {}
 
   async decide(input: RouterInput): Promise<SkillRouterDecision> {
-    const fallback = this.heuristicDecision(input);
     if (!this.modelClient.hasRemoteProvider()) {
-      return fallback;
+      return this.routeUnavailableDecision();
     }
 
     try {
@@ -45,45 +44,54 @@ export class SkillRouterAgent {
         ],
       });
       const parsed = parseJsonObject<Partial<SkillRouterDecision>>(content);
-      const normalized = this.normalize(parsed);
-      return normalized ?? fallback;
+      return this.normalize(parsed) ?? this.routeUnavailableDecision();
     } catch (error) {
-      this.logger.debug(`Skill router fallback used: ${(error as Error).message}`);
-      return fallback;
+      this.logger.debug(`Skill router unavailable: ${(error as Error).message}`);
+      return this.routeUnavailableDecision();
     }
   }
 
   private systemPrompt() {
+    const skills = this.registry.listForRouter();
+    const skillKeys = skills.map((skill) => skill.key).join("|") || "无";
+
     return [
-      "You are the Skill Router for a Chinese AI content creation platform.",
-      "Only return valid JSON. Do not explain your reasoning.",
+      "你是中文 AI 内容创作平台的 Skill Router。",
+      "你只能基于用户输入、当前内容状态，以及下方技能的 key/name/description 判断是否需要调用一个技能。",
+      "路由阶段只能看到技能 key/name/description，不要臆测未列出的技能能力。",
+      "只返回可解析 JSON，不要解释推理过程。",
       "",
-      "Available skills. Only name and description are available at routing time:",
-      JSON.stringify(this.registry.listForRouter(), null, 2),
+      "可用技能（路由阶段仅提供 key/name/description）：",
+      JSON.stringify(skills, null, 2),
       "",
-      "Allowed actions:",
-      "- chat: ordinary conversation, ideation, local writing help, title suggestions, or explanation.",
-      "- ask_clarification: ask a short question when a clearly requested skill lacks required input.",
-      "- run_skill: run exactly one allowed skill.",
+      "可选 action：",
+      "- chat：普通对话、思路碰撞、标题建议、解释说明，或不需要启动后台技能的写作辅助。",
+      "- edit_current_content：局部编辑当前文章，例如扩写、改写、润色、补充某段或选中文本。",
+      "- ask_clarification：用户明显想调用技能但缺少必要输入，或你无法可靠判断要调用哪个技能。",
+      "- run_skill：仅在某个技能 description 与用户意图明确匹配时使用，且一次只选择一个 skillKey。",
       "",
-      "Routing rules:",
-      "- Choose content-production-line only when the user asks for a complete article/draft/package with title, body, tags, cover suggestion, or images.",
-      "- Choose content-safety-reviewer when the user asks to review, audit, check compliance, check publishability, or find safety risks.",
-      "- Do not choose a skill for ordinary questions, partial paragraph/opening generation, title-only generation, selection rewrite, brainstorming, or explanations.",
-      "- If the user clearly wants an audit but there is no title or body, ask_clarification.",
+      "选择规则：",
+      "- 不要用关键词命中来替代语义判断；必须结合技能 description 和当前上下文。",
+      "- 用户只要求局部段落或选中文本改写时，使用 edit_current_content，不要启动完整图文生成。",
+      "- 用户只是聊天、咨询、头脑风暴、标题候选或解释说明时，使用 chat。",
+      "- 用户明确要求完整技能但缺少当前内容或必要素材时，使用 ask_clarification，并给出一个简短中文问题。",
+      "- run_skill 的 skillKey 必须来自可用技能列表；禁止输出未列出的 skillKey。",
       "",
-      "Return JSON shape:",
-      '{"action":"chat|run_skill|ask_clarification","skillKey":"content-production-line|content-safety-reviewer","confidence":0.9,"message":"short user-facing status","input":{}}',
+      "返回 JSON 结构：",
+      `{"action":"chat|run_skill|edit_current_content|ask_clarification","skillKey":"${skillKeys}","confidence":0.9,"message":"简短中文状态或问题","input":{}}`,
     ].join("\n");
   }
 
   private userPrompt(input: RouterInput) {
+    const currentBodySummary = this.summarize(input.currentBody);
     return JSON.stringify(
       {
         message: input.message,
         currentTitle: input.currentTitle ?? "",
-        currentBodySummary: this.summarize(input.currentBody),
+        currentBodySummary,
+        hasCurrentContent: Boolean(input.currentTitle?.trim() || currentBodySummary),
         selectedText: input.selectedText ?? "",
+        hasSelectedText: Boolean(input.selectedText?.trim()),
         recentConversation: input.historyText ?? "",
       },
       null,
@@ -96,6 +104,14 @@ export class SkillRouterAgent {
     if (value.action === "chat") {
       return { action: "chat", confidence: this.confidence(value.confidence), message: value.message };
     }
+    if (value.action === "edit_current_content") {
+      return {
+        action: "edit_current_content",
+        confidence: this.confidence(value.confidence),
+        message: value.message,
+        input: this.recordInput(value.input),
+      };
+    }
     if (value.action === "ask_clarification") {
       return {
         action: "ask_clarification",
@@ -103,59 +119,28 @@ export class SkillRouterAgent {
         message: value.message ?? "我还需要更多信息才能继续。",
       };
     }
-    if (value.action === "run_skill" && ALLOWED_SKILLS.includes(value.skillKey as AiSkillKey)) {
+    if (value.action === "run_skill" && this.registry.isKnownSkillKey(value.skillKey)) {
       return {
         action: "run_skill",
-        skillKey: value.skillKey as AiSkillKey,
+        skillKey: value.skillKey,
         confidence: this.confidence(value.confidence),
         message: value.message,
-        input: value.input && typeof value.input === "object" ? value.input : {},
+        input: this.recordInput(value.input),
       };
     }
     return null;
   }
 
-  private heuristicDecision(input: RouterInput): SkillRouterDecision {
-    const text = input.message.toLowerCase();
-    if (/(审核|合规|能不能发|能否发布|发布前|安全|风险|违规)/.test(input.message)) {
-      const hasContent = Boolean(input.currentTitle?.trim() || input.currentBody?.trim());
-      return hasContent
-        ? {
-            action: "run_skill",
-            skillKey: "content-safety-reviewer",
-            confidence: 0.82,
-            message: "正在为当前内容启动安全审核。",
-          }
-        : {
-            action: "ask_clarification",
-            confidence: 0.82,
-            message: "请先提供要审核的标题或正文，或者在编辑器里写入内容。",
-          };
-    }
+  private routeUnavailableDecision(): SkillRouterDecision {
+    return {
+      action: "ask_clarification",
+      confidence: 0,
+      message: ROUTER_UNAVAILABLE_MESSAGE,
+    };
+  }
 
-    if (/(完整图文|完整文章|一篇|初稿|生成.*正文|生成.*图文|写.*图文|写.*文章|直接生成|根据.*生成)/.test(input.message)) {
-      return {
-        action: "run_skill",
-        skillKey: "content-production-line",
-        confidence: 0.78,
-        message: "正在生成完整图文，并会自动写入编辑器。",
-        input: {
-          theme: input.message,
-        },
-      };
-    }
-
-    if (text.includes("generate") && (text.includes("article") || text.includes("draft"))) {
-      return {
-        action: "run_skill",
-        skillKey: "content-production-line",
-        confidence: 0.72,
-        message: "I will generate a complete draft from this request.",
-        input: { theme: input.message },
-      };
-    }
-
-    return { action: "chat", confidence: 0.6 };
+  private recordInput(value: unknown) {
+    return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
   }
 
   private confidence(value: unknown) {

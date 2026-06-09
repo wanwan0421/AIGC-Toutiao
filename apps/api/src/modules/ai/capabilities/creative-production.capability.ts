@@ -4,15 +4,14 @@ import { DraftGeneratorAgent } from "../agents/draft-generator.agent";
 import { ImageGenerationService } from "../image-generation.service";
 
 @Injectable()
-export class CreativeProductionSkill {
-  private readonly logger = new Logger(CreativeProductionSkill.name);
+export class CreativeProductionCapability {
+  private readonly logger = new Logger(CreativeProductionCapability.name);
 
   constructor(
     private readonly draftGenerator: DraftGeneratorAgent,
     private readonly imageGeneration: ImageGenerationService
   ) {}
 
-  // Skill 只封装模型和图片能力，不管理任务状态；异步进度由 Workflow Job 层处理。
   generateDraft(request: DirectGenerateRequest, options: { trustedContext?: string } = {}) {
     return this.draftGenerator.run(request, options);
   }

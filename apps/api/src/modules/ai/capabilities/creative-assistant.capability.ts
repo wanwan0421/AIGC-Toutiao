@@ -12,7 +12,7 @@ import { AI_PROMPT_NAMES } from "../prompt-names";
 import type { SkillJobRequest, SkillRouterDecision } from "../skills-runtime/skill-runtime.types";
 
 @Injectable()
-export class CreativeAssistantSkill {
+export class CreativeAssistantCapability {
   constructor(
     private readonly contextBuilder: ContextBuilderService,
     private readonly ideaAssistant: IdeaAssistantAgent,
@@ -32,7 +32,6 @@ export class CreativeAssistantSkill {
     return this.selectionRewriter.run(request);
   }
 
-  // 流式创作助手：构建上下文、归档对话，并把模型增量输出转发给前端。
   async *streamChat(request: CreativeChatRequest) {
     const startedAt = Date.now();
     const context = await this.contextBuilder.buildCreativeChatContext(request);
@@ -76,37 +75,61 @@ export class CreativeAssistantSkill {
       historyText,
     });
 
+    let archiveAssistantMessage = true;
+
     if (routerDecision.action === "ask_clarification") {
-      assistantContent = routerDecision.message ?? "我还需要更多信息才能继续。";
+      assistantContent = routerDecision.message ?? "我还需要更多信息，才能判断应该继续聊天、改写当前内容，还是启动完整 Skill。";
       yield {
         type: "delta" as const,
         data: { text: assistantContent },
       };
     } else if (routerDecision.action === "run_skill" && routerDecision.skillKey) {
-      assistantContent = this.skillAssistantMessage(routerDecision);
-      
       const jobRequest = this.buildSkillJobRequest(routerDecision, {
         conversationId,
         request,
         context,
         historyText,
       });
-      
-      yield {
-        type: "skill" as const,
-        data: {
-          type: "skill_started",
-          skillKey: routerDecision.skillKey,
-          message: assistantContent,
+
+      if (!jobRequest) {
+        assistantContent = this.missingSkillInputMessage(routerDecision);
+        yield {
+          type: "delta" as const,
+          data: { text: assistantContent },
+        };
+      } else {
+        assistantContent = this.skillAssistantMessage(routerDecision);
+        yield {
+          type: "skill" as const,
           data: {
-            confidence: routerDecision.confidence,
-            requiresContent: routerDecision.skillKey === "content-safety-reviewer" && !context.persistenceContentId,
+            type: "skill_started",
+            skillKey: routerDecision.skillKey,
+            message: assistantContent,
+            data: {
+              confidence: routerDecision.confidence,
+              requiresContent: routerDecision.skillKey === "content-safety-reviewer" && !context.persistenceContentId,
+            },
+            jobRequest,
           },
-          jobRequest,
-        },
-      };
+        };
+        archiveAssistantMessage = false;
+      }
+    } else if (routerDecision.action === "edit_current_content") {
+      for await (const delta of this.ideaAssistant.stream({
+        message: this.localEditMessage(request.message, context.selectedText),
+        currentTitle: context.currentTitle,
+        currentBody: context.currentBody,
+        bodySummary: context.bodySummary,
+        selectedText: context.selectedText,
+        historyText,
+      })) {
+        assistantContent += delta;
+        yield {
+          type: "delta" as const,
+          data: { text: delta },
+        };
+      }
     } else {
-      // 将模型流式增量原样转发给调用方。
       for await (const delta of this.ideaAssistant.stream({
         message: request.message,
         currentTitle: context.currentTitle,
@@ -123,31 +146,32 @@ export class CreativeAssistantSkill {
       }
     }
 
-    // 同步短期记忆，便于下一轮上下文构建。
     await this.memory.appendShortTermMessages(
       {
         userId: context.userId,
         contentId: context.contentId,
         conversationId,
       },
-      [
-        { role: "user", content: request.message },
-        { role: "assistant", content: assistantContent },
-      ]
+      archiveAssistantMessage
+        ? [
+            { role: "user", content: request.message },
+            { role: "assistant", content: assistantContent },
+          ]
+        : [{ role: "user", content: request.message }]
     );
 
-    // 归档 AI 回复，保证对话历史可追溯。
-    await this.conversations.appendMessage({
-      id: assistantMessageId,
-      conversationId,
-      role: "assistant",
-      content: assistantContent,
-    });
+    if (archiveAssistantMessage) {
+      await this.conversations.appendMessage({
+        id: assistantMessageId,
+        conversationId,
+        role: "assistant",
+        content: assistantContent,
+      });
+    }
 
-    // 记录本次 AI 调用，供后续分析与排障使用。
     await this.logs.log({
       scene: AI_PROMPT_NAMES.creativeChat,
-      model: "creative-assistant-skill",
+      model: "creative-assistant-capability",
       inputSummary: request.message.slice(0, 160),
       output: {
         conversationId,
@@ -170,12 +194,31 @@ export class CreativeAssistantSkill {
   private skillAssistantMessage(decision: SkillRouterDecision) {
     if (decision.message) return decision.message;
     if (decision.skillKey === "content-production-line") {
-      return "已选择：一键图文生成。我会根据你的对话和当前内容生成完整图文，并写入编辑器。";
+      return "已选择：一键完整图文生成。我会根据你的对话和当前内容生成正文、封面和正文配图。";
     }
     if (decision.skillKey === "content-safety-reviewer") {
       return "已选择：内容安全审核。我会检查当前内容是否存在发布风险。";
     }
     return "我会为你执行对应的创作任务。";
+  }
+
+  private localEditMessage(message: string, selectedText?: string) {
+    const targetInstruction = selectedText?.trim()
+      ? "用户已经选中文本，请只围绕选中文本给出可直接替换的改写版本。"
+      : "用户没有选中文本，请先定位最可能需要修改的小节，再给出可应用的局部改写建议。";
+    return [
+      targetInstruction,
+      "不要重新生成完整文章，不要生成标题、标签、封面或配图提示。",
+      "输出应包含：建议替换位置、改写后的正文片段、简短说明。",
+      `用户请求：${message}`,
+    ].join("\n");
+  }
+
+  private missingSkillInputMessage(decision: SkillRouterDecision) {
+    if (decision.skillKey === "content-safety-reviewer") {
+      return "内容安全审核需要先关联当前作品。请先在编辑器中保存或打开要审核的内容后再试。";
+    }
+    return decision.message ?? "这个技能还缺少必要输入，请补充后再试。";
   }
 
   private buildSkillJobRequest(

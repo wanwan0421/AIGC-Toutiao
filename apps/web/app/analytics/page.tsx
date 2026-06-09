@@ -25,6 +25,13 @@ const statusClass: Record<AssetSummary["auditStatus"], string> = {
   rejected: "bg-rose-50 text-rose-700",
 };
 
+const riskLevelLabel: Record<NonNullable<AssetSummary["riskLevel"]>, string> = {
+  unknown: "风险待判定",
+  low: "低风险",
+  medium: "中风险",
+  high: "高风险",
+};
+
 export default function AnalyticsPage() {
   const [assets, setAssets] = useState<AssetSummary[]>([]);
   const [filter, setFilter] = useState<AssetFilter>("all");
@@ -97,10 +104,8 @@ export default function AnalyticsPage() {
 
   return (
     <div className="mx-auto w-full max-w-350 px-4 py-5 sm:px-6 lg:px-8">
-      <div className="mb-7 flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 className="m-0 text-2xl font-black text-slate-950">素材管理</h1>
-        </div>
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+        <h1 className="m-0 text-2xl font-black text-slate-950">素材管理</h1>
         <div className="flex flex-wrap items-center gap-3">
           <input
             ref={imageInputRef}
@@ -127,7 +132,7 @@ export default function AnalyticsPage() {
           <button
             type="button"
             onClick={() => textInputRef.current?.click()}
-            className="inline-flex items-center gap-2 rounded-full bg-[#ff3b30] px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-[#e6352b]"
+            className="inline-flex items-center gap-2 rounded-full bg-[#ff2442] px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-[#e6352b]"
           >
             <FileText className="h-4 w-4" />
             上传文本
@@ -226,7 +231,7 @@ function AssetCard({ asset, onPreview, onDelete }: { asset: AssetSummary; onPrev
         if (event.key === "Enter" || event.key === " ") onPreview();
       }}
     >
-      <div className="aspect-[4/3] bg-slate-100">
+      <div className="aspect-4/3 bg-slate-100">
         {isImage ? (
           <img src={asset.url} alt={asset.fileName} className="h-full w-full object-cover" />
         ) : (
@@ -258,8 +263,22 @@ function AssetCard({ asset, onPreview, onDelete }: { asset: AssetSummary; onPrev
           <span className={`rounded-full px-2.5 py-1 text-xs font-black ${statusClass[asset.auditStatus]}`}>
             {statusLabel[asset.auditStatus]}
           </span>
+          {asset.riskLevel ? (
+            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-black text-slate-500">
+              {riskLevelLabel[asset.riskLevel] ?? asset.riskLevel}
+            </span>
+          ) : null}
           {asset.createdAt ? <span className="text-xs font-semibold text-slate-400">{new Date(asset.createdAt).toLocaleDateString()}</span> : null}
         </div>
+        {asset.riskTypes?.length ? (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {asset.riskTypes.slice(0, 3).map((type) => (
+              <span key={type} className="rounded-full bg-rose-50 px-2 py-0.5 text-[11px] font-bold text-rose-600">
+                {type}
+              </span>
+            ))}
+          </div>
+        ) : null}
         {asset.auditReason ? <p className="mt-3 line-clamp-2 text-xs leading-5 text-rose-500">{asset.auditReason}</p> : null}
       </div>
     </article>
@@ -342,6 +361,16 @@ function AssetPreviewModal({ asset, onClose }: { asset: AssetSummary; onClose: (
           <span className={`rounded-full px-2.5 py-1 text-xs font-black ${statusClass[asset.auditStatus]}`}>
             {statusLabel[asset.auditStatus]}
           </span>
+          {asset.riskLevel ? (
+            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-black text-slate-500">
+              {riskLevelLabel[asset.riskLevel] ?? asset.riskLevel}
+            </span>
+          ) : null}
+          {asset.riskTypes?.map((type) => (
+            <span key={type} className="rounded-full bg-rose-50 px-2.5 py-1 text-xs font-black text-rose-600">
+              {type}
+            </span>
+          ))}
           {asset.auditReason ? <span className="text-xs font-semibold text-rose-500">{asset.auditReason}</span> : null}
         </div>
       </div>

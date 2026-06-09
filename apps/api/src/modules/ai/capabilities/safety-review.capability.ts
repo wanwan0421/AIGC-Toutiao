@@ -16,7 +16,7 @@ type RewriteInput = ReviewInput & {
 };
 
 @Injectable()
-export class SafetyReviewSkill {
+export class SafetyReviewCapability {
   constructor(
     private readonly safetyRules: SafetyRuleEngine,
     private readonly safetyReview: SafetyReviewAgent,
@@ -24,13 +24,15 @@ export class SafetyReviewSkill {
     private readonly complianceRewrite: ComplianceRewriteAgent
   ) {}
 
-  // Skill 只组合安全规则与模型能力，不写任务状态或数据库。
   async review(input: ReviewInput, options: { trustedContext?: string } = {}): Promise<AuditResult> {
     const ruleResult = this.safetyRules.scan(input);
-    const llmResult = await this.safetyReview.run({
-      ...input,
-      ruleRiskItems: ruleResult.riskItems,
-    }, options);
+    const llmResult = await this.safetyReview.run(
+      {
+        ...input,
+        ruleRiskItems: ruleResult.riskItems,
+      },
+      options
+    );
     return this.resultMerger.merge(ruleResult, llmResult, input);
   }
 
@@ -38,7 +40,10 @@ export class SafetyReviewSkill {
     return this.complianceRewrite.run(input, options);
   }
 
-  async reviewWithRewrite(input: ReviewInput, options: { trustedContext?: string } = {}): Promise<{
+  async reviewWithRewrite(
+    input: ReviewInput,
+    options: { trustedContext?: string } = {}
+  ): Promise<{
     audit: AuditResult;
     rewrite: ComplianceRewriteResult | null;
   }> {

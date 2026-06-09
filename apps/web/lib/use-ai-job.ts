@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import type { AiJobEvent, AiJobSnapshot } from "@aicp/shared";
+import { AiJobStatus, type AiJobEvent, type AiJobSnapshot } from "@aicp/shared";
 import { getAiJob, streamAiJobEvents } from "./api";
 
 type AiJobRunHandlers = {
@@ -27,6 +27,8 @@ export function useAiJob() {
 
       const started = await start();
       let latest = started;
+      let terminalHandled = false;
+      let streamAborted = false;
       setJob(started);
       setIsRunning(true);
 
@@ -44,12 +46,14 @@ export function useAiJob() {
             onPartial: handlers.onPartial,
             onWarning: handlers.onWarning,
             onDone: (doneJob, result) => {
+              terminalHandled = true;
               latest = doneJob;
               setJob(doneJob);
               handlers.onDone?.(doneJob, result);
             },
             onError: (message, errorJob) => {
               if (errorJob) {
+                terminalHandled = isTerminalJob(errorJob);
                 latest = errorJob;
                 setJob(errorJob);
               }
@@ -62,13 +66,24 @@ export function useAiJob() {
         if ((error as Error).name !== "AbortError") {
           throw error;
         }
+        streamAborted = true;
       } finally {
-        // SSE 断线只停止前端订阅，不会取消后端任务；用快照恢复最终状态。
         const restored = await getAiJob(started.id).catch(() => latest);
+        latest = restored;
         setJob(restored);
         setIsRunning(false);
         if (abortRef.current === controller) {
           abortRef.current = null;
+        }
+
+        if (!streamAborted && !terminalHandled) {
+          if (restored.status === AiJobStatus.Succeeded) {
+            terminalHandled = true;
+            handlers.onDone?.(restored, restored.result);
+          } else if (restored.status === AiJobStatus.Failed || restored.status === AiJobStatus.Cancelled) {
+            terminalHandled = true;
+            handlers.onError?.(restored.errorMessage ?? terminalErrorMessage(restored), restored);
+          }
         }
       }
 
@@ -89,4 +104,12 @@ export function useAiJob() {
     runJob,
     stopStreaming,
   };
+}
+
+function isTerminalJob(job: AiJobSnapshot) {
+  return job.status === AiJobStatus.Succeeded || job.status === AiJobStatus.Failed || job.status === AiJobStatus.Cancelled;
+}
+
+function terminalErrorMessage(job: AiJobSnapshot) {
+  return job.status === AiJobStatus.Cancelled ? "AI 任务已取消" : "AI 任务失败";
 }

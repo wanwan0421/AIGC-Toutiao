@@ -3,10 +3,14 @@ export enum ContentStatus {
   PendingReview = "pending_review",
   Approved = "approved",
   Rejected = "rejected",
+  Scheduled = "scheduled",
   Published = "published",
   Updated = "updated",
   Offline = "offline"
 }
+
+export type ContentVisibility = "public" | "followers" | "private";
+export type DashboardMetric = "view" | "click" | "like" | "collect" | "comment" | "heat";
 
 export enum PromptScene {
   Generate = "generate",
@@ -205,6 +209,7 @@ export interface ContentSummary {
   excerpt: string;
   coverUrl?: string;
   status: ContentStatus;
+  visibility: ContentVisibility;
   author: CreatorProfile;
   qualityScore: number;
   heatScore: number;
@@ -214,6 +219,7 @@ export interface ContentSummary {
   commentCount?: number;
   createdAt?: string;
   publishedAt?: string;
+  scheduledAt?: string;
   updatedAt: string;
 }
 
@@ -324,9 +330,41 @@ export interface AssetSummary {
   url: string;
   auditStatus: "pending" | "approved" | "rejected";
   auditReason?: string;
+  riskLevel?: "unknown" | "low" | "medium" | "high";
+  riskTypes?: string[];
   createdAt?: string;
   source?: string;
   metadata?: Record<string, unknown>;
+}
+
+export interface DashboardTrendPoint {
+  date: string;
+  label: string;
+  view: number;
+  click: number;
+  like: number;
+  collect: number;
+  comment: number;
+  heat: number;
+}
+
+export interface DashboardMetricOverview {
+  metric: DashboardMetric;
+  label: string;
+  total: number;
+  delta: number;
+}
+
+export interface DashboardAnalyticsResponse {
+  range: 7 | 30;
+  metric: DashboardMetric;
+  period: {
+    start: string;
+    end: string;
+  };
+  latestWork?: ContentSummary;
+  metrics: Record<DashboardMetric, DashboardMetricOverview>;
+  trend: DashboardTrendPoint[];
 }
 
 export interface LocationCandidate {
@@ -404,6 +442,15 @@ export interface CreativeChatDone {
 }
 
 export type AiSkillKey = "content-production-line" | "content-safety-reviewer";
+export type CreativeChatAction = "chat" | "run_skill" | "edit_current_content" | "ask_clarification";
+
+export interface ContentEditPatch {
+  target: string;
+  mode: "replace_selection" | "replace_section" | "append_after_section" | "preview";
+  replacementMarkdown: string;
+  confidence: number;
+  needsConfirmation: boolean;
+}
 
 export type CreativeChatSkillEventType =
   | "skill_started"
@@ -421,6 +468,16 @@ export interface CreativeChatSkillEvent {
   job?: AiJobSnapshot;
   result?: unknown;
   data?: Record<string, unknown>;
+}
+
+export interface GeneratedImageCandidate {
+  asset: GeneratedImageAsset;
+  role: "cover" | "inline";
+  operationId: string;
+  inserted: false;
+  position?: string;
+  prompt?: string;
+  fallbackReason?: string;
 }
 
 export interface DirectGenerateRequest {
@@ -513,6 +570,25 @@ export interface QualityScoreResult {
     compliance: number;
   };
   reason: string;
+}
+
+export interface ContentWorkflowAuditState {
+  content: ContentSummary;
+  audit: AuditResult;
+  rewrite?: ComplianceRewriteResult | null;
+  checkedAt: string;
+}
+
+export interface ContentWorkflowQualityState extends QualityScoreResult {
+  scoredAt: string;
+}
+
+export interface ContentWorkflowState {
+  content: ContentSummary;
+  latestAudit?: ContentWorkflowAuditState;
+  latestQuality?: ContentWorkflowQualityState;
+  canPublish: boolean;
+  publishBlockReason?: string;
 }
 
 export interface ContentApprovalResult {

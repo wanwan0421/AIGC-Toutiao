@@ -15,6 +15,7 @@ type LoadedSkillManifest = SkillManifest & {
   resources: SkillResourceIndex;
 };
 
+type SkillResourceFolder = keyof SkillResourceIndex;
 type SkillResourceSelection = Partial<SkillResourceIndex>;
 
 const FALLBACK_SKILLS: Record<AiSkillKey, SkillManifest> = {
@@ -22,7 +23,7 @@ const FALLBACK_SKILLS: Record<AiSkillKey, SkillManifest> = {
     key: "content-production-line",
     name: "content-production-line",
     description: "根据主题、素材、历史对话或当前编辑内容生成完整图文初稿。",
-    fallbackBody: "按需求理解、正文生成、标题候选、标签、封面建议、配图提示词和图片生成的顺序执行。",
+    fallbackBody: "按需求理解、正文生成、视觉规划、输出归一化、图片生成的顺序执行。",
   },
   "content-safety-reviewer": {
     key: "content-safety-reviewer",
@@ -43,6 +44,10 @@ export class SkillRegistryService {
         description: loaded.description,
       };
     });
+  }
+
+  isKnownSkillKey(value: unknown): value is AiSkillKey {
+    return typeof value === "string" && value in FALLBACK_SKILLS;
   }
 
   loadSkill(key: AiSkillKey): LoadedSkillManifest {
@@ -69,10 +74,6 @@ export class SkillRegistryService {
     };
   }
 
-  instructionsFor(key: AiSkillKey) {
-    return this.loadSkill(key).fallbackBody;
-  }
-
   trustedContextFor(key: AiSkillKey, selection: SkillResourceSelection = {}): SkillTrustedContext {
     const loaded = this.loadSkill(key);
     return {
@@ -84,13 +85,18 @@ export class SkillRegistryService {
     };
   }
 
+  readResourceText(key: AiSkillKey, folder: SkillResourceFolder, file: string) {
+    const root = this.skillRoot(key);
+    return root ? this.readResource(root, folder, file) : "";
+  }
+
   formatTrustedContext(context: SkillTrustedContext) {
     return [
-      `Selected Skill: ${context.skillName} (${context.skillKey})`,
+      `已选择的 Skill：${context.skillName} (${context.skillKey})`,
       "",
       "SKILL.md:",
       context.instructions,
-      context.resourceText ? "\nLoaded Skill resources:" : "",
+      context.resourceText ? "\n已加载的 Skill 资源：" : "",
       context.resourceText,
     ]
       .filter(Boolean)
@@ -121,7 +127,7 @@ export class SkillRegistryService {
     };
   }
 
-  private listFiles(root: string, folder: keyof SkillResourceIndex) {
+  private listFiles(root: string, folder: SkillResourceFolder) {
     const base = join(root, folder);
     if (!existsSync(base)) return [];
 
@@ -142,7 +148,7 @@ export class SkillRegistryService {
     if (!root) return "";
 
     const sections: string[] = [];
-    for (const folder of ["prompts", "references", "scripts", "assets"] as Array<keyof SkillResourceIndex>) {
+    for (const folder of ["prompts", "references", "scripts", "assets"] as SkillResourceFolder[]) {
       for (const file of selection[folder] ?? []) {
         const text = this.readResource(root, folder, file);
         if (text) {
@@ -153,7 +159,7 @@ export class SkillRegistryService {
     return sections.join("\n\n");
   }
 
-  private readResource(root: string, folder: keyof SkillResourceIndex, file: string) {
+  private readResource(root: string, folder: SkillResourceFolder, file: string) {
     const safeFile = file.replace(/\\/g, "/");
     if (safeFile.includes("..")) return "";
     const absolute = join(root, folder, safeFile);

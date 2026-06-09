@@ -12,7 +12,9 @@ import {
   type ComplianceRewriteResult,
   type ContentApprovalResult,
   type ContentSummary,
+  type ContentWorkflowState,
   type DirectGenerateResult,
+  type GeneratedImageCandidate,
   type GeneratedImageAsset,
   type LocationCandidate,
   type OfficialTopicSummary,
@@ -28,6 +30,7 @@ import {
   generateCreativeTitles,
   getAssets,
   getContentDetail,
+  getContentWorkflowState,
   getContents,
   getCreativeConversations,
   getCreativeImageConfigStatus,
@@ -140,7 +143,14 @@ const defaultIdeas = [
 
 const emojiSuggestions = ["😊", "✨", "🔥", "👍", "💡", "📌", "🌿", "🎵"];
 const contentStatements = ["无声明", "取材网络", "个人观点，仅供参考", "引用 AI", "健康医疗分享，仅供参考"];
-const editableDraftStatuses = new Set<ContentStatus>([ContentStatus.Draft, ContentStatus.Updated, ContentStatus.Rejected]);
+const editableDraftStatuses = new Set<ContentStatus>([
+  ContentStatus.Draft,
+  ContentStatus.PendingReview,
+  ContentStatus.Approved,
+  ContentStatus.Scheduled,
+  ContentStatus.Updated,
+  ContentStatus.Rejected,
+]);
 const tonePresets = ["专业严谨", "亲和口语", "种草安利", "克制客观", "活泼轻松"];
 
 function escapeHtml(value: string) {
@@ -282,6 +292,147 @@ function stripDuplicateTitleFromMarkdown(markdown: string, title: string) {
   return markdown;
 }
 
+type GeneratedImagePlacement = {
+  asset: GeneratedImageAsset;
+  position?: string;
+  prompt?: string;
+};
+
+type GeneratedImageFallback = GeneratedImagePlacement & {
+  fallbackReason: string;
+};
+
+function generatedImageFigureHtml(asset: GeneratedImageAsset) {
+  const caption = asset.position || asset.fileName;
+  return `<figure><img src="${asset.url}" alt="${escapeHtml(asset.fileName)}" /><figcaption>${escapeHtml(caption)}</figcaption></figure>`;
+}
+
+function renderGeneratedDraftWithImages(markdown: string, title: string, placements: GeneratedImagePlacement[]) {
+  const bodyMarkdown = stripDuplicateTitleFromMarkdown(markdown, title);
+  const blocks = bodyMarkdown.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
+  if (!blocks.length || !placements.length) {
+    return {
+      bodyMarkdown,
+      html: markdownToEditorHtml(bodyMarkdown),
+      placed: [] as GeneratedImagePlacement[],
+      unplaced: placements.map((placement) => ({
+        ...placement,
+        fallbackReason: blocks.length ? "未能识别正文插入位置" : "正文为空，无法自动插入",
+      })),
+    };
+  }
+
+  const inserts = new Map<number, GeneratedImagePlacement[]>();
+  const placed: GeneratedImagePlacement[] = [];
+  const unplaced: GeneratedImageFallback[] = [];
+
+  placements.forEach((placement, index) => {
+    const resolved = resolveImageInsertIndex(placement.position || placement.asset.position, blocks, index, placements.length);
+    if (resolved.reason) {
+      unplaced.push({ ...placement, fallbackReason: resolved.reason });
+      return;
+    }
+    const insertIndex = Math.max(0, Math.min(blocks.length, resolved.index));
+    inserts.set(insertIndex, [...(inserts.get(insertIndex) ?? []), placement]);
+    placed.push(placement);
+  });
+
+  const html: string[] = [];
+  const beforeFirst = inserts.get(0) ?? [];
+  html.push(...beforeFirst.map((placement) => generatedImageFigureHtml(placement.asset)));
+  for (let index = 0; index < blocks.length; index += 1) {
+    html.push(markdownToEditorHtml(blocks[index]));
+    const afterBlock = inserts.get(index + 1) ?? [];
+    html.push(...afterBlock.map((placement) => generatedImageFigureHtml(placement.asset)));
+  }
+
+  return {
+    bodyMarkdown,
+    html: html.join(""),
+    placed,
+    unplaced,
+  };
+}
+
+function resolveImageInsertIndex(position: string | undefined, blocks: string[], ordinal: number, total: number) {
+  const normalizedPosition = normalizeComparableText(position ?? "");
+  const paragraphBlocks = blocks
+    .map((block, index) => ({ block, index }))
+    .filter(({ block }) => isPlainParagraphBlock(block));
+  const headingBlocks = blocks
+    .map((block, index) => ({ heading: block.replace(/^#{1,6}\s+/, "").trim(), index }))
+    .filter(({ heading }, index) => /^#{1,6}\s+/.test(blocks[index]) && heading);
+
+  const paragraphMatch = (position ?? "").match(/第\s*([一二三四五六七八九十\d]+)\s*段后/);
+  if (paragraphMatch) {
+    const paragraphNumber = parsePositionNumber(paragraphMatch[1]);
+    const target = paragraphNumber ? paragraphBlocks[paragraphNumber - 1] : undefined;
+    return target ? { index: target.index + 1 } : { index: 0, reason: `正文没有第 ${paragraphNumber || paragraphMatch[1]} 段` };
+  }
+
+  const sectionNumberMatch = (position ?? "").match(/第\s*([一二三四五六七八九十\d]+)\s*(?:个)?(?:小节|章节|部分)后/);
+  if (sectionNumberMatch) {
+    const sectionNumber = parsePositionNumber(sectionNumberMatch[1]);
+    const target = sectionNumber ? headingBlocks[sectionNumber - 1] : undefined;
+    return target ? { index: Math.min(blocks.length, target.index + 2) } : { index: 0, reason: `正文没有第 ${sectionNumber || sectionNumberMatch[1]} 个小节` };
+  }
+
+  const headingTarget = headingBlocks.find(({ heading }) => {
+    const normalizedHeading = normalizeComparableText(heading);
+    return normalizedHeading && normalizedPosition.includes(normalizedHeading);
+  });
+  if (headingTarget) {
+    return { index: Math.min(blocks.length, headingTarget.index + 2) };
+  }
+
+  if (/开头|首段/.test(position ?? "")) {
+    const firstParagraph = paragraphBlocks[0];
+    return firstParagraph ? { index: firstParagraph.index + 1 } : { index: 1 };
+  }
+
+  if (/结尾|末尾|文末/.test(position ?? "")) {
+    return { index: blocks.length };
+  }
+
+  if (!position?.trim() || /正文中|中部|中间/.test(position)) {
+    if (!paragraphBlocks.length) return { index: blocks.length };
+    const targetOffset = Math.max(0, Math.min(paragraphBlocks.length - 1, Math.floor(((ordinal + 1) / (total + 1)) * paragraphBlocks.length)));
+    return { index: paragraphBlocks[targetOffset].index + 1 };
+  }
+
+  return { index: 0, reason: `未能识别插入位置：${position}` };
+}
+
+function isPlainParagraphBlock(block: string) {
+  const trimmed = block.trim();
+  return Boolean(trimmed) && !/^#{1,6}\s+/.test(trimmed) && !/^[-*]\s+/.test(trimmed) && !isMarkdownTableLine(trimmed);
+}
+
+function parsePositionNumber(value: string) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  const digits: Record<string, number> = {
+    一: 1,
+    二: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+    九: 9,
+    十: 10,
+  };
+  if (value === "十") return 10;
+  if (value.startsWith("十")) return 10 + (digits[value.slice(1)] ?? 0);
+  if (value.endsWith("十")) return (digits[value.slice(0, -1)] ?? 0) * 10;
+  if (value.includes("十")) {
+    const [tens, ones] = value.split("十");
+    return (digits[tens] ?? 1) * 10 + (digits[ones] ?? 0);
+  }
+  return digits[value] ?? 0;
+}
+
 function normalizeComparableText(value: string) {
   return value
     .replace(/^#+\s*/, "")
@@ -348,6 +499,7 @@ const contentStatusLabels: Record<ContentStatus, string> = {
   [ContentStatus.PendingReview]: "安全审核通过",
   [ContentStatus.Approved]: "审核通过，可发布",
   [ContentStatus.Rejected]: "安全审核未通过",
+  [ContentStatus.Scheduled]: "定时发布",
   [ContentStatus.Published]: "已发布",
   [ContentStatus.Updated]: "已更新，待发布",
   [ContentStatus.Offline]: "已下线",
@@ -523,6 +675,8 @@ export default function EditorPage() {
   const bodyRef = useRef("");
   const contentIdRef = useRef<string | null>(editingContentId);
   const coverAssetIdRef = useRef<string | null>(null);
+  const coverPreviewRef = useRef("");
+  const coverUserTouchedRef = useRef(false);
   const conversationIdRef = useRef<string | undefined>();
   const publishRedirectTimerRef = useRef<number | null>(null);
 
@@ -580,9 +734,11 @@ export default function EditorPage() {
   const [showPreview, setShowPreview] = useState(false);
   const [previewHtml, setPreviewHtml] = useState("");
   const [lastContentSummary, setLastContentSummary] = useState<ContentSummary | null>(null);
+  const [workflowState, setWorkflowState] = useState<ContentWorkflowState | null>(null);
   const [reviewResult, setReviewResult] = useState<ReviewResultState>(null);
   const [reviewRewrite, setReviewRewrite] = useState<ReviewRewrite>(null);
   const [qualityResult, setQualityResult] = useState<QualityScoreResult | null>(null);
+  const [generatedImageCandidates, setGeneratedImageCandidates] = useState<GeneratedImageCandidate[]>([]);
   const [publishSuccess, setPublishSuccess] = useState(false);
   const [imageConfig, setImageConfig] = useState<{
     configured: boolean;
@@ -638,12 +794,16 @@ export default function EditorPage() {
     ContentStatus.Updated,
     ContentStatus.Published,
     ContentStatus.PendingReview,
+    ContentStatus.Scheduled,
   ]);
   const canRunQualityReview = Boolean(editingStatus && qualityReadyStatuses.has(editingStatus));
-  const canPublishContent =
+  const localCanPublishContent =
     editingStatus === ContentStatus.Approved ||
     editingStatus === ContentStatus.Updated ||
-    editingStatus === ContentStatus.PendingReview;
+    editingStatus === ContentStatus.PendingReview ||
+    editingStatus === ContentStatus.Scheduled;
+  const canPublishContent = Boolean(workflowState?.canPublish || localCanPublishContent);
+  const publishBlockReason = workflowState?.publishBlockReason ?? "内容需要先通过安全审核后才能发布";
   const [editorHtmlContent, setEditorHtmlContent] = useState(""); // 当 editorRef 还没挂载时，把 HTML 存在状态里
   const [editorJsonContent, setEditorJsonContent] = useState<Record<string, unknown> | null>(null);
   const [editorResetKey, setEditorResetKey] = useState(0);
@@ -678,6 +838,10 @@ export default function EditorPage() {
   useEffect(() => {
     conversationIdRef.current = conversationId;
   }, [conversationId]);
+
+  useEffect(() => {
+    coverPreviewRef.current = coverPreview;
+  }, [coverPreview]);
 
   useEffect(() => {
     setContentId(editingContentId);
@@ -778,14 +942,18 @@ export default function EditorPage() {
     setCoverAssetId(id);
   }
 
-  function setCoverFromAsset(asset: AssetSummary) {
+  function setCoverFromAsset(asset: AssetSummary, options: { auto?: boolean } = {}) {
+    if (!options.auto) coverUserTouchedRef.current = true;
     rememberCoverAssetId(asset.id);
+    coverPreviewRef.current = asset.url;
     setCoverPreview(asset.url);
     setCoverMode("single");
   }
 
-  function clearCover() {
+  function clearCover(options: { auto?: boolean } = {}) {
+    if (!options.auto) coverUserTouchedRef.current = true;
     rememberCoverAssetId(null);
+    coverPreviewRef.current = "";
     setCoverPreview("");
   }
 
@@ -860,6 +1028,8 @@ export default function EditorPage() {
     setStyle(data.style ?? "");
     setViewpoint(data.viewpoint ?? "");
     setSelectedTopics(normalizeTopicList(data.selectedTopics ?? []));
+    coverUserTouchedRef.current = false;
+    coverPreviewRef.current = data.coverPreview ?? "";
     setCoverPreview(data.coverPreview ?? "");
     const nextCoverAssetId = data.coverAssetId || assetIdFromUrl(data.assetPreviews ?? assets, data.coverPreview ?? "");
     rememberCoverAssetId(nextCoverAssetId);
@@ -902,6 +1072,8 @@ export default function EditorPage() {
       setTitle(detail.title);
       setSelectedTopics(normalizeTopicList(detail.tags));
       setAssetIds(detail.assets.map((item) => item.id));
+      coverUserTouchedRef.current = false;
+      coverPreviewRef.current = detail.coverUrl ?? "";
       setCoverPreview(detail.coverUrl ?? "");
       rememberCoverAssetId(assetIdFromUrl(detail.assets, detail.coverUrl));
       setCoverMode(detail.coverUrl ? "single" : "none");
@@ -911,10 +1083,12 @@ export default function EditorPage() {
         text: detail.body,
       });
 
-      const [draft, conversations] = await Promise.all([
+      const [draft, conversations, state] = await Promise.all([
         getDraft(detail.id).catch(() => null),
         getCreativeConversations(detail.id).catch(() => []),
+        getContentWorkflowState(detail.id).catch(() => null),
       ]);
+      if (state) applyWorkflowState(state);
 
       if (draft) {
         applySnapshot(snapshotFromCloudDraft(draft, detail));
@@ -964,6 +1138,8 @@ export default function EditorPage() {
         setTitle(detail.title);
         setSelectedTopics(normalizeTopicList(detail.tags));
         setAssetIds(detail.assets.map((item) => item.id));
+        coverUserTouchedRef.current = false;
+        coverPreviewRef.current = detail.coverUrl ?? "";
         setCoverPreview(detail.coverUrl ?? "");
         rememberCoverAssetId(assetIdFromUrl(detail.assets, detail.coverUrl));
         setCoverMode(detail.coverUrl ? "single" : "none");
@@ -974,10 +1150,12 @@ export default function EditorPage() {
         });
 
         // 再获取草稿数据
-        const [draft, conversations] = await Promise.all([
+        const [draft, conversations, state] = await Promise.all([
           getDraft(detail.id).catch(() => null),
           getCreativeConversations(detail.id).catch(() => []),
+          getContentWorkflowState(detail.id).catch(() => null),
         ]);
+        if (state) applyWorkflowState(state);
 
         // 如果草稿存在，比较草稿和服务器内容的时间戳，优先恢复较新的内容，避免用户在编辑过程中丢失修改内容
         if (draft) {
@@ -1037,9 +1215,12 @@ export default function EditorPage() {
     setShowPreview(false);
     setPreviewHtml("");
     setLastContentSummary(null);
+    setWorkflowState(null);
     setReviewResult(null);
     setReviewRewrite(null);
     setQualityResult(null);
+    setGeneratedImageCandidates([]);
+    coverUserTouchedRef.current = false;
     writeEditorContent({ html: "", json: null, text: "" });
   }
 
@@ -1060,6 +1241,26 @@ export default function EditorPage() {
       }),
     );
     setDrafts(cards);
+  }
+
+  function applyWorkflowState(state: ContentWorkflowState) {
+    setWorkflowState(state);
+    setEditingStatus(state.content.status);
+    setLastContentSummary(state.content);
+    if (state.latestAudit) {
+      setReviewResult({ content: state.content, audit: state.latestAudit.audit });
+      setReviewRewrite(state.latestAudit.rewrite ?? null);
+    }
+    if (state.latestQuality) {
+      setQualityResult(state.latestQuality);
+    }
+  }
+
+  async function refreshWorkflowState(targetId = contentId ?? lastContentSummary?.id ?? null) {
+    if (!targetId) return null;
+    const state = await getContentWorkflowState(targetId);
+    applyWorkflowState(state);
+    return state;
   }
 
   async function deleteDraftCard(draft: DraftCard) {
@@ -1173,6 +1374,8 @@ export default function EditorPage() {
       bodyJson: editorJson(),
       tags: selectedTopics,
       assetIds: buildContentAssetIds(),
+      visibility,
+      scheduledAt: publishTimeMode === "scheduled" && scheduledAt ? scheduledAt : null,
     };
     if (contentId) {
       const updated = await updateContent(contentId, payload);
@@ -1204,6 +1407,8 @@ export default function EditorPage() {
       bodyJson: data.json,
       tags: data.selectedTopics,
       assetIds: buildContentAssetIds(data.assetIds, data.coverAssetId ?? null, data.coverPreview, data.coverMode),
+      visibility: data.visibility,
+      scheduledAt: data.publishTimeMode === "scheduled" && data.scheduledAt ? data.scheduledAt : null,
     });
     setContentId(created.id);
     contentIdRef.current = created.id;
@@ -1291,40 +1496,102 @@ export default function EditorPage() {
     textInputRef.current?.click();
   }
 
-  function applyGeneratedDraft(result: DirectGenerateResult) {
-    setTitle(result.title);
-    setSelectedTopics(normalizeTopicList(result.tags));
-    setTitleCandidates(result.titleCandidates.filter((candidate) => candidate.title !== result.title));
-    setShowTitleCandidates(false);
-    const cleanMarkdown = stripDuplicateTitleFromMarkdown(result.bodyMarkdown, result.title);
-    writeEditorMarkup(markdownToEditorHtml(cleanMarkdown), cleanMarkdown);
-  }
-
-  function applyGeneratedImageAsset(value: { asset?: GeneratedImageAsset; cover?: boolean }, generatedAssetIds: string[]) {
-    const asset = value.asset;
-    if (!asset) return;
-    generatedAssetIds.push(asset.id);
+  function registerGeneratedAsset(asset: GeneratedImageAsset, generatedAssetIds: string[]) {
+    if (!generatedAssetIds.includes(asset.id)) generatedAssetIds.push(asset.id);
     setAssets((items) => [asset, ...items.filter((item) => item.id !== asset.id)]);
     setAssetIds((items) => Array.from(new Set([...generatedAssetIds, ...items])));
-    if (value.cover) {
-      setCoverFromAsset(asset);
-      setCoverPickerOpen(false);
-    } else {
-      insertAsset(asset);
+  }
+
+  function toGeneratedImageCandidate(
+    value: {
+      asset: GeneratedImageAsset;
+      role: "cover" | "inline";
+      operationId?: string;
+      position?: string;
+      prompt?: string;
+      fallbackReason?: string;
     }
+  ): GeneratedImageCandidate {
+    return {
+      asset: value.asset,
+      role: value.role,
+      operationId: value.operationId ?? `generated-${value.asset.id}`,
+      inserted: false,
+      position: value.position,
+      prompt: value.prompt,
+      fallbackReason: value.fallbackReason,
+    };
   }
 
   function finishGeneratedDraft(generated: DirectGenerateResult, generatedAssetIds: string[]) {
+    setTitle(generated.title);
+    setSelectedTopics(normalizeTopicList(generated.tags));
+    setTitleCandidates(generated.titleCandidates.filter((candidate) => candidate.title !== generated.title));
+    setShowTitleCandidates(false);
+
+    const candidates: GeneratedImageCandidate[] = [];
+    if (generated.coverAsset) {
+      registerGeneratedAsset(generated.coverAsset, generatedAssetIds);
+      if (!coverPreviewRef.current && !coverUserTouchedRef.current) {
+        setCoverFromAsset(generated.coverAsset, { auto: true });
+      } else {
+        candidates.push(
+          toGeneratedImageCandidate({
+            asset: generated.coverAsset,
+            role: "cover",
+            fallbackReason: coverUserTouchedRef.current ? "你已手动设置封面，未自动覆盖" : "当前已有封面，未自动覆盖",
+          })
+        );
+      }
+      setCoverPickerOpen(false);
+    }
+
+    for (const asset of generated.imageAssets ?? []) {
+      registerGeneratedAsset(asset, generatedAssetIds);
+    }
+
+    const rendered = renderGeneratedDraftWithImages(
+      generated.bodyMarkdown,
+      generated.title,
+      (generated.imageAssets ?? []).map((asset) => ({
+        asset,
+        position: asset.position,
+        prompt: asset.prompt,
+      }))
+    );
+    writeEditorMarkup(rendered.html, rendered.bodyMarkdown);
+
+    candidates.push(
+      ...rendered.unplaced.map((item) =>
+        toGeneratedImageCandidate({
+          asset: item.asset,
+          role: "inline",
+          position: item.position ?? item.asset.position,
+          prompt: item.prompt ?? item.asset.prompt,
+          fallbackReason: item.fallbackReason,
+        })
+      )
+    );
+    setGeneratedImageCandidates(candidates);
+
     const ids = [
       generated.coverAsset?.id,
       ...(generated.imageAssets ?? []).map((item) => item.id),
       ...generatedAssetIds,
     ].filter((id): id is string => Boolean(id));
     if (ids.length) setAssetIds((items) => Array.from(new Set([...ids, ...items])));
-    if (generated.coverAsset) {
-      setCoverFromAsset(generated.coverAsset);
-    }
-    setStatusMessage(ids.length ? "AI 初稿和图片已填充到编辑区" : "AI 初稿已填充，图片稍后可单独生成");
+
+    const placedCount = rendered.placed.length;
+    const fallbackCount = candidates.length;
+    setStatusMessage(
+      fallbackCount
+        ? `AI 图文已填充，${placedCount} 张正文配图已自动插入，${fallbackCount} 张图片待确认`
+        : placedCount
+          ? `AI 图文已填充，${placedCount} 张正文配图已自动插入`
+          : generated.coverAsset
+            ? "AI 图文和封面已填充"
+            : "AI 图文已填充，图片稍后可单独生成",
+    );
   }
 
   // 左侧 AI 一键生成初稿：只使用创作简报字段，右侧对话入口不再复用这个直接生成函数。
@@ -1337,6 +1604,7 @@ export default function EditorPage() {
     if (isBusy) return;
 
     setActiveOperation("draft");
+    setGeneratedImageCandidates([]);
     setStatusMessage("AI 正在生成结构化图文...");
     try {
       const generatedAssetIds: string[] = [];
@@ -1355,12 +1623,13 @@ export default function EditorPage() {
           },
           onPartial: (data) => {
             if (data.kind === "draft") {
-              applyGeneratedDraft(data.value as DirectGenerateResult);
-              setStatusMessage("AI 初稿已填充，正在生成图片...");
+              setStatusMessage("AI 初稿和配图方案已生成，正在生成图片...");
             }
 
             if (data.kind === "imageAsset") {
-              applyGeneratedImageAsset(data.value as { asset?: GeneratedImageAsset; cover?: boolean }, generatedAssetIds);
+              const value = data.value as { asset?: GeneratedImageAsset; cover?: boolean; position?: string };
+              if (value.asset && !generatedAssetIds.includes(value.asset.id)) generatedAssetIds.push(value.asset.id);
+              setStatusMessage(value.cover ? "封面图已生成，正在等待完整图文完成..." : `正文配图已生成：${value.position ?? value.asset?.position ?? "正文配图"}`);
             }
           },
           onWarning: (message) => setStatusMessage(message),
@@ -1547,12 +1816,15 @@ export default function EditorPage() {
     return message.role === "assistant" && message.kind !== "skill_status" && Boolean(message.content.trim());
   }
 
+  // 对话式 AI 生成：由对话中的 AI Agent 触发，可能是生成初稿、生成图片等多种技能
+  // 整个过程在对话气泡里展示进度和结果，用户可以在对话里直接确认生成的图片并插入到编辑器中
   async function runConversationDraftJob(event: CreativeChatSkillEvent, assistantId: string) {
     if (!event.job || isBusy) return;
     const generatedAssetIds: string[] = [];
     setActiveOperation("draft");
+    setGeneratedImageCandidates([]);
     setStatusMessage("AI Agent 已选择一键图文生成，正在执行...");
-    setAssistantSkillStatus(assistantId, "正在生成完整图文，并会自动写入编辑器。");
+    setAssistantSkillStatus(assistantId, "正在生成完整图文...");
     try {
       const job = await runJob(
         () => Promise.resolve(event.job!),
@@ -1564,12 +1836,17 @@ export default function EditorPage() {
             }
           },
           onPartial: (data) => {
+            console.log("draft job partial", data);
             if (data.kind === "draft") {
-              applyGeneratedDraft(data.value as DirectGenerateResult);
-              setStatusMessage("AI 初稿已填充，正在生成图片...");
+              setStatusMessage("AI 初稿和配图方案已生成，正在生成图片...");
+              setAssistantSkillStatus(assistantId, "正文和配图方案已生成，正在生成封面与正文配图。");
             }
             if (data.kind === "imageAsset") {
-              applyGeneratedImageAsset(data.value as { asset?: GeneratedImageAsset; cover?: boolean }, generatedAssetIds);
+              const value = data.value as { asset?: GeneratedImageAsset; cover?: boolean; position?: string };
+              if (value.asset && !generatedAssetIds.includes(value.asset.id)) generatedAssetIds.push(value.asset.id);
+              const label = value.cover ? "封面图" : value.position ?? value.asset?.position ?? "正文配图";
+              setStatusMessage(`${label}已生成，正在等待完整图文完成...`);
+              setAssistantSkillStatus(assistantId, `${label}已生成，继续整理完整图文。`);
             }
           },
           onWarning: (message) => {
@@ -1578,7 +1855,7 @@ export default function EditorPage() {
           },
           onDone: (_job, result) => {
             finishGeneratedDraft(result as DirectGenerateResult, generatedAssetIds);
-            setAssistantSkillStatus(assistantId, "已写入编辑器。");
+            setAssistantSkillStatus(assistantId, "完整图文已写入编辑器；正文配图已自动插入，少数无法定位的图片会留在候选区。");
           },
           onError: (message) => {
             setStatusMessage(`AI 生成失败：${message}`);
@@ -1599,6 +1876,8 @@ export default function EditorPage() {
     }
   }
 
+  // 内容安全审核流程：由对话中的 AI Agent 触发，执行后会把审核结果同步到发布流转面板的内容详情里
+  // 用户可以根据审核反馈调整内容后继续提交审核，直到通过为止
   async function runConversationReviewJob(event: CreativeChatSkillEvent, assistantId: string) {
     if (!event.job || isBusy) return;
     setActiveOperation("audit");
@@ -1621,13 +1900,15 @@ export default function EditorPage() {
       if (reviewJob.status !== "succeeded" || !reviewJob.result) {
         throw new Error(reviewJob.errorMessage ?? "内容审核失败");
       }
-      applyReviewJobResult(reviewJob.result as {
+      const reviewed = reviewJob.result as {
         content: ContentSummary;
         audit: AuditResult;
         quality: null;
         rewrite: ReviewRewrite;
-      });
+      };
+      applyReviewJobResult(reviewed);
       setAssistantSkillStatus(assistantId, "内容审核已完成，结果已同步到发布流转面板。");
+      await refreshWorkflowState(reviewed.content.id).catch(() => null);
       await loadDraftCards();
     } catch (error) {
       const message = error instanceof Error ? error.message : "内容审核失败";
@@ -1667,6 +1948,7 @@ export default function EditorPage() {
         rewrite: ReviewRewrite;
       });
       setAssistantSkillStatus(assistantId, "内容审核已完成，结果已同步到发布流转面板。");
+      await refreshWorkflowState(saved.id).catch(() => null);
       await loadDraftCards();
     } catch (error) {
       const message = error instanceof Error ? error.message : "内容审核失败";
@@ -1839,20 +2121,21 @@ export default function EditorPage() {
     }
   }
 
-  function insertAsset(asset: AssetSummary) {
+  function insertAsset(asset: AssetSummary, options: { setCoverIfMissing?: boolean } = {}) {
+    const shouldSetCoverIfMissing = options.setCoverIfMissing ?? true;
     setAssetIds((items) => Array.from(new Set([asset.id, ...items])));
     if (isImageAsset(asset)) {
       if (!editorRef.current) {
         const figure = `<figure><img src="${asset.url}" alt="${escapeHtml(asset.fileName)}" /></figure>`;
         writeEditorMarkup(`${editorHtml()}${figure}`, editorText());
         setStatusMessage("图片素材已插入正文");
-        if (!coverPreview) setCoverFromAsset(asset);
+        if (shouldSetCoverIfMissing && !coverPreview) setCoverFromAsset(asset);
         return;
       } else {
         editorRef.current.insertImage(asset.url, asset.fileName);
       }
       syncBodyFromEditor("图片素材已插入正文");
-      if (!coverPreview) setCoverFromAsset(asset);
+      if (shouldSetCoverIfMissing && !coverPreview) setCoverFromAsset(asset);
       return;
     }
     const preview = textAssetPreview(asset);
@@ -1860,6 +2143,22 @@ export default function EditorPage() {
       markdownToEditorHtml(preview) || `<p>${escapeHtml(preview)}</p>`,
       "文本素材已插入正文",
     );
+  }
+
+  function applyGeneratedImageCandidate(candidate: GeneratedImageCandidate) {
+    if (candidate.role === "cover") {
+      setCoverFromAsset(candidate.asset);
+      setCoverPickerOpen(false);
+      setStatusMessage("候选封面已设为当前封面");
+    } else {
+      insertAsset(candidate.asset, { setCoverIfMissing: false });
+      setStatusMessage("候选配图已插入正文");
+    }
+    setGeneratedImageCandidates((items) => items.filter((item) => item.asset.id !== candidate.asset.id));
+  }
+
+  function dismissGeneratedImageCandidate(assetId: string) {
+    setGeneratedImageCandidates((items) => items.filter((item) => item.asset.id !== assetId));
   }
 
   function removeCover() {
@@ -1911,6 +2210,22 @@ export default function EditorPage() {
   }) {
     setEditingStatus(reviewed.content.status);
     setLastContentSummary(reviewed.content);
+    setWorkflowState((current) => ({
+      content: reviewed.content,
+      latestAudit: {
+        content: reviewed.content,
+        audit: reviewed.audit,
+        rewrite: reviewed.rewrite,
+        checkedAt: new Date().toISOString(),
+      },
+      latestQuality: current?.latestQuality,
+      canPublish:
+        reviewed.content.status === ContentStatus.Approved ||
+        reviewed.content.status === ContentStatus.Updated ||
+        reviewed.content.status === ContentStatus.PendingReview ||
+        reviewed.content.status === ContentStatus.Scheduled,
+      publishBlockReason: reviewed.audit.passed ? undefined : "内容安全审核未通过，请先修改后重新审核",
+    }));
     setReviewResult({ content: reviewed.content, audit: reviewed.audit });
     setQualityResult(null);
     if (reviewed.rewrite && !reviewed.audit.passed) {
@@ -1959,9 +2274,8 @@ export default function EditorPage() {
         rewrite: ReviewRewrite;
       };
 
-      console.log("审核结果", reviewed);
-
       applyReviewJobResult(reviewed);
+      await refreshWorkflowState(reviewed.content.id).catch(() => null);
       await loadDraftCards();
     } catch (error) {
       setStatusMessage(
@@ -2017,6 +2331,21 @@ export default function EditorPage() {
       setLastContentSummary(approved.content);
       setEditingStatus(approved.content.status);
       setQualityResult(approved.quality);
+      setWorkflowState((current) =>
+        current
+          ? {
+              ...current,
+              content: approved.content,
+              latestQuality: { ...approved.quality, scoredAt: new Date().toISOString() },
+              canPublish:
+                approved.content.status === ContentStatus.Approved ||
+                approved.content.status === ContentStatus.Updated ||
+                approved.content.status === ContentStatus.PendingReview ||
+                approved.content.status === ContentStatus.Scheduled,
+            }
+          : current,
+      );
+      await refreshWorkflowState(approved.content.id).catch(() => null);
       setStatusMessage(`质量评估完成，综合得分 ${approved.quality.total}`);
     } catch (error) {
       setStatusMessage(
@@ -2035,8 +2364,13 @@ export default function EditorPage() {
       setStatusMessage("请先保存内容后再发布");
       return;
     }
-    if (!canPublishContent) {
-      setStatusMessage("内容需要先通过安全审核后才能发布");
+    const latestState = await refreshWorkflowState(targetId).catch(() => null);
+    if (latestState && !latestState.canPublish) {
+      setStatusMessage(latestState.publishBlockReason ?? "内容需要先通过安全审核后才能发布");
+      return;
+    }
+    if (!latestState && !canPublishContent) {
+      setStatusMessage(publishBlockReason);
       return;
     }
     if (isBusy) return;
@@ -2044,13 +2378,21 @@ export default function EditorPage() {
     setActiveOperation("publish");
     setStatusMessage("正在发布内容...");
     try {
-      const published = await publishContent(targetId);
+      const publishScheduledAt = publishTimeMode === "scheduled" && scheduledAt ? scheduledAt : null;
+      if (publishTimeMode === "scheduled" && !publishScheduledAt) {
+        setStatusMessage("请先选择定时发布时间");
+        return;
+      }
+      const published = await publishContent(targetId, {
+        visibility,
+        scheduledAt: publishScheduledAt,
+      });
       setLastContentSummary(published);
       setEditingStatus(published.status);
-      setStatusMessage("内容已发布，正在跳转作品管理");
+      setStatusMessage(published.status === ContentStatus.Scheduled ? "定时发布已设置，正在跳转作品管理" : "内容已发布，正在跳转作品管理");
       setPublishSuccess(true);
       publishRedirectTimerRef.current = window.setTimeout(() => {
-        router.push("/content?status=published");
+        router.push(published.status === ContentStatus.Scheduled ? "/content?status=drafts" : "/content?status=published");
       }, 1100);
     } catch (error) {
       setStatusMessage(
@@ -2505,6 +2847,58 @@ export default function EditorPage() {
               </div>
             ) : null}
 
+            {generatedImageCandidates.length ? (
+              <section className="rounded-2xl border border-rose-100 bg-[#fff7f8] p-4">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-black text-slate-900">待插入图片</h3>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">
+                      这些图片未能安全自动落位，可确认后手动插入。
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-rose-600">
+                    {generatedImageCandidates.length} 张
+                  </span>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {generatedImageCandidates.map((candidate) => (
+                    <div key={`${candidate.operationId}-${candidate.asset.id}`} className="overflow-hidden rounded-2xl border border-white bg-white shadow-sm">
+                      <div className="aspect-4/3 overflow-hidden bg-slate-100">
+                        <img src={candidate.asset.url} alt={candidate.asset.fileName} className="h-full w-full object-cover" />
+                      </div>
+                      <div className="p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="truncate text-xs font-bold text-slate-700">
+                            {candidate.role === "cover" ? "封面候选" : candidate.position || "正文配图"}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => dismissGeneratedImageCandidate(candidate.asset.id)}
+                            className="rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                            title="移除候选"
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                        {candidate.fallbackReason ? (
+                          <p className="mt-2 line-clamp-2 text-xs font-medium text-slate-500">
+                            {candidate.fallbackReason}
+                          </p>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => applyGeneratedImageCandidate(candidate)}
+                          className="mt-3 h-9 w-full rounded-xl bg-[#ff2442] px-3 text-xs font-bold text-white transition hover:bg-[#e91635]"
+                        >
+                          {candidate.role === "cover" ? "设为封面" : "插入正文"}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
             <div className="flex flex-wrap gap-2">
               {selectedTopics.map((topic) => {
                 const topicName = normalizeTopicName(topic);
@@ -2643,7 +3037,7 @@ export default function EditorPage() {
                           <img
                             src={coverPreview}
                             alt="封面预览"
-                            onError={clearCover}
+                            onError={() => clearCover({ auto: true })}
                             className="h-24 w-36 rounded-2xl object-cover"
                           />
                           <span className="absolute left-2 top-2 rounded-full bg-black/45 px-2 py-1 text-sm font-semibold text-white">
@@ -3261,47 +3655,6 @@ export default function EditorPage() {
             </div>
           </section>
 
-          <section className="rounded-3xl border border-slate-100 bg-white p-4 shadow-sm">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="font-semibold">伴随式建议</h2>
-              <ShieldCheck size={18} className="text-[#ff2442]" />
-            </div>
-            <div className="space-y-3">
-              {wordCount < 120 ? (
-                <AssistCard
-                  title="补齐正文结构"
-                  desc="当前正文偏短，建议加入场景痛点、方法清单和结尾行动点。"
-                  onClick={() =>
-                    insertHtml(
-                      "<p><strong>补充结构：</strong>场景痛点 - 实用方法 - 读者行动建议。</p>",
-                      "已插入结构建议",
-                    )
-                  }
-                />
-              ) : null}
-              {!coverPreview ? (
-                <AssistCard
-                  title="封面还未准备"
-                  desc="建议添加一张清晰封面，提升信息流识别度。"
-                  onClick={() => openImageUpload("cover")}
-                />
-              ) : null}
-              {body.trim() && !title.trim() ? (
-                <AssistCard
-                  title="可以生成标题"
-                  desc="AI 可基于正文生成 5 个标题候选。"
-                  onClick={() => void generateSmartTitles()}
-                />
-              ) : null}
-              {imageConfig?.configured === false ? (
-                <AssistCard
-                  title="文生图配置未完整"
-                  desc={imageConfig.missing.join("、")}
-                  onClick={() => void loadImageConfig()}
-                />
-              ) : null}
-            </div>
-          </section>
         </aside>
       </div>
 
@@ -3349,9 +3702,13 @@ export default function EditorPage() {
             <div className="mx-auto grid size-14 place-items-center rounded-full bg-emerald-50 text-emerald-600">
               <CheckCircle2 size={30} />
             </div>
-            <h3 className="mt-4 text-xl font-black text-slate-950">已发布</h3>
+            <h3 className="mt-4 text-xl font-black text-slate-950">
+              {editingStatus === ContentStatus.Scheduled ? "已设置定时发布" : "已发布"}
+            </h3>
             <p className="mt-2 text-sm leading-6 text-slate-500">
-              内容已进入已发布列表，正在跳转作品管理。
+              {editingStatus === ContentStatus.Scheduled
+                ? "内容会在设定时间自动发布，正在跳转作品管理。"
+                : "内容已进入已发布列表，正在跳转作品管理。"}
             </p>
           </div>
         </div>
@@ -3381,7 +3738,7 @@ export default function EditorPage() {
                 <img
                   src={coverPreview}
                   alt="封面预览"
-                  onError={clearCover}
+                  onError={() => clearCover({ auto: true })}
                   className="mb-5 h-56 w-full rounded-2xl object-cover"
                 />
               ) : null}
@@ -3519,15 +3876,6 @@ function Field({ label, value, onChange, placeholder }: { label: string; value: 
       <span className="mb-1 block text-sm font-medium text-slate-700">{label}</span>
       <input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-[#ff2442]/50 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10" />
     </label>
-  );
-}
-
-function AssistCard({ title, desc, onClick }: { title: string; desc: string; onClick: () => void }) {
-  return (
-    <button type="button" onClick={onClick} className="w-full rounded-2xl border border-slate-100 bg-slate-50 p-4 text-left hover:border-[#ff2442]/20 hover:bg-[#fff3f5]">
-      <h3 className="font-semibold text-slate-900">{title}</h3>
-      <p className="mt-1 text-sm leading-6 text-slate-500">{desc}</p>
-    </button>
   );
 }
 

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from "@nestjs/common";
 import type { UserProfileSummary } from "@aicp/shared";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
@@ -17,8 +17,17 @@ export class AnalyticsController {
     return this.analyticsService.track({ ...body, userId: user.id });
   }
 
+  @Get("dashboard")
+  getDashboard(
+    @CurrentUser() user: UserProfileSummary,
+    @Query("range") range?: string,
+    @Query("metric") metric?: string
+  ) {
+    return this.analyticsService.getDashboard(user.id, range, metric);
+  }
+
   @Get("contents/:contentId")
-  getContentStats(@Param("contentId") contentId: string) {
-    return this.analyticsService.getContentStats(contentId);
+  getContentStats(@CurrentUser() user: UserProfileSummary, @Param("contentId") contentId: string) {
+    return this.analyticsService.getContentStats(user.id, contentId);
   }
 }
