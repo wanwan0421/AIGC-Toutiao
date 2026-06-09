@@ -10,6 +10,7 @@ import {
   type ContentVisibility,
 } from "@aicp/shared";
 import { Icons } from "../../components/icons";
+import { OptimizedImage } from "../../components/optimized-image";
 import {
   deleteContent,
   getContents,
@@ -116,7 +117,14 @@ function ContentRow({
         className="block h-28 overflow-hidden rounded-2xl bg-slate-100 lg:h-24"
       >
         {content.coverUrl ? (
-          <img src={content.coverUrl} alt="" className="h-full w-full object-cover" />
+          <OptimizedImage
+            src={content.coverUrl}
+            alt=""
+            width={448}
+            height={256}
+            priority={false}
+            className="h-full w-full"
+          />
         ) : (
           <div className="flex h-full w-full items-center justify-center bg-linear-to-br from-rose-50 to-orange-50 text-rose-400">
             <Icons.Image className="h-7 w-7" />

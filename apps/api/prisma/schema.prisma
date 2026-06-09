@@ -22,7 +22,6 @@ model User {
   promptVersions PromptVersion[]
   assets       Asset[]
   contents     Content[]
-  prompts      PromptTemplate[]
   events       UserActionEvent[]
   contentReactions ContentReaction[]
   comments     ContentComment[]
@@ -147,22 +146,7 @@ model ContentVersion {
   @@unique([contentId, version])
 }
 
-model PromptTemplate {
-  id           String      @id @default(cuid())
-  creatorId    String?
-  name         String
-  scene        PromptScene
-  template     String
-  variables    Json?
-  model        String?
-  modelOptions Json?
-  version      Int         @default(1)
-  status       String      @default("active")
-  usageCount   Int         @default(0)
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
-  creator      User?       @relation(fields: [creatorId], references: [id])
-}
+
 
 model PromptDefinition {
   id              String            @id @default(cuid())
@@ -341,7 +325,6 @@ model AiCallLog {
   model        String?
   promptKey    String?
   promptVersionId String?
-  promptTemplateId String?
   inputSummary String?
   output       Json?
   latencyMs    Int?

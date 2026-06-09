@@ -34,6 +34,7 @@ import {
   updateUserProfile
 } from "../../lib/api";
 import { useAuth } from "../../components/auth-provider";
+import { OptimizedImage } from "../../components/optimized-image";
 
 const statusLabel: Record<ContentStatus, string> = {
   [ContentStatus.Draft]: "草稿",
@@ -436,7 +437,7 @@ export default function DashboardPage() {
                     className="flex gap-3 rounded-xl bg-slate-50 p-3 transition hover:bg-rose-50"
                   >
                     {topic.coverUrl ? (
-                      <img src={topic.coverUrl} alt="" className="h-14 w-14 shrink-0 rounded-xl object-cover" />
+                      <OptimizedImage src={topic.coverUrl} alt="" width={56} height={56} priority={false} className="h-14 w-14" />
                     ) : (
                       <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl bg-rose-50 text-rose-500">
                         <Hash className="h-5 w-5" />
@@ -593,7 +594,7 @@ function AvatarBlock({ profile, loading }: { profile: UserProfileSummary | null;
   const initial = profile?.nickname?.slice(0, 1).toUpperCase() || "C";
 
   if (profile?.avatarUrl) {
-    return <img src={profile.avatarUrl} alt={profile.nickname} className="h-18 w-18 rounded-full object-cover ring-4 ring-rose-50" />;
+    return <div className="h-18 w-18 overflow-hidden rounded-full"><OptimizedImage src={profile.avatarUrl} alt={profile.nickname} width={72} height={72} priority={false} /></div>;
   }
 
   return (
@@ -674,7 +675,7 @@ function LatestWorkCard({ work }: { work?: ContentSummary }) {
     <Link href={`/content/${work.id}`} className="group block h-full min-h-72 overflow-hidden rounded-2xl bg-slate-950 text-white shadow-sm">
       <div className="relative h-full min-h-72 bg-slate-200">
         {work.coverUrl ? (
-          <img src={work.coverUrl} alt="" className="h-full w-full object-cover transition duration-300 group-hover:scale-105" />
+          <OptimizedImage src={work.coverUrl} alt="" width={480} height={320} priority={false} className="h-full w-full" />
         ) : (
           <div className="h-full bg-linear-to-br from-slate-700 via-slate-500 to-rose-400" />
         )}
@@ -690,7 +691,7 @@ function DashboardWorkRow({ work }: { work: ContentSummary }) {
     <Link href={`/content/${work.id}`} className="grid gap-3 rounded-2xl border border-slate-100 bg-slate-50 p-3 transition hover:border-rose-100 hover:bg-rose-50/40 sm:grid-cols-[72px_minmax(0,1fr)_auto] sm:items-center">
       <div className="h-18 overflow-hidden rounded-xl bg-slate-100">
         {work.coverUrl ? (
-          <img src={work.coverUrl} alt="" className="h-full w-full object-cover" />
+          <OptimizedImage src={work.coverUrl} alt="" width={144} height={72} priority={false} className="h-full w-full" />
         ) : (
           <div className="h-full w-full bg-linear-to-br from-rose-50 to-orange-50" />
         )}

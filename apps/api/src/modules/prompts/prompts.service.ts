@@ -11,9 +11,6 @@ import {
 import { Prisma } from "@prisma/client";
 import { toApiPromptScene, toDbPromptScene } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
-import { AI_PROMPT_NAMES } from "../ai/prompt-names";
-
-const CANONICAL_PROMPT_KEYS = Object.values(AI_PROMPT_NAMES);
 
 type DefinitionWithActiveVersion = Prisma.PromptDefinitionGetPayload<{ include: { activeVersion: true } }>;
 type VersionRecord = Prisma.PromptVersionGetPayload<Record<string, never>>;
@@ -32,13 +29,9 @@ type VersionInput = {
 
 @Injectable()
 export class PromptsService {
-  private legacySyncDone = false;
-  private legacySyncPromise?: Promise<void>;
-
   constructor(private readonly prisma: PrismaService) {}
 
   async list(scene?: PromptScene) {
-    await this.ensureDefinitionsFromLegacyTemplates();
     const items = await this.prisma.promptDefinition.findMany({
       where: scene ? { scene: toDbPromptScene(scene) } : undefined,
       include: { activeVersion: true },
@@ -48,7 +41,6 @@ export class PromptsService {
   }
 
   async listDefinitions(scene?: PromptScene): Promise<PromptDefinitionSummary[]> {
-    await this.ensureDefinitionsFromLegacyTemplates();
     const items = await this.prisma.promptDefinition.findMany({
       where: scene ? { scene: toDbPromptScene(scene) } : undefined,
       include: { activeVersion: true },
@@ -389,7 +381,6 @@ export class PromptsService {
   }
 
   private async getDefinition(idOrKey: string): Promise<DefinitionWithActiveVersion> {
-    await this.ensureDefinitionsFromLegacyTemplates();
     const definition = await this.prisma.promptDefinition.findFirst({
       where: { OR: [{ id: idOrKey }, { key: idOrKey }] },
       include: { activeVersion: true },
@@ -424,70 +415,6 @@ export class PromptsService {
       where: { definitionId },
       orderBy: { version: "desc" },
     });
-  }
-
-  private async ensureDefinitionsFromLegacyTemplates() {
-    if (this.legacySyncDone) return;
-    if (this.legacySyncPromise) {
-      await this.legacySyncPromise;
-      return;
-    }
-
-    this.legacySyncPromise = this.syncLegacyPromptDefinitions();
-    try {
-      await this.legacySyncPromise;
-      this.legacySyncDone = true;
-    } finally {
-      this.legacySyncPromise = undefined;
-    }
-  }
-
-  private async syncLegacyPromptDefinitions() {
-    const legacyPrompts = await this.prisma.promptTemplate.findMany({
-      where: { name: { in: CANONICAL_PROMPT_KEYS } },
-    });
-    for (const legacy of legacyPrompts) {
-      // Prompt 页会并行请求多个接口，旧表同步必须保持幂等，避免并发 create 撞唯一键。
-      const definition = await this.prisma.promptDefinition.upsert({
-        where: { key: legacy.name },
-        update: {},
-        create: {
-          key: legacy.name,
-          scene: legacy.scene,
-          displayName: legacy.name,
-          status: legacy.status === "disabled" ? "disabled" : "active",
-          usageCount: legacy.usageCount,
-          creatorId: legacy.creatorId,
-        },
-      });
-      const versionNumber = Math.max(1, legacy.version);
-      const version = await this.prisma.promptVersion.upsert({
-        where: { definitionId_version: { definitionId: definition.id, version: versionNumber } },
-        update: {},
-        create: {
-          definitionId: definition.id,
-          version: versionNumber,
-          template: legacy.template,
-          variables: legacy.variables === null ? undefined : legacy.variables,
-          model: legacy.model,
-          modelOptions: legacy.modelOptions === null ? undefined : legacy.modelOptions,
-          status: legacy.status === "active" ? "active" : "draft",
-          createdById: legacy.creatorId,
-          changeNote: "由旧 PromptTemplate 自动迁移",
-        },
-      });
-
-      if (!definition.activeVersionId || legacy.status === "active") {
-        await this.prisma.promptDefinition.update({
-          where: { id: definition.id },
-          data: {
-            activeVersionId: version.id,
-            status: legacy.status === "disabled" ? "disabled" : "active",
-            usageCount: Math.max(definition.usageCount, legacy.usageCount),
-          },
-        });
-      }
-    }
   }
 
   private toLegacyPromptSummary(definition: DefinitionWithActiveVersion) {

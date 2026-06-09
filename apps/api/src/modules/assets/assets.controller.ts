@@ -24,6 +24,16 @@ export class AssetsController {
     return this.assetsService.list(user.id, contentId);
   }
 
+  @Get("admin/pending-audit")
+  listPendingAudit() {
+    return this.assetsService.listAllPendingAudit();
+  }
+
+  @Post("admin/batch-reaudit")
+  batchReaudit() {
+    return this.assetsService.batchReauditAllPending();
+  }
+
   @Post()
   create(
     @CurrentUser() user: UserProfileSummary,

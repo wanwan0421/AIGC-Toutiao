@@ -9,9 +9,8 @@ type ChatMessage = {
 export class ModelClientService {
   private readonly logger = new Logger(ModelClientService.name);
   private readonly apiKey = process.env.ARK_API_KEY;
-  private readonly apiBaseUrl = process.env.ARK_API_URL ?? process.env.ARK_BASE_URL ?? "https://ark.cn-beijing.volces.com/api/v3";
-  private readonly apiUrl = this.resolveApiUrl(this.apiBaseUrl);
-  private readonly defaultModel = process.env.ARK_MODEL_ID ?? process.env.ARK_MODEL;
+  private readonly apiUrl = process.env.ARK_API_URL ?? process.env.ARK_BASE_URL ?? "https://ark.cn-beijing.volces.com/api/v3";
+  private readonly defaultModel = process.env.ARK_MODEL;
 
   hasRemoteProvider() {
     return Boolean(this.apiKey && this.defaultModel);
@@ -41,7 +40,6 @@ export class ModelClientService {
       if (!response.ok) {
         throw new Error(`Ark request failed: ${response.status}`);
       }
-
       const payload = (await response.json()) as Record<string, unknown>;
       const text = this.extractText(payload);
       if (!text) {
@@ -51,6 +49,53 @@ export class ModelClientService {
     } catch (error) {
       this.logger.error(`Ark completion failed: ${(error as Error).message}`);
       throw error;
+    }
+  }
+
+  async describeImage(imageBuffer: Buffer, mimeType: string, prompt: string = "请用简洁中文描述这张图片的内容，不要超过150字"): Promise<string> {
+    if (!this.hasRemoteProvider()) {
+      this.logger.warn("Model provider not configured, skip image description");
+      return "";
+    }
+
+    const base64 = imageBuffer.toString("base64");
+    const dataUri = `data:${mimeType};base64,${base64}`;
+
+    try {
+      console.log("this.apiUrl:", this.apiUrl);
+      const response = await fetch(this.apiUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.modelName(),
+          temperature: 0.1,
+          messages: [
+            {
+              role: "user",
+              content: [
+                { type: "image_url", image_url: { url: dataUri } },
+                { type: "text", text: prompt },
+              ],
+            },
+          ],
+        }),
+      });
+
+      if (!response.ok) {
+        this.logger.warn(`Describe image request failed: ${response.status}`);
+        return "";
+      }
+
+      const result = await response.json() as Record<string, unknown>;
+      const description = this.extractText(result);
+      this.logger.debug(`Image description generated: ${description.slice(0, 80)}`);
+      return description;
+    } catch (error) {
+      this.logger.warn(`Describe image skipped: ${(error as Error).message}`);
+      return "";
     }
   }
 
@@ -70,11 +115,9 @@ export class ModelClientService {
         },
         body: JSON.stringify(this.buildRequestBody(options, true)),
       });
-
       if (!response.ok || !response.body) {
         throw new Error(`Ark stream failed: ${response.status}`);
       }
-
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -105,7 +148,6 @@ export class ModelClientService {
             const delta = this.extractDelta(payload, eventType);
             if (delta) yield delta;
           } catch {
-            // Provider stream fragments may be split across packets.
           }
         }
       }
@@ -185,6 +227,16 @@ export class ModelClientService {
       const message = firstChoice?.message as Record<string, unknown> | undefined;
       const messageContent = message?.content;
       if (typeof messageContent === "string") return messageContent;
+
+      const contentParts = messageContent as unknown;
+      if (Array.isArray(contentParts)) {
+        const textItems = contentParts.filter(
+          (item: unknown) => item && typeof item === "object" && (item as Record<string, unknown>).type === "text"
+        ) as Array<{ type: string; text: string }>;
+        if (textItems.length) {
+          return textItems.map((t) => t.text).join("\n");
+        }
+      }
     }
 
     const output = payload.output;

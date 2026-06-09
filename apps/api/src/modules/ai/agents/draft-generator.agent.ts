@@ -157,7 +157,6 @@ export class DraftGeneratorAgent {
         },
       ],
     });
-    this.logger.log(`${stageName} model output received: ${content.length} chars`);
 
     const parsed = parseJsonObject<T>(content);
     if (!parsed) {

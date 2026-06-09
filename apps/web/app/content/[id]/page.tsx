@@ -8,6 +8,7 @@ import { RichTextRenderer } from "../../editor/rich-text-editor";
 import { ContentDetailActions } from "../../../components/content-detail-actions";
 import { StatusBadge } from "../../../components/status-badge";
 import { useAuth } from "../../../components/auth-provider";
+import { OptimizedImage } from "../../../components/optimized-image";
 import { createContentComment, getContentComments, getContentDetail, toggleUserFollow } from "../../../lib/api";
 
 function formatDate(value?: string) {
@@ -201,7 +202,7 @@ export default function ContentDetailPage({ params }: { params: { id: string } }
         <main className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="relative min-h-72 overflow-hidden bg-slate-100">
             {detail.coverUrl || detail.assets[0]?.url ? (
-              <img src={detail.coverUrl ?? detail.assets[0]?.url} alt="" className="h-72 w-full object-cover" />
+              <OptimizedImage src={detail.coverUrl ?? detail.assets[0]?.url} alt="" width={1200} height={400} priority={true} className="h-72 w-full" />
             ) : (
               <div className="h-72 bg-linear-to-br from-rose-50 via-orange-50 to-slate-100" />
             )}
@@ -265,7 +266,7 @@ export default function ContentDetailPage({ params }: { params: { id: string } }
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <Link href={`/users/${comment.author.id}`} className="flex min-w-0 items-center gap-3">
                       {comment.author.avatarUrl ? (
-                        <img src={comment.author.avatarUrl} alt="" className="h-9 w-9 rounded-full object-cover" />
+                        <div className="h-9 w-9 overflow-hidden rounded-full"><OptimizedImage src={comment.author.avatarUrl} alt="" width={36} height={36} priority={false} /></div>
                       ) : (
                         <div className="grid h-9 w-9 place-items-center rounded-full bg-rose-600 text-xs font-black text-white">
                           {comment.author.nickname.slice(0, 1).toUpperCase()}
@@ -299,7 +300,7 @@ export default function ContentDetailPage({ params }: { params: { id: string } }
             <h2 className="m-0 text-lg font-black text-slate-950">作者信息</h2>
             <Link href={`/users/${detail.author.id}`} className="mt-4 flex items-center gap-3 rounded-2xl p-2 transition hover:bg-slate-50">
               {detail.author.avatarUrl ? (
-                <img src={detail.author.avatarUrl} alt="" className="h-12 w-12 rounded-full object-cover" />
+                <div className="h-12 w-12 overflow-hidden rounded-full"><OptimizedImage src={detail.author.avatarUrl} alt="" width={48} height={48} priority={false} /></div>
               ) : (
                 <div className="grid h-12 w-12 place-items-center rounded-full bg-rose-600 text-sm font-black text-white">
                   {detail.author.nickname.slice(0, 1).toUpperCase()}

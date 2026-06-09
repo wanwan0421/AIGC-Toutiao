@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
 import { mkdir, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, extname, join, normalize, sep } from "node:path";
@@ -22,25 +22,33 @@ export type StoredFile = {
   url: string;
 };
 
+const THUMBNAIL_MAX_WIDTH = 400;
+const THUMBNAIL_MAX_HEIGHT = 400;
+const MAX_THUMBNAIL_SIZE_BYTES = 50 * 1024;
+
 @Injectable()
 export class LocalStorageAdapter {
+  private readonly logger = new Logger(LocalStorageAdapter.name);
   private readonly uploadRoot = getUploadRoot();
   private readonly publicBase = getUploadPublicBase();
 
   async saveBuffer(input: SaveBufferInput): Promise<StoredFile> {
     const mimeType = input.mimeType ?? "application/octet-stream";
-    const fileName = this.buildStoredFileName(input.fileName ?? "asset", mimeType);
+    const finalBuffer = input.buffer;
+    const finalMimeType = mimeType;
+
+    const fileName = this.buildStoredFileName(input.fileName ?? "asset", finalMimeType);
     const folder = this.normalizeFolder(input.folder);
     const storageKey = folder ? `${folder}/${fileName}` : fileName;
     const filePath = this.resolveStoragePath(storageKey);
 
     await mkdir(join(this.uploadRoot, folder), { recursive: true });
-    await writeFile(filePath, input.buffer);
+    await writeFile(filePath, finalBuffer);
 
     return {
       fileName,
-      mimeType,
-      size: input.buffer.byteLength,
+      mimeType: finalMimeType,
+      size: finalBuffer.byteLength,
       storageKey,
       url: `${this.publicBase}/${encodeURI(storageKey)}`,
     };
@@ -122,12 +130,10 @@ export class LocalStorageAdapter {
 export class StorageService {
   constructor(private readonly localAdapter: LocalStorageAdapter) {}
 
-  // 保存Buffer数据到本地存储，并返回访问URL
   saveBuffer(input: SaveBufferInput) {
     return this.localAdapter.saveBuffer(input);
   }
 
-  // 保存远程文件到本地存储，并返回访问URL
   async saveRemoteFile(url: string, input: SaveFileInput = {}) {
     const response = await fetch(url);
     if (!response.ok) {
@@ -145,7 +151,6 @@ export class StorageService {
     });
   }
 
-  // 保存Data URL数据到本地存储，并返回访问URL
   saveDataUrl(dataUrl: string, input: SaveFileInput = {}) {
     const match = dataUrl.match(/^data:([^;,]+)?(;base64)?,(.*)$/s);
     if (!match) {
@@ -164,7 +169,6 @@ export class StorageService {
     });
   }
 
-  // 删除存储对象，支持通过存储键或公共URL指定
   async deleteObject(input: { storageKey?: string | null; url?: string | null }) {
     const storageKey = input.storageKey ?? this.localAdapter.storageKeyFromPublicUrl(input.url);
     if (!storageKey) return false;

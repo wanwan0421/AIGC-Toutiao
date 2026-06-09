@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AssetSummary } from "@aicp/shared";
 import { FileText, Image as ImageIcon, Loader2, ShieldCheck, Trash2, UploadCloud, X } from "lucide-react";
+import { OptimizedImage } from "../../components/optimized-image";
 import { deleteAsset, getAssets, uploadAsset } from "../../lib/api";
 
 type AssetFilter = "all" | "image" | "text";
@@ -233,7 +234,14 @@ function AssetCard({ asset, onPreview, onDelete }: { asset: AssetSummary; onPrev
     >
       <div className="aspect-4/3 bg-slate-100">
         {isImage ? (
-          <img src={asset.url} alt={asset.fileName} className="h-full w-full object-cover" />
+          <OptimizedImage
+            src={asset.url}
+            alt={asset.fileName}
+            width={480}
+            height={360}
+            priority={false}
+            className="h-full w-full"
+          />
         ) : (
           <div className="flex h-full flex-col gap-3 p-5">
             <FileText className="h-8 w-8 text-slate-300" />
@@ -270,16 +278,6 @@ function AssetCard({ asset, onPreview, onDelete }: { asset: AssetSummary; onPrev
           ) : null}
           {asset.createdAt ? <span className="text-xs font-semibold text-slate-400">{new Date(asset.createdAt).toLocaleDateString()}</span> : null}
         </div>
-        {asset.riskTypes?.length ? (
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {asset.riskTypes.slice(0, 3).map((type) => (
-              <span key={type} className="rounded-full bg-rose-50 px-2 py-0.5 text-[11px] font-bold text-rose-600">
-                {type}
-              </span>
-            ))}
-          </div>
-        ) : null}
-        {asset.auditReason ? <p className="mt-3 line-clamp-2 text-xs leading-5 text-rose-500">{asset.auditReason}</p> : null}
       </div>
     </article>
   );
@@ -340,7 +338,16 @@ function AssetPreviewModal({ asset, onClose }: { asset: AssetSummary; onClose: (
 
         <div className="max-h-[64vh] overflow-auto bg-slate-50 p-5">
           {isImage ? (
-            <img src={asset.url} alt={asset.fileName} className="mx-auto max-h-[58vh] max-w-full rounded-2xl object-contain shadow-sm" />
+            <div className="mx-auto max-h-[58vh] max-w-full">
+              <OptimizedImage
+                src={asset.url}
+                alt={asset.fileName}
+                width={1200}
+                height={800}
+                priority={true}
+                className="rounded-2xl object-contain"
+              />
+            </div>
           ) : loadingText ? (
             <div className="grid h-60 place-items-center text-sm font-bold text-slate-400">
               <span className="inline-flex items-center gap-2">
@@ -366,12 +373,6 @@ function AssetPreviewModal({ asset, onClose }: { asset: AssetSummary; onClose: (
               {riskLevelLabel[asset.riskLevel] ?? asset.riskLevel}
             </span>
           ) : null}
-          {asset.riskTypes?.map((type) => (
-            <span key={type} className="rounded-full bg-rose-50 px-2.5 py-1 text-xs font-black text-rose-600">
-              {type}
-            </span>
-          ))}
-          {asset.auditReason ? <span className="text-xs font-semibold text-rose-500">{asset.auditReason}</span> : null}
         </div>
       </div>
     </div>

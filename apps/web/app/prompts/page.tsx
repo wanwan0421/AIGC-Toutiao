@@ -245,12 +245,13 @@ export default function PromptManagePage() {
     try {
       const payload = buildVersionPayload();
       if (selected) {
+        // 更新 Prompt 定义
         await updatePrompt(selected.id, {
           name: form.displayName.trim() || form.key.trim(),
           description: form.description.trim(),
           scene: form.scene,
-          status: "active",
         });
+        // 创建新版本
         await createPromptVersion(selected.key, payload);
         setMessage("新版本已保存并激活，后续 LLM 调用会使用它。");
         await loadDefinitions(selected.key);
