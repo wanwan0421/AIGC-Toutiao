@@ -1,5 +1,4 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
-import { ContentStatus as DbContentStatus } from "@prisma/client";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 
 const POLL_INTERVAL_MS = 60_000;
@@ -30,7 +29,7 @@ export class ScheduledPublishService implements OnModuleInit, OnModuleDestroy {
     try {
       const dueContents = await this.prisma.content.findMany({
         where: {
-          status: DbContentStatus.scheduled,
+          status: 'scheduled',
           scheduledAt: { lte: new Date() },
         },
         select: { id: true },
@@ -46,17 +45,17 @@ export class ScheduledPublishService implements OnModuleInit, OnModuleDestroy {
           .updateMany({
             where: {
               id: content.id,
-              status: DbContentStatus.scheduled,
+              status: 'scheduled',
               scheduledAt: { lte: now },
             },
             data: {
-              status: DbContentStatus.published,
+              status: 'published',
               publishedAt: now,
               scheduledAt: null,
             },
           })
-          .catch((error) => {
-            this.logger.warn(`Scheduled publish skipped for ${content.id}: ${(error as Error).message}`);
+          .catch((error: Error) => {
+            this.logger.warn(`Scheduled publish skipped for ${content.id}: ${error.message}`);
           });
       }
     } finally {
