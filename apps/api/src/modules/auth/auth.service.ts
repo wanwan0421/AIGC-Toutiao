@@ -11,6 +11,7 @@ import {
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { RedisService } from "../../infra/redis/redis.service";
+import { VerificationDeliveryService } from "./verification-delivery.service";
 
 const ACCESS_TOKEN_TTL_SECONDS = 60 * 15;
 const REFRESH_TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7;
@@ -81,7 +82,8 @@ export class AuthService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly redisService: RedisService
+    private readonly redisService: RedisService,
+    private readonly verificationDelivery: VerificationDeliveryService
   ) {}
 
   requestVerificationCode(body: { account: string }, context: RequestContext = {}) {
@@ -268,11 +270,24 @@ export class AuthService {
 
       const verificationCode = this.generateVerificationCode();
       await this.storeVerificationCode(normalized, purpose, verificationCode);
+      let delivery: "console" | "email" | "sms";
+      try {
+        delivery = await this.verificationDelivery.sendVerificationCode({
+          account: normalized.account,
+          kind: normalized.kind,
+          code: verificationCode,
+          ttlSeconds: VERIFICATION_CODE_TTL_SECONDS,
+          purpose,
+        });
+      } catch (error) {
+        await this.clearVerificationCode(normalized, purpose);
+        throw error;
+      }
 
       return {
         ok: true,
-        delivery: process.env.NODE_ENV === "production" ? (normalized.kind === "email" ? "email" : "sms") : "console",
-        ...(process.env.NODE_ENV === "production" ? {} : { verificationCode })
+        delivery,
+        ...(delivery === "console" ? { verificationCode } : {})
       };
     });
   }

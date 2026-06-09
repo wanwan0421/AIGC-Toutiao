@@ -9,8 +9,8 @@ type ChatMessage = {
 export class ModelClientService {
   private readonly logger = new Logger(ModelClientService.name);
   private readonly apiKey = process.env.ARK_API_KEY;
-  private readonly apiUrl = process.env.ARK_API_URL ?? process.env.ARK_BASE_URL ?? "https://ark.cn-beijing.volces.com/api/v3";
-  private readonly defaultModel = process.env.ARK_MODEL;
+  private readonly apiUrl = (process.env.ARK_API_URL ?? process.env.ARK_BASE_URL ?? "https://ark.cn-beijing.volces.com/api/v3/chat/completions").replace(/\/$/, "");
+  private readonly defaultModel = process.env.ARK_MODEL_ID ?? process.env.ARK_MODEL;
 
   hasRemoteProvider() {
     return Boolean(this.apiKey && this.defaultModel);
@@ -62,26 +62,13 @@ export class ModelClientService {
     const dataUri = `data:${mimeType};base64,${base64}`;
 
     try {
-      console.log("this.apiUrl:", this.apiUrl);
       const response = await fetch(this.apiUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${this.apiKey}`,
         },
-        body: JSON.stringify({
-          model: this.modelName(),
-          temperature: 0.1,
-          messages: [
-            {
-              role: "user",
-              content: [
-                { type: "image_url", image_url: { url: dataUri } },
-                { type: "text", text: prompt },
-              ],
-            },
-          ],
-        }),
+        body: JSON.stringify(this.buildImageDescriptionRequestBody(dataUri, prompt)),
       });
 
       if (!response.ok) {
@@ -166,15 +153,6 @@ export class ModelClientService {
     }
   }
 
-  private resolveApiUrl(rawUrl: string) {
-    const normalized = rawUrl.replace(/\/$/, "");
-    if (/\/(chat\/completions|responses)$/i.test(normalized)) {
-      return normalized;
-    }
-
-    return `${normalized}/responses`;
-  }
-
   private buildRequestBody(
     options: {
       messages: ChatMessage[];
@@ -189,7 +167,7 @@ export class ModelClientService {
       ...(stream ? { stream: true } : {}),
     };
 
-    if (/\/chat\/completions$/i.test(this.apiUrl)) {
+    if (this.usesChatCompletions()) {
       return {
         ...base,
         messages: options.messages,
@@ -209,6 +187,45 @@ export class ModelClientService {
         return `${roleLabel}：${message.content}`;
       })
       .join("\n\n");
+  }
+
+  private buildImageDescriptionRequestBody(dataUri: string, prompt: string) {
+    const base = {
+      model: this.modelName(),
+      temperature: 0.1,
+    };
+
+    if (this.usesChatCompletions()) {
+      return {
+        ...base,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "image_url", image_url: { url: dataUri } },
+              { type: "text", text: prompt },
+            ],
+          },
+        ],
+      };
+    }
+
+    return {
+      ...base,
+      input: [
+        {
+          role: "user",
+          content: [
+            { type: "input_image", image_url: dataUri },
+            { type: "input_text", text: prompt },
+          ],
+        },
+      ],
+    };
+  }
+
+  private usesChatCompletions() {
+    return /\/chat\/completions$/i.test(this.apiUrl);
   }
 
   private extractText(payload: Record<string, unknown>) {
