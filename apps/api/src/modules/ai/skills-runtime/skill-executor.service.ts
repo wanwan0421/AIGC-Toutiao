@@ -8,6 +8,7 @@ import type { ContentProductionLineInput, SkillExecutionContext, SkillProgressHo
 type ImageTask = {
   position: string;
   prompt: string;
+  slotId?: string;
   cover?: boolean;
 };
 
@@ -97,6 +98,7 @@ export class SkillExecutorService {
             contentId: request.contentId,
             position: task.position,
             prompt: task.prompt,
+            slotId: task.slotId,
           });
           results[index] = { task, asset };
           await hooks.partial?.("imageAsset", {
@@ -108,6 +110,7 @@ export class SkillExecutorService {
             total,
             position: task.position,
             prompt: task.prompt,
+            slotId: task.slotId,
           });
         } catch (error) {
           await hooks.warning?.(`${task.position}生成失败：${(error as Error).message}`);
@@ -128,10 +131,27 @@ export class SkillExecutorService {
     if (draft.coverSuggestion) {
       imageTasks.push({ position: "封面", prompt: draft.coverSuggestion, cover: true });
     }
-    for (const item of draft.imagePrompts) {
-      imageTasks.push({ position: item.position || "正文中", prompt: item.prompt });
+    for (const item of draft.imagePrompts.slice(0, this.inlineImageLimit(draft))) {
+      imageTasks.push({
+        position: item.position || "正文中",
+        prompt: item.prompt,
+        slotId: item.slotId,
+      });
     }
     return imageTasks;
+  }
+
+  private inlineImageLimit(draft: DirectGenerateResult) {
+    const paragraphs = draft.bodyMarkdown
+      .split(/\n{2,}/)
+      .map((block) => block.trim())
+      .filter((block) => block && !/^#{1,6}\s+/.test(block)).length;
+    const sections = draft.outline.length || (draft.bodyMarkdown.match(/^#{1,6}\s+/gm) ?? []).length;
+
+    if (paragraphs <= 4 && sections <= 2) return 1;
+    if (paragraphs <= 8 && sections <= 3) return 2;
+    if (paragraphs <= 14 && sections <= 5) return 3;
+    return 4;
   }
 
   private productionTrustedContext() {

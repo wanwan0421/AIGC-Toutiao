@@ -296,6 +296,7 @@ type GeneratedImagePlacement = {
   asset: GeneratedImageAsset;
   position?: string;
   prompt?: string;
+  slotId?: string;
 };
 
 type GeneratedImageFallback = GeneratedImagePlacement & {
@@ -307,13 +308,71 @@ function generatedImageFigureHtml(asset: GeneratedImageAsset) {
   return `<figure><img src="${asset.url}" alt="${escapeHtml(asset.fileName)}" /><figcaption>${escapeHtml(caption)}</figcaption></figure>`;
 }
 
+function imageSlotPattern() {
+  return /<!--\s*aicp-image-slot:([a-zA-Z0-9_-]+)\s*-->/g;
+}
+
+function stripImageSlotMarkers(markdown: string) {
+  return markdown
+    .replace(imageSlotPattern(), "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function renderGeneratedDraftWithImages(markdown: string, title: string, placements: GeneratedImagePlacement[]) {
   const bodyMarkdown = stripDuplicateTitleFromMarkdown(markdown, title);
-  const blocks = bodyMarkdown.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
+  const slotMatches = Array.from(bodyMarkdown.matchAll(imageSlotPattern()));
+  if (slotMatches.length) {
+    const placementBySlot = new Map(
+      placements
+        .filter((placement) => placement.slotId || placement.asset.slotId)
+        .map((placement) => [placement.slotId ?? placement.asset.slotId ?? "", placement]),
+    );
+    const placed: GeneratedImagePlacement[] = [];
+    const usedAssetIds = new Set<string>();
+    const html: string[] = [];
+    let cursor = 0;
+
+    for (const match of slotMatches) {
+      const [marker, slotId] = match;
+      const before = bodyMarkdown.slice(cursor, match.index);
+      const cleanBefore = stripImageSlotMarkers(before);
+      if (cleanBefore) html.push(markdownToEditorHtml(cleanBefore));
+
+      const placement = placementBySlot.get(slotId);
+      if (placement && !usedAssetIds.has(placement.asset.id)) {
+        html.push(generatedImageFigureHtml(placement.asset));
+        placed.push(placement);
+        usedAssetIds.add(placement.asset.id);
+      }
+      cursor = (match.index ?? 0) + marker.length;
+    }
+
+    const rest = stripImageSlotMarkers(bodyMarkdown.slice(cursor));
+    if (rest) html.push(markdownToEditorHtml(rest));
+
+    const cleanBodyMarkdown = stripImageSlotMarkers(bodyMarkdown);
+    return {
+      bodyMarkdown: cleanBodyMarkdown,
+      html: html.join("") || markdownToEditorHtml(cleanBodyMarkdown),
+      placed,
+      unplaced: placements
+        .filter((placement) => !usedAssetIds.has(placement.asset.id))
+        .map((placement) => ({
+          ...placement,
+          fallbackReason: placement.slotId || placement.asset.slotId
+            ? `正文中没有匹配的图片槽位：${placement.slotId ?? placement.asset.slotId}`
+            : "图片缺少槽位标识，未自动插入",
+        })),
+    };
+  }
+
+  const cleanMarkdown = stripImageSlotMarkers(bodyMarkdown);
+  const blocks = cleanMarkdown.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
   if (!blocks.length || !placements.length) {
     return {
-      bodyMarkdown,
-      html: markdownToEditorHtml(bodyMarkdown),
+      bodyMarkdown: cleanMarkdown,
+      html: markdownToEditorHtml(cleanMarkdown),
       placed: [] as GeneratedImagePlacement[],
       unplaced: placements.map((placement) => ({
         ...placement,
@@ -347,7 +406,7 @@ function renderGeneratedDraftWithImages(markdown: string, title: string, placeme
   }
 
   return {
-    bodyMarkdown,
+    bodyMarkdown: cleanMarkdown,
     html: html.join(""),
     placed,
     unplaced,
@@ -552,6 +611,62 @@ function payloadStringArray(payload: Record<string, unknown>, key: string, fallb
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : fallback;
 }
 
+function payloadGeneratedImageCandidates(payload: Record<string, unknown>) {
+  const value = payload.generatedImageCandidates;
+  if (!Array.isArray(value)) return [];
+  return value.map(toGeneratedImageCandidateFromPayload).filter((item): item is GeneratedImageCandidate => Boolean(item));
+}
+
+function toGeneratedImageCandidateFromPayload(value: unknown): GeneratedImageCandidate | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const asset = record.asset;
+  if (!asset || typeof asset !== "object" || Array.isArray(asset)) return null;
+  const assetRecord = asset as Record<string, unknown>;
+  const id = payloadCandidateString(assetRecord, "id");
+  const fileName = payloadCandidateString(assetRecord, "fileName");
+  const mimeType = payloadCandidateString(assetRecord, "mimeType");
+  const url = payloadCandidateString(assetRecord, "url");
+  if (!id || !fileName || !mimeType || !url) return null;
+
+  return {
+    asset: {
+      id,
+      fileName,
+      mimeType,
+      url,
+      auditStatus: payloadCandidateString(assetRecord, "auditStatus") === "rejected" ? "rejected" : payloadCandidateString(assetRecord, "auditStatus") === "approved" ? "approved" : "pending",
+      auditReason: payloadCandidateString(assetRecord, "auditReason") || undefined,
+      riskLevel: normalizeRiskLevel(assetRecord.riskLevel),
+      riskTypes: Array.isArray(assetRecord.riskTypes) ? assetRecord.riskTypes.filter((item): item is string => typeof item === "string") : undefined,
+      createdAt: payloadCandidateString(assetRecord, "createdAt") || undefined,
+      source: payloadCandidateString(assetRecord, "source") || undefined,
+      metadata: assetRecord.metadata && typeof assetRecord.metadata === "object" && !Array.isArray(assetRecord.metadata)
+        ? (assetRecord.metadata as Record<string, unknown>)
+        : undefined,
+      position: payloadCandidateString(assetRecord, "position") || "正文配图",
+      prompt: payloadCandidateString(assetRecord, "prompt"),
+      slotId: payloadCandidateString(assetRecord, "slotId") || undefined,
+    },
+    role: record.role === "cover" ? "cover" : "inline",
+    operationId: payloadCandidateString(record, "operationId") || `generated-${id}`,
+    inserted: false,
+    position: payloadCandidateString(record, "position") || undefined,
+    prompt: payloadCandidateString(record, "prompt") || undefined,
+    slotId: payloadCandidateString(record, "slotId") || undefined,
+    fallbackReason: payloadCandidateString(record, "fallbackReason") || undefined,
+  };
+}
+
+function payloadCandidateString(payload: Record<string, unknown>, key: string) {
+  const value = payload[key];
+  return typeof value === "string" ? value : "";
+}
+
+function normalizeRiskLevel(value: unknown) {
+  return value === "low" || value === "medium" || value === "high" || value === "unknown" ? value : undefined;
+}
+
 function payloadJson(payload: Record<string, unknown>, key: string) {
   const value = payload[key];
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
@@ -655,6 +770,7 @@ function snapshotFromCloudDraft(draft: CloudDraft, detail: ContentDetailForDraft
     visibility: payloadVisibility(payload),
     originalStatement: payloadBoolean(payload, "originalStatement", false),
     contentStatement: payloadString(payload, "contentStatement", "无声明"),
+    generatedImageCandidates: payloadGeneratedImageCandidates(payload),
   };
 }
 
@@ -678,6 +794,7 @@ export default function EditorPage() {
   const coverPreviewRef = useRef("");
   const coverUserTouchedRef = useRef(false);
   const conversationIdRef = useRef<string | undefined>();
+  const generatedImageCandidatesRef = useRef<GeneratedImageCandidate[]>([]);
   const publishRedirectTimerRef = useRef<number | null>(null);
 
   const [contentId, setContentId] = useState<string | null>(editingContentId);
@@ -844,6 +961,10 @@ export default function EditorPage() {
   }, [coverPreview]);
 
   useEffect(() => {
+    generatedImageCandidatesRef.current = generatedImageCandidates;
+  }, [generatedImageCandidates]);
+
+  useEffect(() => {
     setContentId(editingContentId);
   }, [editingContentId]);
 
@@ -984,6 +1105,16 @@ export default function EditorPage() {
     );
   }
 
+  function rememberGeneratedImageCandidates(
+    next:
+      | GeneratedImageCandidate[]
+      | ((items: GeneratedImageCandidate[]) => GeneratedImageCandidate[]),
+  ) {
+    const value = typeof next === "function" ? next(generatedImageCandidatesRef.current) : next;
+    generatedImageCandidatesRef.current = value;
+    setGeneratedImageCandidates(value);
+  }
+
   function snapshot(): DraftCache {
     const currentBody = editorText();
     const currentHtml = editorHtml();
@@ -1009,6 +1140,7 @@ export default function EditorPage() {
       visibility,
       originalStatement,
       contentStatement,
+      generatedImageCandidates: generatedImageCandidatesRef.current,
     };
   }
 
@@ -1041,6 +1173,7 @@ export default function EditorPage() {
     setVisibility(data.visibility ?? "public");
     setOriginalStatement(data.originalStatement ?? false);
     setContentStatement(data.contentStatement ?? "无声明");
+    rememberGeneratedImageCandidates(data.generatedImageCandidates ?? []);
     writeEditorContent({ html: nextHtml, json: data.json ?? null, text: nextBody });
   }
 
@@ -1219,7 +1352,7 @@ export default function EditorPage() {
     setReviewResult(null);
     setReviewRewrite(null);
     setQualityResult(null);
-    setGeneratedImageCandidates([]);
+    rememberGeneratedImageCandidates([]);
     coverUserTouchedRef.current = false;
     writeEditorContent({ html: "", json: null, text: "" });
   }
@@ -1509,6 +1642,7 @@ export default function EditorPage() {
       operationId?: string;
       position?: string;
       prompt?: string;
+      slotId?: string;
       fallbackReason?: string;
     }
   ): GeneratedImageCandidate {
@@ -1519,6 +1653,7 @@ export default function EditorPage() {
       inserted: false,
       position: value.position,
       prompt: value.prompt,
+      slotId: value.slotId,
       fallbackReason: value.fallbackReason,
     };
   }
@@ -1557,6 +1692,7 @@ export default function EditorPage() {
         asset,
         position: asset.position,
         prompt: asset.prompt,
+        slotId: asset.slotId,
       }))
     );
     writeEditorMarkup(rendered.html, rendered.bodyMarkdown);
@@ -1568,11 +1704,12 @@ export default function EditorPage() {
           role: "inline",
           position: item.position ?? item.asset.position,
           prompt: item.prompt ?? item.asset.prompt,
+          slotId: item.slotId ?? item.asset.slotId,
           fallbackReason: item.fallbackReason,
         })
       )
     );
-    setGeneratedImageCandidates(candidates);
+    rememberGeneratedImageCandidates(candidates);
 
     const ids = [
       generated.coverAsset?.id,
@@ -1580,6 +1717,8 @@ export default function EditorPage() {
       ...generatedAssetIds,
     ].filter((id): id is string => Boolean(id));
     if (ids.length) setAssetIds((items) => Array.from(new Set([...ids, ...items])));
+    scheduleLocalDraftSave();
+    scheduleCloudAutosave();
 
     const placedCount = rendered.placed.length;
     const fallbackCount = candidates.length;
@@ -1604,7 +1743,7 @@ export default function EditorPage() {
     if (isBusy) return;
 
     setActiveOperation("draft");
-    setGeneratedImageCandidates([]);
+    rememberGeneratedImageCandidates([]);
     setStatusMessage("AI 正在生成结构化图文...");
     try {
       const generatedAssetIds: string[] = [];
@@ -1822,7 +1961,7 @@ export default function EditorPage() {
     if (!event.job || isBusy) return;
     const generatedAssetIds: string[] = [];
     setActiveOperation("draft");
-    setGeneratedImageCandidates([]);
+    rememberGeneratedImageCandidates([]);
     setStatusMessage("AI Agent 已选择一键图文生成，正在执行...");
     setAssistantSkillStatus(assistantId, "正在生成完整图文...");
     try {
@@ -1836,13 +1975,12 @@ export default function EditorPage() {
             }
           },
           onPartial: (data) => {
-            console.log("draft job partial", data);
             if (data.kind === "draft") {
               setStatusMessage("AI 初稿和配图方案已生成，正在生成图片...");
               setAssistantSkillStatus(assistantId, "正文和配图方案已生成，正在生成封面与正文配图。");
             }
             if (data.kind === "imageAsset") {
-              const value = data.value as { asset?: GeneratedImageAsset; cover?: boolean; position?: string };
+              const value = data.value as { asset?: GeneratedImageAsset; cover?: boolean; position?: string; slotId?: string };
               if (value.asset && !generatedAssetIds.includes(value.asset.id)) generatedAssetIds.push(value.asset.id);
               const label = value.cover ? "封面图" : value.position ?? value.asset?.position ?? "正文配图";
               setStatusMessage(`${label}已生成，正在等待完整图文完成...`);
@@ -2027,7 +2165,9 @@ export default function EditorPage() {
                   ? (() => {
                       const insertable = shouldOfferChatActions(item);
                       hasInsertableMessage = hasInsertableMessage || insertable;
-                      return { ...item, id: event.messageId, insertable };
+                      return item.kind === "skill_status"
+                        ? { ...item, insertable: false }
+                        : { ...item, id: event.messageId, insertable };
                     })()
                   : item,
               ),
@@ -2154,11 +2294,15 @@ export default function EditorPage() {
       insertAsset(candidate.asset, { setCoverIfMissing: false });
       setStatusMessage("候选配图已插入正文");
     }
-    setGeneratedImageCandidates((items) => items.filter((item) => item.asset.id !== candidate.asset.id));
+    rememberGeneratedImageCandidates((items) => items.filter((item) => item.asset.id !== candidate.asset.id));
+    scheduleLocalDraftSave();
+    scheduleCloudAutosave();
   }
 
   function dismissGeneratedImageCandidate(assetId: string) {
-    setGeneratedImageCandidates((items) => items.filter((item) => item.asset.id !== assetId));
+    rememberGeneratedImageCandidates((items) => items.filter((item) => item.asset.id !== assetId));
+    scheduleLocalDraftSave();
+    scheduleCloudAutosave();
   }
 
   function removeCover() {

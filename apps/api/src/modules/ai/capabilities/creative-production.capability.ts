@@ -20,7 +20,7 @@ export class CreativeProductionCapability {
     userId?: string;
     contentId?: string;
     coverSuggestion?: string;
-    imagePrompts: Array<{ position: string; prompt: string }>;
+    imagePrompts: Array<{ position: string; prompt: string; slotId?: string }>;
   }) {
     return this.imageGeneration.generateForDraft(input);
   }
@@ -30,6 +30,7 @@ export class CreativeProductionCapability {
     contentId?: string;
     position?: string;
     prompt: string;
+    slotId?: string;
   }) {
     return this.imageGeneration.generateSingleImage(input);
   }

@@ -15,7 +15,7 @@ type ArticleDraft = Partial<
   Pick<DirectGenerateResult, "title" | "titleCandidates" | "bodyMarkdown" | "tags" | "outline" | "coverSuggestion" | "imagePrompts">
 >;
 
-type VisualPlan = Partial<Pick<DirectGenerateResult, "coverSuggestion" | "imagePrompts">>;
+type VisualPlan = Partial<Pick<DirectGenerateResult, "bodyMarkdown" | "coverSuggestion" | "imagePrompts">>;
 
 type StageOptions = {
   model?: string;
@@ -186,7 +186,7 @@ export class DraftGeneratorAgent {
     return {
       title: this.text(draft.title),
       titleCandidates: this.titleCandidates(draft.titleCandidates),
-      bodyMarkdown: this.text(draft.bodyMarkdown),
+      bodyMarkdown: this.text(visualPlan.bodyMarkdown) || this.text(draft.bodyMarkdown),
       tags: this.textArray(draft.tags),
       coverSuggestion: this.text(visualPlan.coverSuggestion) || this.text(draft.coverSuggestion),
       imagePrompts: this.imagePrompts(visualPlan.imagePrompts).length
@@ -230,9 +230,10 @@ export class DraftGeneratorAgent {
         return {
           position: this.text(record.position) || "正文中",
           prompt,
+          ...(this.text(record.slotId) ? { slotId: this.text(record.slotId) } : {}),
         };
       })
-      .filter((item): item is { position: string; prompt: string } => Boolean(item));
+      .filter((item): item is { position: string; prompt: string; slotId?: string } => Boolean(item));
   }
 
   private outline(value: unknown) {

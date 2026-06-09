@@ -637,11 +637,8 @@ async function streamAiJobEventsOnce(
       const event = parseSseEvent(eventBlock) as AiJobEvent | null;
       if (!event) continue;
       handlers.onEvent?.(event);
-      console.log("AI job event", event);
       const data = event.data ?? {};
-      console.log("AI job event data", data);
       const job = data.job as AiJobSnapshot | undefined;
-      console.log("AI job from event data", job);
 
       if (event.type === "snapshot" && job) {
         handlers.onSnapshot?.(job);

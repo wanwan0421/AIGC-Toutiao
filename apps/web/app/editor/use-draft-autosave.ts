@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import { autosaveDraft } from "../../lib/api";
+import type { GeneratedImageCandidate } from "@aicp/shared";
 
 export type EditorDraftCache = {
   savedAt: string;
@@ -28,6 +29,7 @@ export type EditorDraftCache = {
   visibility: "public" | "followers" | "private";
   originalStatement: boolean;
   contentStatement: string;
+  generatedImageCandidates?: GeneratedImageCandidate[];
 };
 
 type UseDraftAutosaveOptions = {
@@ -153,6 +155,7 @@ export function useDraftAutosave(options: UseDraftAutosaveOptions) {
           visibility: data.visibility,
           originalStatement: data.originalStatement,
           contentStatement: data.contentStatement,
+          generatedImageCandidates: data.generatedImageCandidates ?? [],
         },
         clientHash: String(Date.now()),
       });

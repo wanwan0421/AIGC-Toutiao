@@ -8,6 +8,7 @@ import { StorageService } from "../storage/storage.service";
 type ImagePrompt = {
   position: string;
   prompt: string;
+  slotId?: string;
 };
 
 type GeneratedImageOutput = {
@@ -76,6 +77,7 @@ export class ImageGenerationService {
           contentId: input.contentId,
           position: item.position,
           prompt: item.prompt,
+          slotId: item.slotId,
         })
       );
     }
@@ -88,6 +90,7 @@ export class ImageGenerationService {
     contentId?: string;
     position?: string;
     prompt: string;
+    slotId?: string;
   }) {
     const userId = await this.resolveUserId(input.userId);
     return this.generateAndStore({
@@ -95,6 +98,7 @@ export class ImageGenerationService {
       contentId: input.contentId,
       position: input.position ?? "正文配图",
       prompt: input.prompt,
+      slotId: input.slotId,
     });
   }
 
@@ -104,6 +108,7 @@ export class ImageGenerationService {
     contentId?: string;
     position: string;
     prompt: string;
+    slotId?: string;
   }): Promise<GeneratedImageAsset> {
     const output = await this.generateImage(input.prompt);
     const requestedFileName = `ai-${Date.now()}-${randomUUID().slice(0, 8)}.${output.extension}`;
@@ -123,6 +128,7 @@ export class ImageGenerationService {
     const metadata: Prisma.InputJsonObject = {
       prompt: input.prompt,
       position: input.position,
+      ...(input.slotId ? { slotId: input.slotId } : {}),
       provider: "volcengine-ark",
       imageSize: this.imageSize,
       storageKey: stored.storageKey,
@@ -165,6 +171,7 @@ export class ImageGenerationService {
       metadata: asset.metadata && typeof asset.metadata === "object" ? (asset.metadata as Record<string, unknown>) : undefined,
       position: input.position,
       prompt: input.prompt,
+      slotId: input.slotId,
     };
   }
 

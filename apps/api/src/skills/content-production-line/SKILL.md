@@ -65,7 +65,7 @@ description: 今日头条图文一键生产线。当用户需要根据主题、�
 
 - 封面建议。
 - 正文配图提示词。
-- 图片位置说明。
+- 图片槽位 `slotId` 和位置说明。
 
 图片提示词要能被图像生成模型直接使用，避免只写“配一张好看的图”。
 
@@ -78,6 +78,7 @@ description: 今日头条图文一键生产线。当用户需要根据主题、�
 - 必须包含 `title`、`bodyMarkdown`、`tags`。
 - `titleCandidates` 是数组。
 - `imagePrompts` 是数组。
+- `imagePrompts[].slotId` 必须能匹配 `bodyMarkdown` 中的图片槽位。
 - 标签统一带 `#`。
 - 正文第一行不要重复标题。
 
@@ -101,10 +102,10 @@ description: 今日头条图文一键生产线。当用户需要根据主题、�
 {
   "title": "文章主标题",
   "titleCandidates": [{ "title": "候选标题", "reason": "推荐理由" }],
-  "bodyMarkdown": "正文 Markdown",
+  "bodyMarkdown": "正文 Markdown\n\n<!-- aicp-image-slot:slot_1 -->",
   "tags": ["#标签"],
   "coverSuggestion": "封面图生成提示",
-  "imagePrompts": [{ "position": "正文第 2 段后", "prompt": "图片生成提示" }],
+  "imagePrompts": [{ "slotId": "slot_1", "position": "正文第 2 段后", "prompt": "图片生成提示" }],
   "outline": [{ "heading": "小节标题", "summary": "小节摘要" }],
   "coverAsset": null,
   "imageAssets": []

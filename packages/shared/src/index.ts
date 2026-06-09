@@ -424,6 +424,7 @@ export interface CreativeConversationSummary {
 export interface GeneratedImageAsset extends AssetSummary {
   position: string;
   prompt: string;
+  slotId?: string;
 }
 
 export interface CreativeChatRequest {
@@ -477,6 +478,7 @@ export interface GeneratedImageCandidate {
   inserted: false;
   position?: string;
   prompt?: string;
+  slotId?: string;
   fallbackReason?: string;
 }
 
@@ -503,6 +505,7 @@ export interface DirectGenerateResult {
   imagePrompts: Array<{
     position: string;
     prompt: string;
+    slotId?: string;
   }>;
   coverAsset?: GeneratedImageAsset;
   imageAssets: GeneratedImageAsset[];

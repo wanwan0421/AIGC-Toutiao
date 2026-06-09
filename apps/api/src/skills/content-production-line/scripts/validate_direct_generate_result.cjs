@@ -38,8 +38,61 @@ function stripRepeatedTitle(bodyMarkdown, title) {
   return body;
 }
 
+function normalizeSlotId(value, index, used) {
+  const fallback = `slot_${index + 1}`;
+  const raw = asText(value) || fallback;
+  const base = raw.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/^_+|_+$/g, "").slice(0, 48) || fallback;
+  let candidate = base;
+  let suffix = 2;
+  while (used.has(candidate)) {
+    candidate = `${base}_${suffix}`;
+    suffix += 1;
+  }
+  used.add(candidate);
+  return candidate;
+}
+
+function imageSlotMarker(slotId) {
+  return `<!-- aicp-image-slot:${slotId} -->`;
+}
+
+function ensureImageSlotMarkers(bodyMarkdown, slotIds) {
+  if (!bodyMarkdown || !slotIds.length) return bodyMarkdown;
+  const existing = new Set(Array.from(bodyMarkdown.matchAll(/<!--\s*aicp-image-slot:([a-zA-Z0-9_-]+)\s*-->/g)).map((match) => match[1]));
+  const missing = slotIds.filter((slotId) => !existing.has(slotId));
+  if (!missing.length) return bodyMarkdown;
+
+  const blocks = bodyMarkdown.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
+  if (!blocks.length) return bodyMarkdown;
+
+  const inserts = new Map();
+  missing.forEach((slotId, index) => {
+    const afterBlock = Math.max(1, Math.min(blocks.length, Math.round(((index + 1) / (missing.length + 1)) * blocks.length)));
+    inserts.set(afterBlock, [...(inserts.get(afterBlock) || []), imageSlotMarker(slotId)]);
+  });
+
+  const output = [];
+  blocks.forEach((block, index) => {
+    output.push(block);
+    output.push(...(inserts.get(index + 1) || []));
+  });
+  return output.join("\n\n");
+}
+
 function validateDirectGenerateResult(input) {
   const errors = [];
+  const usedSlotIds = new Set();
+  const imagePrompts = compactArray(input && input.imagePrompts, (item, index) => {
+    const prompt = asText(item && item.prompt);
+    if (!prompt) return null;
+    const slotId = normalizeSlotId(item && item.slotId, index, usedSlotIds);
+    return {
+      position: asText(item && item.position) || "正文中",
+      prompt,
+      slotId,
+    };
+  });
+  const bodyMarkdown = ensureImageSlotMarkers(stripRepeatedTitle(input && input.bodyMarkdown, input && input.title), imagePrompts.map((item) => item.slotId));
   const value = {
     title: asText(input && input.title),
     titleCandidates: compactArray(input && input.titleCandidates, (item) => {
@@ -47,14 +100,10 @@ function validateDirectGenerateResult(input) {
       if (!title) return null;
       return { title, reason: asText(item && item.reason) };
     }),
-    bodyMarkdown: stripRepeatedTitle(input && input.bodyMarkdown, input && input.title),
+    bodyMarkdown,
     tags: normalizeTags(input && input.tags),
     coverSuggestion: asText(input && input.coverSuggestion),
-    imagePrompts: compactArray(input && input.imagePrompts, (item) => {
-      const prompt = asText(item && item.prompt);
-      if (!prompt) return null;
-      return { position: asText(item && item.position) || "正文中", prompt };
-    }),
+    imagePrompts,
     outline: compactArray(input && input.outline, (item) => {
       const heading = asText(item && item.heading);
       const summary = asText(item && item.summary);
