@@ -1,5 +1,4 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
-import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { RedisService } from "../../infra/redis/redis.service";
 
@@ -78,14 +77,14 @@ export class DraftsService {
         authorId: content.authorId,
         title: body.title,
         body: body.body,
-        payload: body.payload as Prisma.InputJsonValue | undefined,
+        payload: body.payload as any,
         clientHash: body.clientHash
       },
       update: {
         authorId: content.authorId,
         title: body.title,
         body: body.body,
-        payload: body.payload as Prisma.InputJsonValue | undefined,
+        payload: body.payload as any,
         clientHash: body.clientHash
       }
     });
@@ -123,7 +122,7 @@ export class DraftsService {
     authorId: string;
     title: string | null;
     body: string | null;
-    payload: Prisma.JsonValue | null;
+    payload: unknown;
     clientHash: string | null;
     savedAt: Date;
   }) {
@@ -139,9 +138,12 @@ export class DraftsService {
     };
   }
 
-  private payloadStringArray(payload: Record<string, unknown> | undefined, key: string) {
-    const value = payload?.[key];
-    if (!Array.isArray(value)) return null;
-    return Array.from(new Set(value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)));
+  private payloadStringArray(payload: Record<string, unknown> | undefined | null, key: string): string[] | undefined {
+    if (!payload) return undefined;
+    const val = (payload as Record<string, unknown>)[key];
+    if (Array.isArray(val) && val.every((item): item is string => typeof item === "string")) {
+      return val;
+    }
+    return undefined;
   }
 }

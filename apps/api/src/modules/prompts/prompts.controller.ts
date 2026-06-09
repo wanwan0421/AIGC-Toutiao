@@ -45,6 +45,7 @@ export class PromptsController {
 
   @Patch(":id")
   update(
+    @CurrentUser() user: UserProfileSummary,
     @Param("id") id: string,
     @Body()
     body: Partial<{
@@ -60,7 +61,7 @@ export class PromptsController {
       status: "active" | "draft" | "disabled";
     }>
   ) {
-    return this.promptsService.update(id, body);
+    return this.promptsService.update(user.id, id, body);
   }
 
   @Get(":key/versions")
@@ -83,16 +84,21 @@ export class PromptsController {
       status?: "active" | "draft" | "disabled";
     }
   ) {
-    return this.promptsService.createVersion(key, user.id, body);
+    return this.promptsService.createVersion(user.id, key, body);
   }
 
   @Post(":key/versions/:versionId/activate")
-  activateVersion(@Param("key") key: string, @Param("versionId") versionId: string) {
-    return this.promptsService.activateVersion(key, versionId);
+  activateVersion(
+    @CurrentUser() user: UserProfileSummary,
+    @Param("key") key: string,
+    @Param("versionId") versionId: string
+  ) {
+    return this.promptsService.activateVersion(user.id, key, Number(versionId));
   }
 
   @Post(":key/render-preview")
   renderPreview(
+    @CurrentUser() user: UserProfileSummary,
     @Param("key") key: string,
     @Body()
     body: {
@@ -104,7 +110,7 @@ export class PromptsController {
       outputSchema?: Record<string, unknown>;
     }
   ) {
-    return this.promptsService.renderPreview(key, body);
+    return this.promptsService.renderPreview(user.id, key, body);
   }
 
   @Get(":key/test-cases")
@@ -114,6 +120,7 @@ export class PromptsController {
 
   @Post(":key/test-cases")
   createTestCase(
+    @CurrentUser() user: UserProfileSummary,
     @Param("key") key: string,
     @Body()
     body: {
@@ -124,11 +131,17 @@ export class PromptsController {
       enabled?: boolean;
     }
   ) {
-    return this.promptsService.createTestCase(key, body);
+    const convertedBody = {
+      name: body.name,
+      inputVars: body.input,
+      expected: typeof body.expectedOutput === "string" ? body.expectedOutput : "",
+    };
+    return this.promptsService.createTestCase(user.id, key, convertedBody);
   }
 
   @Patch(":key/test-cases/:caseId")
   updateTestCase(
+    @CurrentUser() user: UserProfileSummary,
     @Param("key") key: string,
     @Param("caseId") caseId: string,
     @Body()
@@ -140,21 +153,30 @@ export class PromptsController {
       enabled: boolean;
     }>
   ) {
-    return this.promptsService.updateTestCase(key, caseId, body);
+    const convertedBody = {
+      name: body.name,
+      inputVars: body.input,
+      expected: typeof body.expectedOutput === "string" ? body.expectedOutput : undefined,
+    };
+    return this.promptsService.updateTestCase(user.id, caseId, convertedBody);
   }
 
   @Delete(":key/test-cases/:caseId")
-  deleteTestCase(@Param("key") key: string, @Param("caseId") caseId: string) {
-    return this.promptsService.deleteTestCase(key, caseId);
+  deleteTestCase(@CurrentUser() user: UserProfileSummary, @Param("key") key: string, @Param("caseId") caseId: string) {
+    return this.promptsService.deleteTestCase(user.id, caseId);
   }
 
   @Post(":key/eval-runs")
-  runEval(@Param("key") key: string, @Body() body: { versionId?: string; includeDisabled?: boolean }) {
-    return this.promptsService.runEval(key, body);
+  runEval(
+    @CurrentUser() user: UserProfileSummary,
+    @Param("key") key: string,
+    @Body() body: { versionId?: string; includeDisabled?: boolean; testCaseIds?: string[] }
+  ) {
+    return this.promptsService.runEvaluation(user.id, key, body);
   }
 
   @Get(":key/eval-runs/:runId")
-  getEvalRun(@Param("key") key: string, @Param("runId") runId: string) {
-    return this.promptsService.getEvalRun(key, runId);
+  getEvalRun(@CurrentUser() user: UserProfileSummary, @Param("key") key: string, @Param("runId") runId: string) {
+    return this.promptsService.getEvalRun(runId);
   }
 }
