@@ -2,7 +2,6 @@ FROM node:20-bookworm-slim
 
 WORKDIR /app
 
-ENV NODE_ENV=production
 ENV API_PORT=3001
 ENV DATABASE_URL=postgresql://aicp:aicp@postgres:5432/aicp?schema=public
 
@@ -19,6 +18,8 @@ RUN npm ci
 RUN npm run build -w @aicp/shared \
   && npm run prisma -w @aicp/api -- generate \
   && npm run build -w @aicp/api
+
+ENV NODE_ENV=production
 
 EXPOSE 3001
 

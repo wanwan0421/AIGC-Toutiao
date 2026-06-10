@@ -5,7 +5,6 @@ WORKDIR /app
 ARG NEXT_PUBLIC_API_BASE_URL=/api
 ARG API_PROXY_TARGET=http://api:3001
 
-ENV NODE_ENV=production
 ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
 ENV API_PROXY_TARGET=${API_PROXY_TARGET}
 
@@ -17,6 +16,8 @@ COPY apps/web ./apps/web
 RUN npm ci
 RUN npm run build -w @aicp/shared \
   && npm run build -w @aicp/web
+
+ENV NODE_ENV=production
 
 EXPOSE 3000
 
