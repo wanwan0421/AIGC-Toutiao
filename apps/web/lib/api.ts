@@ -100,12 +100,12 @@ function resolveApiUrl(path: string) {
   return `${API_BASE_URL}${path}`;
 }
 
-export async function apiRequest<T>(path: string, init: RequestInit = {}, needsAuth = false, allowRefresh = true): Promise<T> {
+export async function apiRequest<T>(path: string, init: RequestInit = {}, needsAuth = false, allowRefresh = true, cacheMode: RequestCache = "default"): Promise<T> {
   const response = await fetch(resolveApiUrl(path), {
     ...init,
     headers: buildHeaders(init.headers, init.body),
     credentials: "include",
-    cache: "no-store"
+    cache: cacheMode
   });
 
   if (response.status === 401 && needsAuth && allowRefresh && path !== "/auth/refresh") {

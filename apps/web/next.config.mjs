@@ -17,9 +17,35 @@ const contentSecurityPolicy = [
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: "standalone",
   allowedDevOrigins: ["127.0.0.1"],
   transpilePackages: ["@aicp/shared"],
-  async rewrites() {
+  images: {
+    formats: ["image/webp", "image/avif"],
+    deviceSizes: [640, 750, 828, 1080, 1200, 1920],
+    imageSizes: [16, 32, 48, 64, 96, 128, 256, 384],
+    minimumCacheTTL: 86400,
+  },
+  compress: true,
+  poweredByHeader: false,
+  reactStrictMode: true,
+  generateEtags: true,
+  httpAgentOptions: {
+    keepAlive: true,
+  },
+  experimental: {
+    optimizePackageImports: ["lucide-react", "lodash-es", "date-fns"],
+    optimizeCss: true,
+    turbo: {
+      rules: {
+        "*.svg": {
+          loaders: ["@svgr/webpack"],
+          as: "*.js",
+        },
+      },
+    },
+  },
+  rewrites: async () => {
     return [
       {
         source: "/api/:path*",
@@ -27,14 +53,35 @@ const nextConfig = {
       }
     ];
   },
-  async headers() {
+  headers: async () => {
     return [
       {
         source: "/:path*",
         headers: [
           { key: "Content-Security-Policy", value: contentSecurityPolicy },
           { key: "X-Content-Type-Options", value: "nosniff" },
-          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" }
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          { key: "X-DNS-Prefetch-Control", value: "on" },
+          { key: "Early-Hints", value: "enabled" },
+          { key: "X-Frame-Options", value: "DENY" },
+        ]
+      },
+      {
+        source: "/_next/image/:path*",
+        headers: [
+          { key: "Cache-Control", value: "public, max-age=31536000, immutable" }
+        ]
+      },
+      {
+        source: "/_next/static/:path*",
+        headers: [
+          { key: "Cache-Control", value: "public, max-age=31536000, immutable" }
+        ]
+      },
+      {
+        source: "/favicon.ico",
+        headers: [
+          { key: "Cache-Control", value: "public, max-age=86400" }
         ]
       }
     ];

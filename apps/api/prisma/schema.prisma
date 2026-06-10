@@ -1,6 +1,5 @@
 generator client {
   provider = "prisma-client-js"
-  output = "../node_modules/.prisma/client"
 }
 
 datasource db {
@@ -77,6 +76,12 @@ model Content {
   comments     ContentComment[]
   aiConversations AiConversation[]
   aiJobs       AiJob[]
+
+  @@index([authorId, createdAt])
+  @@index([status, visibility, heatScore])
+  @@index([status, visibility, publishedAt])
+  @@index([heatScore, qualityScore, publishedAt])
+  @@index([status, visibility, authorId])
 }
 
 model UserFollow {
@@ -370,6 +375,8 @@ model UserActionEvent {
   user      User?    @relation(fields: [userId], references: [id])
 
   @@index([contentId, eventType, createdAt])
+  @@index([contentId, createdAt])
+  @@index([userId, createdAt])
 }
 
 enum ContentStatus {

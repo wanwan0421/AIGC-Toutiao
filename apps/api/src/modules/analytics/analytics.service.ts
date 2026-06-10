@@ -17,15 +17,6 @@ const dashboardMetricLabels: Record<DashboardMetric, string> = {
 
 const dashboardMetrics: DashboardMetric[] = ["view", "click", "like", "collect", "comment", "heat"];
 
-const dashboardContentInclude = {
-  author: true,
-  assets: {
-    include: { asset: true },
-    orderBy: { sortOrder: "asc" as const },
-  },
-  _count: { select: { comments: true } },
-};
-
 @Injectable()
 export class AnalyticsService {
   constructor(
@@ -101,63 +92,78 @@ export class AnalyticsService {
   async getDashboard(userId: string, rawRange?: string | number, rawMetric?: string): Promise<DashboardAnalyticsResponse> {
     const range = Number(rawRange) === 30 ? 30 : 7;
     const metric = dashboardMetrics.includes(rawMetric as DashboardMetric) ? (rawMetric as DashboardMetric) : "view";
+    const cacheKey = `dashboard:v3:${userId}:${range}:${metric}`;
+    const cached = await this.redisService.getClient().get(cacheKey).catch(() => null);
+    if (cached) {
+      return JSON.parse(cached) as DashboardAnalyticsResponse;
+    }
+
     const now = new Date();
     const periodStart = this.startOfLocalDay(this.addDays(now, -(range - 1)));
     const previousStart = this.startOfLocalDay(this.addDays(periodStart, -range));
-    const previousEnd = periodStart;
 
-    const [contents, events] = await Promise.all([
-      this.prisma.content.findMany({
+    const [latestContentAgg, dailyAggregations] = await Promise.all([
+      this.prisma.content.findFirst({
         where: { authorId: userId },
-        include: dashboardContentInclude,
+        include: {
+          author: true,
+          assets: {
+            include: { asset: true },
+            orderBy: { sortOrder: "asc" as const },
+          },
+          _count: { select: { comments: true } },
+        },
         orderBy: { createdAt: "desc" },
       }),
-      this.prisma.userActionEvent.findMany({
-        where: {
-          createdAt: { gte: previousStart },
-          content: { authorId: userId },
-        },
-        select: {
-          eventType: true,
-          createdAt: true,
-        },
-      }),
+      this.prisma.$queryRaw<Array<{ event_date: Date; event_type: string; count: bigint }>>`
+        SELECT 
+          DATE_TRUNC('day', "createdAt")::date as event_date,
+          "eventType" as event_type,
+          COUNT(*)::bigint as count
+        FROM "UserActionEvent"
+        WHERE 
+          "contentId" IN (SELECT id FROM "Content" WHERE "authorId" = ${userId}::uuid)
+          AND "createdAt" >= ${previousStart}::timestamp
+        GROUP BY DATE_TRUNC('day', "createdAt")::date, "eventType"
+        ORDER BY event_date, event_type
+      `,
     ]);
 
     const trend = this.buildTrend(range, periodStart);
     const currentTotals = this.emptyMetricTotals();
     const previousTotals = this.emptyMetricTotals();
 
-    for (const event of events) {
-      const normalized = this.toDashboardMetric(event.eventType);
+    for (const agg of dailyAggregations) {
+      const normalized = this.toDashboardMetric(agg.event_type);
       if (!normalized) continue;
-      const eventTime = event.createdAt.getTime();
+      const eventDate = new Date(agg.event_date);
+      const eventTime = eventDate.getTime();
       const isCurrent = eventTime >= periodStart.getTime();
-      const isPrevious = eventTime >= previousStart.getTime() && eventTime < previousEnd.getTime();
+      const isPrevious = eventTime >= previousStart.getTime() && eventTime < periodStart.getTime();
 
       if (isCurrent) {
-        currentTotals[normalized] += 1;
-        currentTotals.heat += this.heatWeight(event.eventType);
-        const day = this.dayKey(event.createdAt);
-        const point = trend.find((item) => item.date === day);
+        currentTotals[normalized] += Number(agg.count);
+        currentTotals.heat += this.heatWeight(agg.event_type) * Number(agg.count);
+        const dayLabel = this.dayKey(eventDate);
+        const point = trend.find((item) => item.date === dayLabel);
         if (point) {
-          point[normalized] += 1;
-          point.heat += this.heatWeight(event.eventType);
+          point[normalized] += Number(agg.count);
+          point.heat += this.heatWeight(agg.event_type) * Number(agg.count);
         }
       } else if (isPrevious) {
-        previousTotals[normalized] += 1;
-        previousTotals.heat += this.heatWeight(event.eventType);
+        previousTotals[normalized] += Number(agg.count);
+        previousTotals.heat += this.heatWeight(agg.event_type) * Number(agg.count);
       }
     }
 
-    return {
+    const result: DashboardAnalyticsResponse = {
       range,
       metric,
       period: {
         start: periodStart.toISOString(),
         end: now.toISOString(),
       },
-      latestWork: contents[0] ? toContentSummary(contents[0]) : undefined,
+      latestWork: latestContentAgg ? toContentSummary(latestContentAgg) : undefined,
       metrics: Object.fromEntries(
         dashboardMetrics.map((item) => [
           item,
@@ -171,6 +177,9 @@ export class AnalyticsService {
       ) as DashboardAnalyticsResponse["metrics"],
       trend,
     };
+    
+    await this.redisService.getClient().setex(cacheKey, 180, JSON.stringify(result)).catch(() => undefined);
+    return result;
   }
 
   private applyCounters(contentId: string, eventType: string) {

@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException, 
 import { ContentStatus as DbContentStatus, ContentVisibility as DbContentVisibility } from "@prisma/client";
 import { toContentSummary } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
+import { RedisService } from "../../infra/redis/redis.service";
 import { AuthService } from "../auth/auth.service";
 
 const publicContentInclude = {
@@ -30,6 +31,7 @@ type UserProfileUpdate = Partial<{
 export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly redisService: RedisService,
     private readonly authService: AuthService
   ) {}
 
@@ -149,6 +151,31 @@ export class UsersService {
 
   async getPublicProfile(authorization: string | undefined, cookieHeader: string | undefined, targetUserId: string) {
     const viewer = await this.resolveCurrentUser(authorization, cookieHeader);
+    const cacheKey = `users:v2:public-profile:${targetUserId}`;
+    
+    const cached = await this.redisService.getClient().get(cacheKey).catch(() => null);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      const following =
+        viewer.id === targetUserId
+          ? null
+          : await this.prisma.userFollow.findUnique({
+              where: {
+                followerId_followingId: {
+                  followerId: viewer.id,
+                  followingId: targetUserId,
+                },
+              },
+            });
+      return {
+        ...parsed,
+        viewerState: {
+          following: Boolean(following),
+          isSelf: viewer.id === targetUserId,
+        },
+      };
+    }
+
     const target = await this.prisma.user.findUnique({
       where: { id: targetUserId },
       include: {
@@ -166,6 +193,22 @@ export class UsersService {
       throw new NotFoundException("user not found");
     }
 
+    const publicProfile = {
+      profile: {
+        id: target.id,
+        accountNo: target.accountNo,
+        nickname: target.nickname,
+        bio: target.bio ?? undefined,
+        avatarUrl: target.avatarUrl ?? undefined,
+        followerCount: target._count.followers,
+        followingCount: target._count.following,
+        contentCount: target._count.contents,
+        createdAt: target.createdAt.toISOString(),
+      },
+    };
+    
+    await this.redisService.getClient().setex(cacheKey, 300, JSON.stringify(publicProfile)).catch(() => undefined);
+    
     const following =
       viewer.id === targetUserId
         ? null
@@ -179,17 +222,7 @@ export class UsersService {
           });
 
     return {
-      profile: {
-        id: target.id,
-        accountNo: target.accountNo,
-        nickname: target.nickname,
-        bio: target.bio ?? undefined,
-        avatarUrl: target.avatarUrl ?? undefined,
-        followerCount: target._count.followers,
-        followingCount: target._count.following,
-        contentCount: target._count.contents,
-        createdAt: target.createdAt.toISOString(),
-      },
+      ...publicProfile,
       viewerState: {
         following: Boolean(following),
         isSelf: viewer.id === targetUserId,
@@ -204,6 +237,12 @@ export class UsersService {
       throw new NotFoundException("user not found");
     }
 
+    const cacheKey = `users:v2:public-contents:${targetUserId}`;
+    const cached = await this.redisService.getClient().get(cacheKey).catch(() => null);
+    if (cached) {
+      return JSON.parse(cached);
+    }
+
     const items = await this.prisma.content.findMany({
       where: { authorId: targetUserId, status: DbContentStatus.published, visibility: DbContentVisibility.public },
       include: publicContentInclude,
@@ -211,7 +250,9 @@ export class UsersService {
       take: 48,
     });
 
-    return { items: items.map(toContentSummary) };
+    const result = { items: items.map(toContentSummary) };
+    await this.redisService.getClient().setex(cacheKey, 300, JSON.stringify(result)).catch(() => undefined);
+    return result;
   }
 
   async toggleFollow(authorization: string | undefined, cookieHeader: string | undefined, targetUserId: string) {

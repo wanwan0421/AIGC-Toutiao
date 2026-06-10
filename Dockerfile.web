@@ -8,12 +8,18 @@ ARG API_PROXY_TARGET=http://api:3001
 ENV NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}
 ENV API_PROXY_TARGET=${API_PROXY_TARGET}
 
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates python3 make g++ \
+  && rm -rf /var/lib/apt/lists/*
+
 COPY package.json package-lock.json tsconfig.base.json ./
 COPY packages ./packages
 COPY apps/api/package.json ./apps/api/package.json
 COPY apps/web ./apps/web
 
-RUN npm ci
+RUN npm_config_build_from_source=true npm ci
 RUN npm run build -w @aicp/shared \
   && npm run build -w @aicp/web
 

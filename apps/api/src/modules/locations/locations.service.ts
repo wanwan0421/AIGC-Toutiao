@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, ServiceUnavailableException } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import type { LocationCandidate, LocationSearchResponse, NearbyLocationsResponse } from "@aicp/shared";
+import { RedisService } from "../../infra/redis/redis.service";
 
 type AmapRegeoResponse = {
   status?: string;
@@ -31,11 +32,20 @@ type AmapPoiResponse = {
 
 @Injectable()
 export class LocationsService {
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly redisService: RedisService
+  ) {}
 
   // 前端只提交用户授权后的坐标；第三方地图调用统一由后端代理，避免泄露高德 key。
   async nearby(latitude: number, longitude: number): Promise<NearbyLocationsResponse> {
     this.assertCoordinate(latitude, longitude);
+    
+    const cacheKey = `locations:v2:nearby:${latitude.toFixed(4)}:${longitude.toFixed(4)}`;
+    const cached = await this.redisService.getClient().get(cacheKey).catch(() => null);
+    if (cached) {
+      return JSON.parse(cached);
+    }
 
     const [regeo, around] = await Promise.all([
       this.fetchAmap<AmapRegeoResponse>("/v3/geocode/regeo", {
@@ -75,18 +85,27 @@ export class LocationsService {
       ...this.mapPois(around.pois ?? []),
     ]);
 
-    return {
+    const result = {
       formattedAddress,
       city,
       district,
       candidates,
     };
+    
+    await this.redisService.getClient().setex(cacheKey, 300, JSON.stringify(result)).catch(() => undefined);
+    return result;
   }
 
   async search(keyword: string): Promise<LocationSearchResponse> {
     const query = keyword.trim();
     if (!query) {
       throw new BadRequestException("keyword is required");
+    }
+
+    const cacheKey = `locations:v2:search:${Buffer.from(query).toString("base64")}`;
+    const cached = await this.redisService.getClient().get(cacheKey).catch(() => null);
+    if (cached) {
+      return JSON.parse(cached);
     }
 
     const response = await this.fetchAmap<AmapPoiResponse>("/v3/place/text", {
@@ -96,7 +115,9 @@ export class LocationsService {
       extensions: "base",
     });
 
-    return { candidates: this.dedupeCandidates(this.mapPois(response.pois ?? [])) };
+    const result = { candidates: this.dedupeCandidates(this.mapPois(response.pois ?? [])) };
+    await this.redisService.getClient().setex(cacheKey, 300, JSON.stringify(result)).catch(() => undefined);
+    return result;
   }
 
   private async fetchAmap<T extends { status?: string; info?: string }>(path: string, params: Record<string, string>) {

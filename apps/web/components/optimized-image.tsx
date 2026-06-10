@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import NextImage from "next/image";
 
 type OptimizedImageProps = {
   src: string;
@@ -11,6 +12,7 @@ type OptimizedImageProps = {
   style?: React.CSSProperties;
   priority?: boolean;
   onClick?: () => void;
+  fill?: boolean;
 };
 
 export function OptimizedImage({
@@ -22,6 +24,7 @@ export function OptimizedImage({
   style = {},
   priority = false,
   onClick,
+  fill = false,
 }: OptimizedImageProps) {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(false);
@@ -37,8 +40,7 @@ export function OptimizedImage({
     <div
       className={`relative overflow-hidden bg-slate-100 ${className}`}
       style={{
-        width,
-        aspectRatio: `${width} / ${height}`,
+        ...(fill ? { inset: 0 } : { aspectRatio: `${width} / ${height}`, width }),
         ...style,
       }}
     >
@@ -47,22 +49,24 @@ export function OptimizedImage({
           <div className="h-5 w-5 animate-pulse rounded-full bg-slate-200" />
         </div>
       )}
-      <img
-        ref={imgRef}
+      <NextImage
+        ref={imgRef as any}
         src={src}
         alt={alt}
-        width={width}
-        height={height}
-        className={`h-full w-full object-cover transition-opacity duration-200 ${
+        width={fill ? undefined : width}
+        height={fill ? undefined : height}
+        fill={fill}
+        className={`h-full w-full object-cover transition-opacity duration-300 ${
           loaded ? "opacity-100" : "opacity-0"
         }`}
         loading={priority ? "eager" : "lazy"}
-        fetchPriority={priority ? "high" : "low"}
+        fetchPriority={priority ? "high" : "auto"}
         decoding="async"
-        onLoad={() => setLoaded(true)}
+        onLoadingComplete={() => setLoaded(true)}
         onError={() => setError(true)}
         onClick={onClick}
         draggable={false}
+        unoptimized={src.startsWith("blob:") || src.startsWith("data:")}
       />
       {error && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-100 text-slate-400">

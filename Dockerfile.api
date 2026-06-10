@@ -5,8 +5,10 @@ WORKDIR /app
 ENV API_PORT=3001
 ENV DATABASE_URL=postgresql://aicp:aicp@postgres:5432/aicp?schema=public
 
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources
+
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates openssl \
+  && apt-get install -y --no-install-recommends ca-certificates openssl python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json tsconfig.base.json ./
@@ -14,10 +16,10 @@ COPY packages ./packages
 COPY apps/api ./apps/api
 COPY apps/web/package.json ./apps/web/package.json
 
-RUN npm ci
-RUN npm run build -w @aicp/shared \
-  && npm run prisma -w @aicp/api -- generate \
-  && npm run build -w @aicp/api
+RUN npm_config_build_from_source=true npm ci
+RUN npm run prisma -w @aicp/api -- generate \
+    && npm run build -w @aicp/shared \
+    && npm run build -w @aicp/api
 
 ENV NODE_ENV=production
 

@@ -86,7 +86,13 @@ export class ContentsService {
         authorId: userId,
         ...(status ? { status: toDbContentStatus(status) } : {}),
       },
-      include: contentInclude,
+      take: 50,
+      include: {
+        author: {
+          select: { id: true, accountNo: true, nickname: true, avatarUrl: true },
+        },
+        _count: { select: { comments: true } },
+      },
       orderBy: { createdAt: "desc" },
     });
 

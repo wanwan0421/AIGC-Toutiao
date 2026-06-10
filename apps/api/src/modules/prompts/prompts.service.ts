@@ -11,6 +11,7 @@ import {
 import { Prisma } from "@prisma/client";
 import { toApiPromptScene, toDbPromptScene } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
+import { RedisService } from "../../infra/redis/redis.service";
 
 type DefinitionWithActiveVersion = Prisma.PromptDefinitionGetPayload<{ include: { activeVersion: true } }>;
 type VersionRecord = Prisma.PromptVersionGetPayload<Record<string, never>>;
@@ -29,24 +30,43 @@ type VersionInput = {
 
 @Injectable()
 export class PromptsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly redisService: RedisService
+  ) {}
 
   async list(scene?: PromptScene) {
+    const cacheKey = `prompts:v2:list:${scene ?? "all"}`;
+    const cached = await this.redisService.getClient().get(cacheKey).catch(() => null);
+    if (cached) {
+      return JSON.parse(cached);
+    }
+    
     const items = await this.prisma.promptDefinition.findMany({
       where: scene ? { scene: toDbPromptScene(scene) } : undefined,
       include: { activeVersion: true },
       orderBy: [{ status: "asc" }, { updatedAt: "desc" }],
     });
-    return items.map((item) => this.toLegacyPromptSummary(item));
+    const result = items.map((item) => this.toLegacyPromptSummary(item));
+    await this.redisService.getClient().setex(cacheKey, 300, JSON.stringify(result)).catch(() => undefined);
+    return result;
   }
 
   async listDefinitions(scene?: PromptScene): Promise<PromptDefinitionSummary[]> {
+    const cacheKey = `prompts:v2:definitions:${scene ?? "all"}`;
+    const cached = await this.redisService.getClient().get(cacheKey).catch(() => null);
+    if (cached) {
+      return JSON.parse(cached);
+    }
+    
     const items = await this.prisma.promptDefinition.findMany({
       where: scene ? { scene: toDbPromptScene(scene) } : undefined,
       include: { activeVersion: true },
       orderBy: [{ status: "asc" }, { updatedAt: "desc" }],
     });
-    return items.map((item) => this.toDefinitionSummary(item));
+    const result = items.map((item) => this.toDefinitionSummary(item));
+    await this.redisService.getClient().setex(cacheKey, 300, JSON.stringify(result)).catch(() => undefined);
+    return result;
   }
 
   async detail(idOrKey: string) {

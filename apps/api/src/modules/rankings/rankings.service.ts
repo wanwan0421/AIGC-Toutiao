@@ -10,6 +10,7 @@ import type {
 } from "@aicp/shared";
 import { toContentSummary } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
+import { RedisService } from "../../infra/redis/redis.service";
 
 const OFFICIAL_TOPIC_EMAIL = "topics@toutiao.example.com";
 
@@ -23,11 +24,21 @@ const contentInclude = {
 
 @Injectable()
 export class RankingsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly redisService: RedisService
+  ) {}
 
   async list(query: RankingQuery): Promise<RankingListResponse> {
     const limit = this.parseLimit(query.limit, 20);
     const type = query.type ?? "hot";
+    const cacheKey = `rankings:v2:list:${type}:${limit}:${query.cursor || ""}`;
+    
+    const cached = await this.redisService.getClient().get(cacheKey).catch(() => null);
+    if (cached) {
+      return JSON.parse(cached) as RankingListResponse;
+    }
+
     const orderBy =
       type === "recommended"
         ? [
@@ -66,15 +77,25 @@ export class RankingsService {
       ...(query.cursor ? { skip: 1, cursor: { id: query.cursor } } : {}),
     });
 
-    return {
+    const result = {
       items: items.map(toContentSummary),
       nextCursor: items.length === limit ? items.at(-1)?.id : undefined,
     };
+    
+    await this.redisService.getClient().setex(cacheKey, 300, JSON.stringify(result)).catch(() => undefined);
+    return result;
   }
 
   async topics(rawLimit?: string | number, rawCursor?: string | number): Promise<OfficialTopicListResponse> {
     const limit = this.parseLimit(rawLimit, 8);
     const offset = this.parseOffset(rawCursor);
+    const cacheKey = `rankings:v2:topics:${limit}:${offset}`;
+    
+    const cached = await this.redisService.getClient().get(cacheKey).catch(() => null);
+    if (cached) {
+      return JSON.parse(cached) as OfficialTopicListResponse;
+    }
+
     const sourceLimit = Math.max(300, Math.min(1000, (offset + limit) * 25));
     const contents = await this.prisma.content.findMany({
       where: {
@@ -140,10 +161,13 @@ export class RankingsService {
       .slice(offset, offset + limit)
       .map(({ score: _score, latestAt: _latestAt, ...item }) => item);
 
-    return {
+    const result = {
       items,
       nextCursor: offset + items.length < sorted.length ? String(offset + items.length) : undefined,
     };
+    
+    await this.redisService.getClient().setex(cacheKey, 300, JSON.stringify(result)).catch(() => undefined);
+    return result;
   }
 
   async topicDetail(rawTitle: string, rawLimit?: string | number, cursor?: string): Promise<TopicDetail> {
