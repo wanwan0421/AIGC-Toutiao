@@ -70,6 +70,7 @@ export class DraftsService {
     if (!content) {
       throw new NotFoundException("content not found");
     }
+    const sanitizedPayload = await this.sanitizePayload(userId, body.payload);
 
     const draft = await this.prisma.draft.upsert({
       where: { contentId },
@@ -78,19 +79,19 @@ export class DraftsService {
         authorId: content.authorId,
         title: body.title,
         body: body.body,
-        payload: body.payload as Prisma.InputJsonValue | undefined,
+        payload: sanitizedPayload as Prisma.InputJsonValue | undefined,
         clientHash: body.clientHash
       },
       update: {
         authorId: content.authorId,
         title: body.title,
         body: body.body,
-        payload: body.payload as Prisma.InputJsonValue | undefined,
+        payload: sanitizedPayload as Prisma.InputJsonValue | undefined,
         clientHash: body.clientHash
       }
     });
 
-    const assetIds = this.payloadStringArray(body.payload, "assetIds");
+    const assetIds = this.payloadStringArray(sanitizedPayload, "assetIds");
     if (assetIds) {
       await this.prisma.$transaction(async (tx) => {
         await tx.contentAsset.deleteMany({ where: { contentId } });
@@ -111,6 +112,29 @@ export class DraftsService {
     await this.redisService.getClient().set(this.cacheKey(userId, contentId), JSON.stringify(payload), "EX", 60 * 60 * 24).catch(() => undefined);
 
     return payload;
+  }
+
+  private async sanitizePayload(userId: string, payload: Record<string, unknown> | undefined) {
+    const assetIds = this.payloadStringArray(payload, "assetIds");
+    const coverAssetId = typeof payload?.coverAssetId === "string" ? payload.coverAssetId.trim() : "";
+    if (!payload || (!assetIds && !coverAssetId)) return payload;
+
+    const idsToCheck = Array.from(new Set([...(assetIds ?? []), coverAssetId].filter(Boolean)));
+    const assets = idsToCheck.length
+      ? await this.prisma.asset.findMany({
+          where: { uploaderId: userId, id: { in: idsToCheck } },
+          select: { id: true },
+        })
+      : [];
+    const allowedIds = new Set(assets.map((asset) => asset.id));
+    const nextAssetIds = assetIds ? assetIds.filter((id) => allowedIds.has(id)) : undefined;
+    const nextCoverAssetId = coverAssetId && allowedIds.has(coverAssetId) ? coverAssetId : undefined;
+
+    return {
+      ...payload,
+      ...(nextAssetIds ? { assetIds: nextAssetIds } : {}),
+      ...(coverAssetId ? { coverAssetId: nextCoverAssetId ?? null } : {}),
+    };
   }
 
   private cacheKey(userId: string, contentId: string) {
@@ -142,6 +166,6 @@ export class DraftsService {
   private payloadStringArray(payload: Record<string, unknown> | undefined, key: string) {
     const value = payload?.[key];
     if (!Array.isArray(value)) return null;
-    return Array.from(new Set(value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)));
+    return Array.from(new Set(value.map((item) => (typeof item === "string" ? item.trim() : "")).filter(Boolean)));
   }
 }

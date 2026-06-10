@@ -2,10 +2,8 @@ import { BadRequestException, Injectable, Logger, NotFoundException } from "@nes
 import { AssetAuditStatus } from "@prisma/client";
 import { toAssetSummary } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
-import { ModelClientService } from "../ai/model-client.service";
 import { SafetyRuleEngine } from "../ai/safety/safety-rule-engine.service";
 import { StorageService } from "../storage/storage.service";
-import { ImageModerationService } from "./image-moderation.service";
 
 type UploadFile = {
   originalname: string;
@@ -26,8 +24,6 @@ export class AssetsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
-    private readonly imageModeration: ImageModerationService,
-    private readonly modelClient: ModelClientService,
     private readonly safetyRuleEngine: SafetyRuleEngine,
   ) {}
 
@@ -68,6 +64,15 @@ export class AssetsService {
 
     for (const asset of pendingAssets) {
       try {
+        if (this.isImageMimeType(asset.mimeType)) {
+          await this.prisma.asset.update({
+            where: { id: asset.id },
+            data: this.approvedAudit("图片基础校验通过"),
+          });
+          successCount += 1;
+          continue;
+        }
+
         const scanText = `${asset.fileName}`;
         const safetyResult = this.safetyRuleEngine.scan({
           title: scanText,
@@ -83,7 +88,7 @@ export class AssetsService {
             where: { id: asset.id },
             data: {
               auditStatus: AssetAuditStatus.rejected,
-              auditReason: `历史重审命中敏感词：${blockingRisks.map((r) => r.reason).join("；")}`,
+              auditReason: `历史重审命中风险词：${this.joinRiskReasons(blockingRisks)}`,
               riskLevel: safetyResult.riskLevel,
               riskTypes: safetyResult.riskTypes,
             },
@@ -152,27 +157,13 @@ export class AssetsService {
     const originalName = this.normalizeFileName(file.originalname);
     const mimeType = this.normalizeMimeType(file.mimetype, originalName);
     const isTextFile = this.isTextMimeType(mimeType);
-    const isImageFile = this.isImageMimeType(mimeType);
     const previewText = isTextFile ? file.buffer.toString("utf8").slice(0, 8000) : undefined;
-    let imageDesc = "";
-
-    if (isImageFile && this.modelClient.hasRemoteProvider()) {
-      try {
-        imageDesc = await this.modelClient.describeImage(file.buffer, mimeType);
-        if (imageDesc) {
-          this.logger.debug(`Image description generated: ${imageDesc.slice(0, 80)}`);
-        }
-      } catch (error) {
-        this.logger.verbose(`Generate image description skipped: ${(error as Error).message}`);
-      }
-    }
 
     const audit = await this.auditAssetInput({
       fileName: originalName,
       mimeType,
       size: file.size,
       previewText,
-      imageDesc,
     });
 
     if (audit.auditStatus === AssetAuditStatus.rejected) {
@@ -181,9 +172,9 @@ export class AssetsService {
 
     const stored = await this.storage.saveBuffer({
       folder: "user-assets",
-        fileName: originalName,
-        mimeType,
-        buffer: file.buffer,
+      fileName: originalName,
+      mimeType,
+      buffer: file.buffer,
     });
 
     const asset = await this.prisma.asset.create({
@@ -198,7 +189,6 @@ export class AssetsService {
           originalName,
           storageKey: stored.storageKey,
           ...(previewText ? { previewText } : {}),
-          ...(imageDesc ? { imageDesc } : {}),
         },
         auditStatus: audit.auditStatus,
         auditReason: audit.auditReason,
@@ -294,7 +284,11 @@ export class AssetsService {
       }
     }
 
-    const scanText = `${input.fileName}\n${input.previewText ?? ""}\n${input.imageDesc ?? ""}`.toLowerCase();
+    if (this.isImageMimeType(mimeType)) {
+      return this.approvedAudit("图片基础校验通过");
+    }
+
+    const scanText = `${input.fileName}\n${input.previewText ?? ""}`.toLowerCase();
     const safetyResult = this.safetyRuleEngine.scan({
       title: scanText,
       body: "",
@@ -307,22 +301,27 @@ export class AssetsService {
     if (blockingRisks.length > 0) {
       return {
         auditStatus: AssetAuditStatus.rejected,
-        auditReason: `命中安全风险：${blockingRisks.map((r) => r.reason).join("；")}`,
+        auditReason: `命中安全风险：${this.joinRiskReasons(blockingRisks)}`,
         riskLevel: safetyResult.riskLevel,
         riskTypes: safetyResult.riskTypes,
       };
     }
 
-    if (this.isImageMimeType(mimeType)) {
-      return this.imageModeration.reviewImage({ fileName: input.fileName, imageDesc: input.imageDesc });
-    }
+    return this.approvedAudit(null);
+  }
 
+  private approvedAudit(auditReason: string | null) {
     return {
       auditStatus: AssetAuditStatus.approved,
-      auditReason: null,
+      auditReason,
       riskLevel: "low" as const,
       riskTypes: [],
     };
+  }
+
+  private joinRiskReasons(risks: Array<{ reason?: string }>) {
+    const reasons = Array.from(new Set(risks.map((risk) => risk.reason?.trim()).filter((reason): reason is string => Boolean(reason))));
+    return reasons.length ? reasons.join("；") : "命中风险词";
   }
 
   private isSafeMimeType(mimeType: string) {

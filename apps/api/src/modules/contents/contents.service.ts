@@ -105,6 +105,7 @@ export class ContentsService {
 
   async create(userId: string, body: ContentWriteBody) {
     const contentBody = body.body?.trim() ?? "";
+    const assetIds = await this.ownedAssetIds(userId, body.assetIds);
     const content = await this.prisma.content.create({
       data: {
         authorId: userId,
@@ -117,10 +118,10 @@ export class ContentsService {
         visibility: toDbContentVisibility(body.visibility) ?? DbContentVisibility.public,
         scheduledAt: toDateOrNull(body.scheduledAt),
         tags: body.tags ?? [],
-        assets: body.assetIds?.length
+        assets: assetIds?.length
           ? {
               createMany: {
-                data: body.assetIds.map((assetId, index) => ({ assetId, sortOrder: index })),
+                data: assetIds.map((assetId, index) => ({ assetId, sortOrder: index })),
                 skipDuplicates: true,
               },
             }
@@ -324,10 +325,11 @@ export class ContentsService {
     };
 
     if (body.assetIds !== undefined) {
+      const assetIds = (await this.ownedAssetIds(userId, body.assetIds)) ?? [];
       await this.prisma.contentAsset.deleteMany({ where: { contentId: id } });
-      if (body.assetIds.length > 0) {
+      if (assetIds.length > 0) {
         await this.prisma.contentAsset.createMany({
-          data: body.assetIds.map((assetId, index) => ({ contentId: id, assetId, sortOrder: index })),
+          data: assetIds.map((assetId, index) => ({ contentId: id, assetId, sortOrder: index })),
           skipDuplicates: true,
         });
       }
@@ -340,6 +342,20 @@ export class ContentsService {
     });
 
     return toContentDetail(updated);
+  }
+
+  private async ownedAssetIds(userId: string, assetIds: string[] | undefined) {
+    if (assetIds === undefined) return undefined;
+
+    const uniqueIds = Array.from(new Set(assetIds.map((id) => id.trim()).filter(Boolean)));
+    if (!uniqueIds.length) return [];
+
+    const assets = await this.prisma.asset.findMany({
+      where: { uploaderId: userId, id: { in: uniqueIds } },
+      select: { id: true },
+    });
+    const allowedIds = new Set(assets.map((asset) => asset.id));
+    return uniqueIds.filter((id) => allowedIds.has(id));
   }
 
   async updateVisibility(userId: string, id: string, visibility: ContentVisibility) {

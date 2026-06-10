@@ -79,6 +79,8 @@ type AuthSessionResponse = {
   user: UserProfileSummary;
 };
 
+let refreshAccessTokenPromise: Promise<AuthSessionResponse> | null = null;
+
 function buildHeaders(initHeaders?: HeadersInit, body?: BodyInit | null) {
   const headers = new Headers(initHeaders);
   if (!(body instanceof FormData) && !headers.has("Content-Type")) {
@@ -110,7 +112,7 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}, needsA
 
   if (response.status === 401 && needsAuth && allowRefresh && path !== "/auth/refresh") {
     try {
-      await refreshAccessToken();
+      await refreshAccessTokenOnce();
       return apiRequest<T>(path, init, needsAuth, false);
     } catch {
       // Surface the original 401 below.
@@ -138,6 +140,15 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}, needsA
 
 async function refreshAccessToken() {
   return apiRequest<AuthSessionResponse>("/auth/refresh", { method: "POST" }, false, false);
+}
+
+async function refreshAccessTokenOnce() {
+  if (!refreshAccessTokenPromise) {
+    refreshAccessTokenPromise = refreshAccessToken().finally(() => {
+      refreshAccessTokenPromise = null;
+    });
+  }
+  return refreshAccessTokenPromise;
 }
 
 export async function login(body: { account: string; password: string }) {
@@ -613,7 +624,7 @@ async function streamAiJobEventsOnce(
   });
 
   if (response.status === 401 && allowRefresh) {
-    await refreshAccessToken();
+    await refreshAccessTokenOnce();
     return streamAiJobEventsOnce(jobId, handlers, signal, false);
   }
 
@@ -676,7 +687,7 @@ async function streamCreativeChatOnce(
   });
 
   if (response.status === 401 && allowRefresh) {
-    await refreshAccessToken();
+    await refreshAccessTokenOnce();
     return streamCreativeChatOnce(body, handlers, false);
   }
 
@@ -809,7 +820,7 @@ export async function getDashboardAnalytics(params: { range?: 7 | 30; metric?: D
 
 export async function getPromptDefinitions(scene?: PromptScene) {
   const query = scene ? `?scene=${encodeURIComponent(scene)}` : "";
-  return apiRequest<PromptDefinitionSummary[]>(`/prompts/definitions${query}`, {}, true);
+  return apiRequest<PromptDefinitionSummary[]>(`/prompts/definitions${query}`, {}, true, true, "no-store");
 }
 
 export async function getPromptVersions(key: string) {

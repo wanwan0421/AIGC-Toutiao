@@ -118,6 +118,7 @@ export class PromptsService {
       data: { activeVersionId: version.id },
       include: { activeVersion: true },
     });
+    await this.invalidatePromptListCaches();
     return this.toLegacyPromptSummary(withVersion);
   }
 
@@ -175,6 +176,7 @@ export class PromptsService {
       if (active) await this.activateVersion(definition.key, active.id);
     }
 
+    await this.invalidatePromptListCaches();
     return this.detail(definition.id);
   }
 
@@ -197,6 +199,7 @@ export class PromptsService {
     if (body.status === "active") {
       await this.activateVersion(definition.key, version.id);
     }
+    await this.invalidatePromptListCaches();
     return this.toVersionSummary(version);
   }
 
@@ -220,6 +223,7 @@ export class PromptsService {
     ]);
 
     const updated = await this.getDefinition(definition.id);
+    await this.invalidatePromptListCaches();
     return this.toDefinitionSummary(updated);
   }
 
@@ -435,6 +439,12 @@ export class PromptsService {
       where: { definitionId },
       orderBy: { version: "desc" },
     });
+  }
+
+  private async invalidatePromptListCaches() {
+    const scenes = ["all", ...Object.values(PromptScene)];
+    const keys = scenes.flatMap((scene) => [`prompts:v2:list:${scene}`, `prompts:v2:definitions:${scene}`]);
+    await this.redisService.getClient().del(...keys).catch(() => undefined);
   }
 
   private toLegacyPromptSummary(definition: DefinitionWithActiveVersion) {
