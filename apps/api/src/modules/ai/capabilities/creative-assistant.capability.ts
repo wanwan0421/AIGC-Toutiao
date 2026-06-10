@@ -43,9 +43,9 @@ export class CreativeAssistantCapability {
       userId: context.userId,
       contentId: context.persistenceContentId,
       title: request.message.slice(0, 48),
-    });
-    const conversationId = conversation.id;
-    const archivedHistory = await this.conversations.recentMessages(conversationId);
+    }).catch(() => null);
+    const conversationId = conversation?.id ?? context.conversationId;
+    const archivedHistory = conversation ? await this.conversations.recentMessages(conversationId).catch(() => []) : [];
     const historyText = this.contextBuilder.formatHistory(archivedHistory.length ? archivedHistory : context.history);
 
     await this.conversations.appendMessage({
@@ -57,7 +57,7 @@ export class CreativeAssistantCapability {
         currentTitle: context.currentTitle,
         selectedText: context.selectedText,
       },
-    });
+    }).catch(() => undefined);
 
     yield {
       type: "meta" as const,
@@ -166,7 +166,7 @@ export class CreativeAssistantCapability {
         conversationId,
         role: "assistant",
         content: assistantContent,
-      });
+      }).catch(() => undefined);
     }
 
     await this.logs.log({
@@ -180,7 +180,7 @@ export class CreativeAssistantCapability {
       },
       latencyMs: Date.now() - startedAt,
       success: true,
-    });
+    }).catch(() => undefined);
 
     yield {
       type: "done" as const,

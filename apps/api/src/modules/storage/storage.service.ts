@@ -120,8 +120,11 @@ export class LocalStorageAdapter {
     if (mimeType === "image/jpeg") return ".jpg";
     if (mimeType === "image/png") return ".png";
     if (mimeType === "image/webp") return ".webp";
+    if (mimeType === "image/gif") return ".gif";
+    if (mimeType === "image/avif") return ".avif";
+    if (mimeType === "image/bmp") return ".bmp";
     if (mimeType === "text/plain") return ".txt";
-    if (mimeType === "text/markdown") return ".md";
+    if (mimeType === "text/markdown" || mimeType === "text/x-markdown" || mimeType === "application/markdown") return ".md";
     return "";
   }
 }
@@ -191,6 +194,11 @@ export class StorageService {
     if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
     if (extension === "webp") return "image/webp";
     if (extension === "png") return "image/png";
+    if (extension === "gif") return "image/gif";
+    if (extension === "avif") return "image/avif";
+    if (extension === "bmp") return "image/bmp";
+    if (extension === "txt") return "text/plain";
+    if (extension === "md" || extension === "markdown") return "text/markdown";
     return "application/octet-stream";
   }
 
@@ -203,8 +211,11 @@ export class StorageService {
     if (mimeType === "image/jpeg") return ".jpg";
     if (mimeType === "image/png") return ".png";
     if (mimeType === "image/webp") return ".webp";
+    if (mimeType === "image/gif") return ".gif";
+    if (mimeType === "image/avif") return ".avif";
+    if (mimeType === "image/bmp") return ".bmp";
     if (mimeType === "text/plain") return ".txt";
-    if (mimeType === "text/markdown") return ".md";
+    if (mimeType === "text/markdown" || mimeType === "text/x-markdown" || mimeType === "application/markdown") return ".md";
     return "";
   }
 }

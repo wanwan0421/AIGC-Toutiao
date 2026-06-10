@@ -25,4 +25,4 @@ ENV NODE_ENV=production
 
 EXPOSE 3001
 
-CMD ["sh", "-c", "npm run prisma -w @aicp/api -- migrate deploy && node apps/api/dist/main.js"]
+CMD ["sh", "-c", "npm run prisma -w @aicp/api -- migrate deploy && node apps/api/dist/scripts/seed-production-prompts.js && node apps/api/dist/main.js"]

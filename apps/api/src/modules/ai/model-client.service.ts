@@ -12,12 +12,16 @@ export class ModelClientService {
   private readonly apiUrl = (process.env.ARK_API_URL ?? process.env.ARK_BASE_URL ?? "https://ark.cn-beijing.volces.com/api/v3/chat/completions").replace(/\/$/, "");
   private readonly defaultModel = process.env.ARK_MODEL_ID ?? process.env.ARK_MODEL;
 
-  hasRemoteProvider() {
-    return Boolean(this.apiKey && this.defaultModel);
+  hasRemoteProvider(model?: string) {
+    return Boolean(this.apiKey && this.modelName(model));
   }
 
   modelName(model?: string) {
-    return model ?? this.defaultModel;
+    const configuredModel = model?.trim();
+    if (configuredModel && configuredModel !== "doubao-seed") {
+      return configuredModel;
+    }
+    return this.defaultModel;
   }
 
   async complete(options: {

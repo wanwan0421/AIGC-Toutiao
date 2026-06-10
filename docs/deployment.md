@@ -27,6 +27,7 @@ Required secret environment variables:
 - `ARK_API_KEY`
 - `ARK_MODEL_ID`
 - `ARK_IMAGE_API_KEY` and `ARK_IMAGE_MODEL_ID` if image generation is enabled
+- `AMAP_API_KEY` if nearby location and location search are enabled
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`
 - `ALIYUN_ACCESS_KEY_ID`, `ALIYUN_ACCESS_KEY_SECRET`, `ALIYUN_SMS_SIGN_NAME`, `ALIYUN_SMS_TEMPLATE_CODE`
 
@@ -46,13 +47,19 @@ Set `NEXT_PUBLIC_API_BASE_URL=https://api.example.com/api` in Vercel.
 
 Do not run the full demo seed against production. It creates demo users and demo content.
 
-After migrations are applied, initialize only production prompt definitions:
+The API start command initializes missing production prompt definitions automatically. Existing prompt versions edited in production are not overwritten unless `PROMPT_INIT_FORCE_UPDATE=true` is set.
+
+If you need to initialize prompts manually in a Docker deployment, run the compiled script inside the API container:
 
 ```sh
-npm run seed:prompts -w @aicp/api
+docker compose -f docker-compose.prod.yml exec api node apps/api/dist/scripts/seed-production-prompts.js
 ```
 
-The script only creates missing active prompt versions. It will not overwrite prompt versions edited in production unless `PROMPT_INIT_FORCE_UPDATE=true` is set.
+If you need to refresh existing prompt versions intentionally:
+
+```sh
+docker compose -f docker-compose.prod.yml exec -e PROMPT_INIT_FORCE_UPDATE=true api node apps/api/dist/scripts/seed-production-prompts.js
+```
 
 ## Verification Codes
 

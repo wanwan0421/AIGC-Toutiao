@@ -49,11 +49,58 @@ Or upload the project directory with `scp`/SFTP.
 
 ## 4. Create Production Env
 
-Create the real env file from the template:
+Create the real env file in the project root on the server:
 
 ```bash
 cp .env.production.example .env.production
 nano .env.production
+```
+
+If `.env.production.example` is not present on the server, create `.env.production` directly:
+
+```bash
+cd /root/aicp
+nano .env.production
+```
+
+Minimum example for temporary IP-based testing:
+
+```env
+NODE_ENV=production
+
+WEB_ORIGIN=http://SERVER_PUBLIC_IP
+AUTH_COOKIE_SECURE=false
+AUTH_TOKEN_SECRET=replace-with-a-long-random-secret
+
+POSTGRES_USER=aicp
+POSTGRES_PASSWORD=replace-with-a-strong-db-password
+POSTGRES_DB=aicp
+DATABASE_URL=postgresql://aicp:replace-with-a-strong-db-password@postgres:5432/aicp?schema=public
+
+REDIS_URL=redis://redis:6379
+
+ARK_API_KEY=your-ark-api-key
+ARK_MODEL_ID=your-ark-model-id
+ARK_API_URL=https://ark.cn-beijing.volces.com/api/v3/chat/completions
+
+AMAP_API_KEY=your-amap-web-service-key
+
+UPLOAD_ROOT=/app/uploads
+UPLOAD_PUBLIC_BASE=http://SERVER_PUBLIC_IP/api/uploads
+
+VERIFICATION_DELIVERY_MODE=real
+
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=
+SMTP_PASS=
+MAIL_FROM=
+
+ALIYUN_ACCESS_KEY_ID=
+ALIYUN_ACCESS_KEY_SECRET=
+ALIYUN_SMS_SIGN_NAME=
+ALIYUN_SMS_TEMPLATE_CODE=
 ```
 
 Required edits:
@@ -62,6 +109,7 @@ Required edits:
 - Set `AUTH_TOKEN_SECRET` to a long random string.
 - Set `POSTGRES_PASSWORD`, and update the password inside `DATABASE_URL` to match.
 - Fill `ARK_API_KEY`, `ARK_MODEL_ID`, and optional image model variables.
+- Fill `AMAP_API_KEY` if you want nearby location and location search in the editor.
 - Fill SMTP and Aliyun SMS variables if you need real verification delivery.
 
 Temporary HTTP testing:
@@ -101,13 +149,19 @@ The API container runs `prisma migrate deploy` on startup.
 
 ## 6. Initialize Production Prompts
 
-After the API is running, initialize prompt definitions:
+The production API container automatically initializes missing prompt definitions on startup, after database migrations are applied. This does not create demo users or demo content.
+
+If you need to initialize prompts manually, do it inside the API container. The host machine does not need Node.js or npm:
 
 ```bash
-docker compose -f docker-compose.prod.yml exec api npm run seed:prompts -w @aicp/api
+docker compose -f docker-compose.prod.yml exec api node apps/api/dist/scripts/seed-production-prompts.js
 ```
 
-This does not create demo users or demo content.
+If you need to refresh existing production prompt versions intentionally:
+
+```bash
+docker compose -f docker-compose.prod.yml exec -e PROMPT_INIT_FORCE_UPDATE=true api node apps/api/dist/scripts/seed-production-prompts.js
+```
 
 ## 7. Smoke Test
 

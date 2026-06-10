@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, ServiceUnavailableException } from "@nestjs/common";
 import { ModelClientService } from "../model-client.service";
 import { PromptTemplateService } from "../prompt-template.service";
 import { AI_PROMPT_NAMES } from "../prompt-names";
@@ -19,8 +19,13 @@ export class IdeaAssistantAgent {
     selectedText?: string;
     historyText?: string;
   }) {
-    const rendered = await this.prompts.render(AI_PROMPT_NAMES.creativeChat, input);
-    const { prompt, model } = rendered;
+    const rendered = await this.prompts.render(AI_PROMPT_NAMES.creativeChat, input, CREATIVE_CHAT_FALLBACK_PROMPT);
+    const { model } = rendered;
+    const prompt = rendered.prompt.trim() || this.interpolate(CREATIVE_CHAT_FALLBACK_PROMPT, input);
+
+    if (!this.modelClient.hasRemoteProvider(model)) {
+      throw new ServiceUnavailableException("AI model is not configured. Please set ARK_API_KEY and ARK_MODEL_ID/ARK_MODEL.");
+    }
 
     yield* this.modelClient.stream({
       model,
@@ -39,4 +44,37 @@ export class IdeaAssistantAgent {
       ],
     });
   }
+
+  private interpolate(template: string, input: {
+    message: string;
+    currentTitle?: string;
+    currentBody?: string;
+    bodySummary?: string;
+    selectedText?: string;
+    historyText?: string;
+  }) {
+    const values: Record<string, string | undefined> = {
+      message: input.message,
+      currentTitle: input.currentTitle,
+      currentBody: input.currentBody,
+      bodySummary: input.bodySummary,
+      selectedText: input.selectedText,
+      historyText: input.historyText,
+    };
+    return template.replace(
+      /\{\{\s*(message|currentTitle|currentBody|bodySummary|selectedText|historyText)\s*\}\}/g,
+      (_, key: string) => values[key] ?? ""
+    );
+  }
 }
+
+const CREATIVE_CHAT_FALLBACK_PROMPT = `你是中文内容创作者的陪伴式写作助手，只负责碰撞思路、局部辅写和写作建议。
+
+用户当前问题：{{message}}
+当前标题：{{currentTitle}}
+当前正文：{{currentBody}}
+正文摘要：{{bodySummary}}
+选中文本：{{selectedText}}
+最近对话：{{historyText}}
+
+优先回答用户这一轮问题。不要主动把局部问题改写成完整草稿生成任务。`;

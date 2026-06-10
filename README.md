@@ -51,7 +51,7 @@ docker compose up -d postgres redis
 cp apps/api/.env.example apps/api/.env
 ```
 
-根据需要填写 `DATABASE_URL`、`REDIS_URL`、`AUTH_TOKEN_SECRET`、`ARK_API_KEY`、`ARK_MODEL_ID` 等配置。
+根据需要填写 `DATABASE_URL`、`REDIS_URL`、`AUTH_TOKEN_SECRET`、`ARK_API_KEY`、`ARK_MODEL_ID` 等配置。若要使用地点定位、附近地点和地点搜索，还需要填写高德地图 Web 服务 Key：`AMAP_API_KEY`。
 
 生成 Prisma Client 并初始化数据库：
 
@@ -95,6 +95,7 @@ AUTH_TOKEN_SECRET=...
 ARK_API_KEY=...
 ARK_MODEL_ID=...
 ARK_API_URL=https://ark.cn-beijing.volces.com/api/v3/chat/completions
+AMAP_API_KEY=...
 ```
 
 如需真实发送验证码，还需要配置 SMTP 邮件或阿里云短信相关变量。不要提交真实 `.env` 或任何密钥。

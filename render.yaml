@@ -14,7 +14,7 @@ services:
     runtime: node
     plan: starter
     buildCommand: npm install && npm run build -w @aicp/shared && npm run prisma -w @aicp/api -- generate && npm run build -w @aicp/api && npm run prisma -w @aicp/api -- migrate deploy
-    startCommand: node apps/api/dist/main.js
+    startCommand: node apps/api/dist/scripts/seed-production-prompts.js && node apps/api/dist/main.js
     healthCheckPath: /api/health
     disk:
       name: aicp-uploads
@@ -49,6 +49,8 @@ services:
       - key: ARK_IMAGE_API_KEY
         sync: false
       - key: ARK_IMAGE_MODEL_ID
+        sync: false
+      - key: AMAP_API_KEY
         sync: false
       - key: SMTP_HOST
         sync: false

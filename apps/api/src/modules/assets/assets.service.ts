@@ -14,8 +14,8 @@ type UploadFile = {
   size: number;
 };
 
-const IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp"];
-const TEXT_MIME_TYPES = ["text/plain", "text/markdown"];
+const IMAGE_MIME_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif", "image/avif", "image/bmp"];
+const TEXT_MIME_TYPES = ["text/plain", "text/markdown", "text/x-markdown", "application/markdown"];
 const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
 const MAX_TEXT_SIZE = 2 * 1024 * 1024;
 
@@ -150,14 +150,15 @@ export class AssetsService {
     }
 
     const originalName = this.normalizeFileName(file.originalname);
-    const isTextFile = this.isTextMimeType(file.mimetype);
-    const isImageFile = this.isImageMimeType(file.mimetype);
+    const mimeType = this.normalizeMimeType(file.mimetype, originalName);
+    const isTextFile = this.isTextMimeType(mimeType);
+    const isImageFile = this.isImageMimeType(mimeType);
     const previewText = isTextFile ? file.buffer.toString("utf8").slice(0, 8000) : undefined;
     let imageDesc = "";
 
     if (isImageFile && this.modelClient.hasRemoteProvider()) {
       try {
-        imageDesc = await this.modelClient.describeImage(file.buffer, file.mimetype);
+        imageDesc = await this.modelClient.describeImage(file.buffer, mimeType);
         if (imageDesc) {
           this.logger.debug(`Image description generated: ${imageDesc.slice(0, 80)}`);
         }
@@ -168,7 +169,7 @@ export class AssetsService {
 
     const audit = await this.auditAssetInput({
       fileName: originalName,
-      mimeType: file.mimetype,
+      mimeType,
       size: file.size,
       previewText,
       imageDesc,
@@ -180,16 +181,16 @@ export class AssetsService {
 
     const stored = await this.storage.saveBuffer({
       folder: "user-assets",
-      fileName: originalName,
-      mimeType: file.mimetype,
-      buffer: file.buffer,
+        fileName: originalName,
+        mimeType,
+        buffer: file.buffer,
     });
 
     const asset = await this.prisma.asset.create({
       data: {
         uploaderId: userId,
         fileName: originalName,
-        mimeType: file.mimetype,
+        mimeType,
         url: stored.url,
         source: "uploaded",
         metadata: {
@@ -281,7 +282,7 @@ export class AssetsService {
   ) {
     const mimeType = input.mimeType.toLowerCase();
     if (!this.isSafeMimeType(mimeType)) {
-      throw new BadRequestException("unsupported asset type");
+      throw new BadRequestException(`unsupported asset type: ${input.mimeType || "unknown"}`);
     }
 
     if (input.size !== undefined) {
@@ -335,5 +336,23 @@ export class AssetsService {
 
   private isTextMimeType(mimeType: string) {
     return TEXT_MIME_TYPES.includes(mimeType.toLowerCase());
+  }
+
+  private normalizeMimeType(mimeType: string | undefined, fileName: string) {
+    const normalized = mimeType?.split(";")[0]?.trim().toLowerCase() ?? "";
+    if (normalized && normalized !== "application/octet-stream") {
+      return normalized;
+    }
+
+    const extension = fileName.split(".").pop()?.toLowerCase();
+    if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
+    if (extension === "png") return "image/png";
+    if (extension === "webp") return "image/webp";
+    if (extension === "gif") return "image/gif";
+    if (extension === "avif") return "image/avif";
+    if (extension === "bmp") return "image/bmp";
+    if (extension === "txt") return "text/plain";
+    if (extension === "md" || extension === "markdown") return "text/markdown";
+    return normalized || "application/octet-stream";
   }
 }

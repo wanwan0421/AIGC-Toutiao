@@ -3805,7 +3805,7 @@ export default function EditorPage() {
       <input
         ref={imageInputRef}
         type="file"
-        accept="image/*"
+        accept="image/jpeg,image/png,image/webp,image/gif,image/avif,image/bmp"
         className="hidden"
         onChange={(event) => {
           void handleAssetUpload(event.target.files?.[0]);
