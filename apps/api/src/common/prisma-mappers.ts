@@ -14,6 +14,7 @@ import {
   type ContentDetail,
   type ContentSummary
 } from "@aicp/shared";
+import { getUploadPublicBase } from "../modules/storage/storage.config";
 
 type UserLike = {
   id: string;
@@ -100,7 +101,7 @@ export function toAssetSummary(asset: AssetLike): AssetSummary {
     id: asset.id,
     fileName: asset.fileName,
     mimeType: asset.mimeType,
-    url: asset.url,
+    url: normalizeAssetUrl(asset.url),
     auditStatus: asset.auditStatus,
     auditReason: asset.auditReason ?? undefined,
     riskLevel: (asset.riskLevel as AssetSummary["riskLevel"]) ?? undefined,
@@ -117,7 +118,7 @@ export function toContentSummary(content: ContentLike): ContentSummary {
     id: content.id,
     title: content.title,
     excerpt: content.excerpt ?? content.body.slice(0, 72),
-    coverUrl: coverAsset?.url,
+    coverUrl: coverAsset ? normalizeAssetUrl(coverAsset.url) : undefined,
     status: toApiContentStatus(content.status),
     visibility: content.visibility,
     author: {
@@ -137,6 +138,15 @@ export function toContentSummary(content: ContentLike): ContentSummary {
     scheduledAt: content.scheduledAt?.toISOString(),
     updatedAt: content.updatedAt.toISOString()
   };
+}
+
+function normalizeAssetUrl(url: string) {
+  const uploadMatch = url.match(/\/api\/uploads\/(.+)$/);
+  if (!uploadMatch?.[1]) {
+    return url;
+  }
+
+  return `${getUploadPublicBase()}/${uploadMatch[1]}`;
 }
 
 export function toContentDetail(content: ContentLike & { assets: ContentAssetLike[] }): ContentDetail {

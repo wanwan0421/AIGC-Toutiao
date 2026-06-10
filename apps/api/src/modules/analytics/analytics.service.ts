@@ -122,7 +122,7 @@ export class AnalyticsService {
           COUNT(*)::bigint as count
         FROM "UserActionEvent"
         WHERE 
-          "contentId" IN (SELECT id FROM "Content" WHERE "authorId" = ${userId}::uuid)
+          "contentId" IN (SELECT id FROM "Content" WHERE "authorId" = ${userId})
           AND "createdAt" >= ${previousStart}::timestamp
         GROUP BY DATE_TRUNC('day', "createdAt")::date, "eventType"
         ORDER BY event_date, event_type

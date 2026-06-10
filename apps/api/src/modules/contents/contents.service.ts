@@ -91,6 +91,10 @@ export class ContentsService {
         author: {
           select: { id: true, accountNo: true, nickname: true, avatarUrl: true },
         },
+        assets: {
+          include: { asset: true },
+          orderBy: { sortOrder: "asc" as const },
+        },
         _count: { select: { comments: true } },
       },
       orderBy: { createdAt: "desc" },
