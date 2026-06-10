@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import NextImage from "next/image";
 
 type OptimizedImageProps = {
@@ -28,13 +28,24 @@ export function OptimizedImage({
 }: OptimizedImageProps) {
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(false);
+  const [useRawFallback, setUseRawFallback] = useState(false);
   const imgRef = useRef<HTMLImageElement>(null);
+  const normalizedSrc = normalizeImageSrc(src);
 
   useEffect(() => {
+    setLoaded(false);
+    setError(false);
+    setUseRawFallback(false);
     if (imgRef.current?.complete) {
       setLoaded(true);
     }
-  }, [src]);
+  }, [normalizedSrc]);
+
+  const shouldBypassOptimizer = normalizedSrc.startsWith("blob:") || normalizedSrc.startsWith("data:");
+  const canFallbackToRawImage = /\/api\/uploads\//.test(normalizedSrc);
+  const imageClassName = `h-full w-full object-cover transition-opacity duration-300 ${
+    loaded ? "opacity-100" : "opacity-0"
+  }`;
 
   return (
     <div
@@ -49,25 +60,45 @@ export function OptimizedImage({
           <div className="h-5 w-5 animate-pulse rounded-full bg-slate-200" />
         </div>
       )}
-      <NextImage
-        ref={imgRef as any}
-        src={src}
-        alt={alt}
-        width={fill ? undefined : width}
-        height={fill ? undefined : height}
-        fill={fill}
-        className={`h-full w-full object-cover transition-opacity duration-300 ${
-          loaded ? "opacity-100" : "opacity-0"
-        }`}
-        loading={priority ? "eager" : "lazy"}
-        fetchPriority={priority ? "high" : "auto"}
-        decoding="async"
-        onLoadingComplete={() => setLoaded(true)}
-        onError={() => setError(true)}
-        onClick={onClick}
-        draggable={false}
-        unoptimized={src.startsWith("blob:") || src.startsWith("data:")}
-      />
+      {useRawFallback ? (
+        <img
+          ref={imgRef}
+          src={normalizedSrc}
+          alt={alt}
+          className={imageClassName}
+          loading={priority ? "eager" : "lazy"}
+          fetchPriority={priority ? "high" : "auto"}
+          decoding="async"
+          onLoad={() => setLoaded(true)}
+          onError={() => setError(true)}
+          onClick={onClick}
+          draggable={false}
+        />
+      ) : (
+        <NextImage
+          ref={imgRef as any}
+          src={normalizedSrc}
+          alt={alt}
+          width={fill ? undefined : width}
+          height={fill ? undefined : height}
+          fill={fill}
+          className={imageClassName}
+          loading={priority ? "eager" : "lazy"}
+          fetchPriority={priority ? "high" : "auto"}
+          decoding="async"
+          onLoadingComplete={() => setLoaded(true)}
+          onError={() => {
+            if (canFallbackToRawImage) {
+              setUseRawFallback(true);
+              return;
+            }
+            setError(true);
+          }}
+          onClick={onClick}
+          draggable={false}
+          unoptimized={shouldBypassOptimizer}
+        />
+      )}
       {error && (
         <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-100 text-slate-400">
           <span className="text-xs">图片加载失败</span>
@@ -75,4 +106,16 @@ export function OptimizedImage({
       )}
     </div>
   );
+}
+
+function normalizeImageSrc(src: string) {
+  try {
+    const url = new URL(src);
+    if (url.pathname.startsWith("/api/uploads/")) {
+      return `${url.pathname}${url.search}${url.hash}`;
+    }
+  } catch {
+  }
+
+  return src;
 }
