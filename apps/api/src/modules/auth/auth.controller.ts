@@ -74,7 +74,7 @@ export class AuthController {
     response.cookie(ACCESS_COOKIE_NAME, accessToken, {
       httpOnly: true,
       sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
+      secure: this.cookieSecure(),
       path: "/api",
       maxAge: ACCESS_TOKEN_MAX_AGE_MS
     });
@@ -82,7 +82,7 @@ export class AuthController {
     response.cookie(REFRESH_COOKIE_NAME, refreshToken, {
       httpOnly: true,
       sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
+      secure: this.cookieSecure(),
       path: "/api/auth",
       maxAge: REFRESH_TOKEN_MAX_AGE_MS
     });
@@ -92,16 +92,24 @@ export class AuthController {
     response.clearCookie(ACCESS_COOKIE_NAME, {
       httpOnly: true,
       sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
+      secure: this.cookieSecure(),
       path: "/api"
     });
 
     response.clearCookie(REFRESH_COOKIE_NAME, {
       httpOnly: true,
       sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
+      secure: this.cookieSecure(),
       path: "/api/auth"
     });
+  }
+
+  private cookieSecure() {
+    const configured = process.env.AUTH_COOKIE_SECURE?.trim().toLowerCase();
+    if (configured) {
+      return configured === "1" || configured === "true" || configured === "yes";
+    }
+    return process.env.NODE_ENV === "production";
   }
 
   private stripTokens<T extends { accessToken: string; refreshToken: string; refreshExpiresIn: number }>(result: T) {

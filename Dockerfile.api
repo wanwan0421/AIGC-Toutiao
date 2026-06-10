@@ -1,0 +1,25 @@
+FROM node:20-bookworm-slim
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV API_PORT=3001
+ENV DATABASE_URL=postgresql://aicp:aicp@postgres:5432/aicp?schema=public
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates openssl \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY package.json package-lock.json tsconfig.base.json ./
+COPY packages ./packages
+COPY apps/api ./apps/api
+COPY apps/web/package.json ./apps/web/package.json
+
+RUN npm ci
+RUN npm run build -w @aicp/shared \
+  && npm run prisma -w @aicp/api -- generate \
+  && npm run build -w @aicp/api
+
+EXPOSE 3001
+
+CMD ["sh", "-c", "npm run prisma -w @aicp/api -- migrate deploy && node apps/api/dist/main.js"]
