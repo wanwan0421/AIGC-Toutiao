@@ -336,16 +336,13 @@ function AssetPreviewModal({ asset, onClose }: { asset: AssetSummary; onClose: (
           </button>
         </div>
 
-        <div className="max-h-[64vh] overflow-auto bg-slate-50 p-5">
+        <div className="max-h-[64vh] overflow-hidden flex items-center justify-center bg-slate-50 p-5">
           {isImage ? (
-            <div className="mx-auto max-h-[58vh] max-w-full">
-              <OptimizedImage
+            <div className="mx-auto max-w-full max-h-[58vh]">
+              <img
                 src={asset.url}
                 alt={asset.fileName}
-                width={1200}
-                height={800}
-                priority={true}
-                className="rounded-2xl object-contain"
+                className="h-auto w-auto max-w-full max-h-[58vh] rounded-2xl object-contain"
               />
             </div>
           ) : loadingText ? (

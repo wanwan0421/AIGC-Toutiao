@@ -1,10 +1,9 @@
 {
   "metadata": {
-    "generatedAt": "2026-06-11T05:27:43.715Z",
-    "startedAt": "2026-06-11T05:16:36.131Z",
-    "endpoint": "http://127.0.0.1:3001/api/moderation/text",
-    "mode": "sequential single-concurrency full LLM moderation text workflow",
-    "retryPolicy": "failed samples retried up to 2 additional attempts with single concurrency"
+    "generatedAt": "2026-06-11T08:03:34.365Z",
+    "startedAt": "2026-06-11T07:52:07.490Z",
+    "mode": "Nest application context: ModerationService.checkText -> Workflow.checkText -> SkillExecutor.runContentSafetyReviewer",
+    "note": "Local HTTP API health check failed, so this run uses the same moderation service chain in process instead of the HTTP transport. ts-node transpile-only was used because current working tree has a TypeScript compile error outside the text moderation path."
   },
   "results": [
     {
@@ -14,43 +13,60 @@
       "expectedRiskLevel": "high",
       "expectedHighRisk": true,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 32952,
+      "statusCode": null,
+      "elapsedMs": 40900,
       "predictedRiskLevel": "high",
       "predictedHighRisk": true,
       "predictedRiskTypes": [
+        "gambling",
         "pornography"
       ],
-      "predictedRiskItemCount": 1,
+      "predictedRiskItemCount": 2,
       "audit": {
         "passed": false,
         "riskLevel": "high",
         "riskTypes": [
+          "gambling",
           "pornography"
         ],
         "reasons": [
+          "赌博词与站外联系方式组合出现，疑似赌博引流；疑似诱导参与赌博或赌博引流",
           "色情词与价格或联系方式组合出现，疑似色情交易或引流；命中涉黄敏感词"
         ],
         "rewriteAvailable": true,
         "riskItems": [
           {
+            "id": "rule_s5vr9h",
+            "source": "rule",
+            "type": "gambling",
+            "severity": "high",
+            "confidence": 0.95,
+            "evidence": "微信 abc888 带你进群下注",
+            "field": "body",
+            "startOffset": 13,
+            "endOffset": 29,
+            "ruleId": "combo:gambling_contact",
+            "reason": "赌博词与站外联系方式组合出现，疑似赌博引流；疑似诱导参与赌博或赌博引流",
+            "suggestion": "删除高风险引流、交易、联系方式或收益诱导表达。"
+          },
+          {
             "id": "rule_17qaifs",
             "source": "rule",
             "type": "pornography",
             "severity": "high",
-            "confidence": 0.94,
+            "confidence": 0.95,
             "evidence": "兼职副业私聊",
             "field": "title",
             "startOffset": 0,
             "endOffset": 6,
             "ruleId": "combo:porn_price_contact",
             "reason": "色情词与价格或联系方式组合出现，疑似色情交易或引流；命中涉黄敏感词",
-            "suggestion": "删除高危引流、交易、联系方式或收益诱导表达。"
+            "suggestion": "删除高风险引流、交易、联系方式或收益诱导表达。"
           }
         ],
         "categoryScores": {
-          "pornography": 0.94,
-          "gambling": 0,
+          "pornography": 0.95,
+          "gambling": 0.95,
           "drug": 0,
           "sensitive": 0,
           "vulgar": 0,
@@ -61,22 +77,30 @@
         }
       },
       "rewrite": {
-        "title": "正规兼职相关咨询",
-        "body": "如需了解合规合法的兼职相关信息，请通过平台官方正规渠道进行沟通咨询。",
+        "title": "正规副业经验交流",
+        "body": "大家可以一起交流合法合规的正规副业相关经验，共同探讨靠谱的增收思路。",
         "reasons": [
-          "移除疑似涉黄引流的诱导性标题表述",
-          "删除站外联系方式、赌博下注诱导、虚假收益承诺内容，规避涉赌涉诈风险"
+          "移除赌博诱导、站外联系方式等高危引流内容",
+          "删除疑似色情交易引流的违规诱导表述",
+          "保留合法合规的副业交流核心主题"
         ],
         "replacements": [
           {
+            "riskItemId": "rule_s5vr9h",
+            "original": "微信 abc888 带你进群下注",
+            "replacement": "交流合法合规的增收相关经验",
+            "reason": "移除赌博下注诱导、站外联系方式等高危引流内容，规避赌博引流风险"
+          },
+          {
             "riskItemId": "rule_17qaifs",
             "original": "兼职副业私聊",
-            "replacement": "正规兼职相关咨询",
-            "reason": "移除疑似涉黄引流的诱导性表述，符合内容安全规范"
+            "replacement": "正规副业经验交流",
+            "reason": "移除疑似色情交易引流的诱导性表述，符合内容安全规范"
           }
         ]
       },
-      "checkedAt": "2026-06-11T05:17:09.081Z"
+      "checkedAt": "2026-06-11T07:52:48.499Z",
+      "attempt": 1
     },
     {
       "id": "HR-002",
@@ -85,28 +109,43 @@
       "expectedRiskLevel": "high",
       "expectedHighRisk": true,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 13268,
-      "predictedRiskLevel": "low",
-      "predictedHighRisk": false,
+      "statusCode": null,
+      "elapsedMs": 34542,
+      "predictedRiskLevel": "high",
+      "predictedHighRisk": true,
       "predictedRiskTypes": [
-        "none"
+        "gambling"
       ],
-      "predictedRiskItemCount": 0,
+      "predictedRiskItemCount": 1,
       "audit": {
-        "passed": true,
-        "riskLevel": "low",
+        "passed": false,
+        "riskLevel": "high",
         "riskTypes": [
-          "none"
+          "gambling"
         ],
         "reasons": [
-          "未发现明显合规风险"
+          "赌博词与站外联系方式组合出现，疑似赌博引流"
         ],
-        "rewriteAvailable": false,
-        "riskItems": [],
+        "rewriteAvailable": true,
+        "riskItems": [
+          {
+            "id": "rule_1f3qfs5",
+            "source": "rule",
+            "type": "gambling",
+            "severity": "high",
+            "confidence": 0.95,
+            "evidence": "加V vip168，下单前先看赔率",
+            "field": "body",
+            "startOffset": 13,
+            "endOffset": 30,
+            "ruleId": "combo:gambling_contact",
+            "reason": "赌博词与站外联系方式组合出现，疑似赌博引流",
+            "suggestion": "删除高风险引流、交易、联系方式或收益诱导表达。"
+          }
+        ],
         "categoryScores": {
           "pornography": 0,
-          "gambling": 0,
+          "gambling": 0.95,
           "drug": 0,
           "sensitive": 0,
           "vulgar": 0,
@@ -116,9 +155,25 @@
           "minor": 0
         }
       },
-      "rewrite": null,
-      "checkedAt": "2026-06-11T05:24:51.371Z",
-      "retryNo": 1
+      "rewrite": {
+        "title": "理性生活提示",
+        "body": "非法私彩属于违法行为，公众应当自觉抵制各类博彩相关违规信息，不要参与任何违规投注活动。",
+        "reasons": [
+          "移除标题中涉及赌博黑话的违规表述",
+          "删除正文内的赌博引导内容与站外联系方式",
+          "替换所有违规博彩相关的诱导性描述"
+        ],
+        "replacements": [
+          {
+            "riskItemId": "rule_1f3qfs5",
+            "original": "加V vip168，下单前先看赔率",
+            "replacement": "自觉远离非法博彩活动，切勿参与违规投注",
+            "reason": "移除赌博引流相关的联系方式和投注引导内容，消除违规风险"
+          }
+        ]
+      },
+      "checkedAt": "2026-06-11T07:53:23.506Z",
+      "attempt": 1
     },
     {
       "id": "HR-003",
@@ -127,8 +182,8 @@
       "expectedRiskLevel": "high",
       "expectedHighRisk": true,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 32162,
+      "statusCode": null,
+      "elapsedMs": 27194,
       "predictedRiskLevel": "high",
       "predictedHighRisk": true,
       "predictedRiskTypes": [
@@ -147,22 +202,22 @@
         "rewriteAvailable": true,
         "riskItems": [
           {
-            "id": "rule_1y63hw6",
+            "id": "rule_14gzxij",
             "source": "rule",
             "type": "pornography",
             "severity": "high",
-            "confidence": 0.94,
-            "evidence": "包夜价格",
+            "confidence": 0.95,
+            "evidence": "包夜价格可谈，微信 night520",
             "field": "body",
             "startOffset": 0,
-            "endOffset": 4,
+            "endOffset": 18,
             "ruleId": "combo:porn_price_contact",
             "reason": "色情词与价格或联系方式组合出现，疑似色情交易或引流；命中涉黄敏感词",
             "suggestion": "删除高风险引流、交易、联系方式或收益诱导表达。"
           }
         ],
         "categoryScores": {
-          "pornography": 0.94,
+          "pornography": 0.95,
           "gambling": 0,
           "drug": 0,
           "sensitive": 0,
@@ -174,24 +229,24 @@
         }
       },
       "rewrite": {
-        "title": "同城健康交友",
-        "body": "欢迎各位用户在平台规则允许的范围内开展正向友好的同城社交互动，共同维护清朗健康的网络交流环境。",
+        "title": "正规同城健康交友",
+        "body": "欢迎广大用户参与合规正向的同城兴趣社交活动，共同拓展健康积极的社交圈。",
         "reasons": [
-          "移除涉色情交易相关违规表述",
-          "删除站外引流的联系方式",
-          "清除诱导转账的违规引导内容"
+          "移除涉黄交易相关违规表述",
+          "删除违规站外联系方式",
+          "删除诱导转账的高危违规内容"
         ],
         "replacements": [
           {
-            "riskItemId": "rule_1y63hw6",
-            "original": "包夜价格",
-            "replacement": "请关注健康、合规的内容与正规渠道发布的信息。",
-            "reason": "色情词与价格或联系方式组合出现，疑似色情交易或引流；命中涉黄敏感词"
+            "riskItemId": "rule_14gzxij",
+            "original": "包夜价格可谈，微信 night520，先付定金再安排。",
+            "replacement": "欢迎参与合规正向的同城兴趣社交活动",
+            "reason": "清除涉黄交易诱导、违规站外联系方式及资金诱导类高风险内容，符合内容安全发布规范"
           }
         ]
       },
-      "checkedAt": "2026-06-11T05:25:24.349Z",
-      "retryNo": 1
+      "checkedAt": "2026-06-11T07:53:51.160Z",
+      "attempt": 1
     },
     {
       "id": "HR-004",
@@ -200,39 +255,56 @@
       "expectedRiskLevel": "high",
       "expectedHighRisk": true,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 32224,
+      "statusCode": null,
+      "elapsedMs": 35912,
       "predictedRiskLevel": "high",
       "predictedHighRisk": true,
       "predictedRiskTypes": [
-        "pornography"
+        "pornography",
+        "sensitive"
       ],
-      "predictedRiskItemCount": 2,
+      "predictedRiskItemCount": 3,
       "audit": {
         "passed": false,
         "riskLevel": "high",
         "riskTypes": [
-          "pornography"
+          "pornography",
+          "sensitive"
         ],
         "reasons": [
           "色情词与价格或联系方式组合出现，疑似色情交易或引流；命中涉黄敏感词",
+          "疑似站外联系方式或引流表达",
           "命中涉黄敏感词"
         ],
         "rewriteAvailable": true,
         "riskItems": [
           {
-            "id": "rule_1xv1pd9",
+            "id": "rule_1bpmvob",
             "source": "rule",
             "type": "pornography",
             "severity": "high",
-            "confidence": 0.94,
-            "evidence": "付费裸聊",
+            "confidence": 0.95,
+            "evidence": "裸聊接单，私聊",
             "field": "body",
-            "startOffset": 0,
-            "endOffset": 4,
+            "startOffset": 2,
+            "endOffset": 9,
             "ruleId": "combo:porn_price_contact",
             "reason": "色情词与价格或联系方式组合出现，疑似色情交易或引流；命中涉黄敏感词",
             "suggestion": "删除高风险引流、交易、联系方式或收益诱导表达。"
+          },
+          {
+            "id": "rule_bic1o",
+            "source": "rule",
+            "type": "sensitive",
+            "severity": "medium",
+            "confidence": 0.8,
+            "evidence": "VX hotgirl88",
+            "field": "body",
+            "startOffset": 17,
+            "endOffset": 29,
+            "ruleId": "contact_wechat",
+            "reason": "疑似站外联系方式或引流表达",
+            "suggestion": "删除站外联系方式，改为平台内合规沟通方式。"
           },
           {
             "id": "rule_1ou6ru2",
@@ -250,10 +322,10 @@
           }
         ],
         "categoryScores": {
-          "pornography": 0.94,
+          "pornography": 0.95,
           "gambling": 0,
           "drug": 0,
-          "sensitive": 0,
+          "sensitive": 0.8,
           "vulgar": 0,
           "privacy": 0,
           "illegal": 0,
@@ -262,30 +334,36 @@
         }
       },
       "rewrite": {
-        "title": "合规内容资源",
-        "body": "本平台严禁发布色情交易、违规引流类内容，请所有用户自觉遵守社区公序良俗和内容发布规则。",
+        "title": "合规内容分享",
+        "body": "如有相关需求请通过平台官方合规渠道咨询沟通",
         "reasons": [
-          "移除标题涉黄敏感词",
-          "删除正文色情交易诱导表述与站外联系方式",
-          "替换为符合公序良俗的合规提示内容"
+          "移除涉黄交易诱导类高风险内容",
+          "删除违规站外引流联系方式",
+          "清除色情敏感违规表述"
         ],
         "replacements": [
+          {
+            "riskItemId": "rule_1bpmvob",
+            "original": "裸聊接单，私聊",
+            "replacement": "合规服务可在平台内咨询",
+            "reason": "替换涉黄交易诱导内容，消除色情服务相关风险"
+          },
+          {
+            "riskItemId": "rule_bic1o",
+            "original": "VX hotgirl88",
+            "replacement": "平台官方客服通道",
+            "reason": "移除违规站外引流联系方式，避免导流风险"
+          },
           {
             "riskItemId": "rule_1ou6ru2",
             "original": "裸聊",
             "replacement": "合规内容",
-            "reason": "替换涉黄敏感词，消除色情相关违规风险"
-          },
-          {
-            "riskItemId": "rule_1xv1pd9",
-            "original": "付费裸聊接单，私聊报价，联系方式 VX hotgirl88",
-            "replacement": "请遵守平台内容发布规范，不发布违规色情交易类信息",
-            "reason": "移除色情交易诱导内容和站外引流联系方式，规避涉黄交易导流风险"
+            "reason": "清除标题中的色情敏感词汇，符合内容规范"
           }
         ]
       },
-      "checkedAt": "2026-06-11T05:25:57.382Z",
-      "retryNo": 1
+      "checkedAt": "2026-06-11T07:54:27.526Z",
+      "attempt": 1
     },
     {
       "id": "HR-005",
@@ -294,8 +372,8 @@
       "expectedRiskLevel": "high",
       "expectedHighRisk": true,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 28454,
+      "statusCode": null,
+      "elapsedMs": 29806,
       "predictedRiskLevel": "high",
       "predictedHighRisk": true,
       "predictedRiskTypes": [
@@ -314,18 +392,18 @@
         "rewriteAvailable": true,
         "riskItems": [
           {
-            "id": "rule_1j07o9u",
+            "id": "rule_1hnbd6c",
             "source": "rule",
             "type": "drug",
             "severity": "high",
             "confidence": 0.94,
-            "evidence": "有冰毒货源，价格私聊，下单包邮，渠道稳定。",
+            "evidence": "冰毒货源，价格",
             "field": "body",
-            "startOffset": 0,
-            "endOffset": 21,
+            "startOffset": 1,
+            "endOffset": 8,
             "ruleId": "combo:drug_transaction",
             "reason": "涉毒词与交易表达组合出现，疑似涉毒交易；命中涉毒敏感词",
-            "suggestion": "删除高危引流、交易、联系方式或收益诱导表达。"
+            "suggestion": "删除高风险引流、交易、联系方式或收益诱导表达。"
           }
         ],
         "categoryScores": {
@@ -341,21 +419,23 @@
         }
       },
       "rewrite": {
-        "title": "正规合法渠道提示",
-        "body": "相关合法合规的正规经营渠道请通过官方公开途径咨询了解",
+        "title": "合规经营提示",
+        "body": "请严格遵守国家各项法律法规，远离违禁物品，自觉抵制各类违法交易行为。",
         "reasons": [
-          "删除全部涉毒交易相关违规表述，杜绝涉毒违法信息传播"
+          "移除全部涉毒交易相关违规内容",
+          "替换高风险涉毒导流表述，符合内容安全规范"
         ],
         "replacements": [
           {
-            "riskItemId": "rule_1j07o9u",
-            "original": "有冰毒货源，价格私聊，下单包邮，渠道稳定。",
-            "replacement": "相关合法合规的正规经营渠道请通过官方公开途径咨询了解",
-            "reason": "替换涉毒交易类高风险违规内容，符合内容安全管理规范要求"
+            "riskItemId": "rule_1hnbd6c",
+            "original": "有冰毒货源，价格",
+            "replacement": "请遵守国家法律法规，远离违禁物品交易",
+            "reason": "删除涉毒敏感词与交易诱导内容，消除涉毒违规风险"
           }
         ]
       },
-      "checkedAt": "2026-06-11T05:17:44.924Z"
+      "checkedAt": "2026-06-11T07:54:57.783Z",
+      "attempt": 1
     },
     {
       "id": "HR-006",
@@ -364,8 +444,8 @@
       "expectedRiskLevel": "high",
       "expectedHighRisk": true,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 22364,
+      "statusCode": null,
+      "elapsedMs": 27452,
       "predictedRiskLevel": "low",
       "predictedHighRisk": false,
       "predictedRiskTypes": [
@@ -396,7 +476,8 @@
         }
       },
       "rewrite": null,
-      "checkedAt": "2026-06-11T05:18:07.648Z"
+      "checkedAt": "2026-06-11T07:55:25.698Z",
+      "attempt": 1
     },
     {
       "id": "HR-007",
@@ -405,8 +486,8 @@
       "expectedRiskLevel": "high",
       "expectedHighRisk": true,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 34209,
+      "statusCode": null,
+      "elapsedMs": 39671,
       "predictedRiskLevel": "high",
       "predictedHighRisk": true,
       "predictedRiskTypes": [
@@ -468,27 +549,28 @@
       },
       "rewrite": {
         "title": "个人资料误发",
-        "body": "相关个人证件信息和银行卡信息请帮我核对。",
+        "body": "身份证号 [已隐去身份证敏感信息] 和银行卡 [已隐去银行卡号敏感信息] 请通过安全私密渠道提供相关信息后帮我核对。",
         "reasons": [
           "移除公开泄露的身份证号隐私信息",
-          "移除公开泄露的银行卡号金融敏感信息，避免个人权益受损"
+          "移除公开泄露的银行卡号金融敏感信息"
         ],
         "replacements": [
           {
             "riskItemId": "rule_1egzqu1",
             "original": "110101199003079876",
-            "replacement": "相关个人证件号码",
-            "reason": "替换公开泄露的身份证号，消除隐私泄露风险"
+            "replacement": "[已隐去身份证敏感信息]",
+            "reason": "删除公开泄露的居民身份证号码，避免个人隐私泄露"
           },
           {
             "riskItemId": "rule_1vvqtd6",
             "original": "6222 0212 3456 7890 123",
-            "replacement": "相关银行卡号",
-            "reason": "替换公开泄露的银行卡号，消除金融敏感信息泄露风险"
+            "replacement": "[已隐去银行卡号敏感信息]",
+            "reason": "删除公开泄露的银行卡号，避免个人金融隐私泄露"
           }
         ]
       },
-      "checkedAt": "2026-06-11T05:18:42.212Z"
+      "checkedAt": "2026-06-11T07:56:05.831Z",
+      "attempt": 1
     },
     {
       "id": "HR-008",
@@ -497,8 +579,8 @@
       "expectedRiskLevel": "medium",
       "expectedHighRisk": false,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 14248,
+      "statusCode": null,
+      "elapsedMs": 19602,
       "predictedRiskLevel": "low",
       "predictedHighRisk": false,
       "predictedRiskTypes": [
@@ -529,7 +611,8 @@
         }
       },
       "rewrite": null,
-      "checkedAt": "2026-06-11T05:18:56.813Z"
+      "checkedAt": "2026-06-11T07:56:25.886Z",
+      "attempt": 1
     },
     {
       "id": "HR-009",
@@ -538,30 +621,45 @@
       "expectedRiskLevel": "high",
       "expectedHighRisk": true,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 26078,
-      "predictedRiskLevel": "low",
+      "statusCode": null,
+      "elapsedMs": 35543,
+      "predictedRiskLevel": "medium",
       "predictedHighRisk": false,
       "predictedRiskTypes": [
-        "none"
+        "sensitive"
       ],
-      "predictedRiskItemCount": 0,
+      "predictedRiskItemCount": 1,
       "audit": {
-        "passed": true,
-        "riskLevel": "low",
+        "passed": false,
+        "riskLevel": "medium",
         "riskTypes": [
-          "none"
+          "sensitive"
         ],
         "reasons": [
-          "未发现明显合规风险"
+          "疑似站外联系方式或引流表达；命中敏感敏感词；命中敏感敏感词"
         ],
-        "rewriteAvailable": false,
-        "riskItems": [],
+        "rewriteAvailable": true,
+        "riskItems": [
+          {
+            "id": "rule_1y4mg9r",
+            "source": "rule",
+            "type": "sensitive",
+            "severity": "medium",
+            "confidence": 0.8,
+            "evidence": "微信 order888",
+            "field": "body",
+            "startOffset": 10,
+            "endOffset": 21,
+            "ruleId": "contact_wechat",
+            "reason": "疑似站外联系方式或引流表达；命中敏感敏感词；命中敏感敏感词",
+            "suggestion": "删除站外联系方式，改为平台内合规沟通方式。"
+          }
+        ],
         "categoryScores": {
           "pornography": 0,
           "gambling": 0,
           "drug": 0,
-          "sensitive": 0,
+          "sensitive": 0.8,
           "vulgar": 0,
           "privacy": 0,
           "illegal": 0,
@@ -569,8 +667,25 @@
           "minor": 0
         }
       },
-      "rewrite": null,
-      "checkedAt": "2026-06-11T05:19:23.257Z"
+      "rewrite": {
+        "title": "警惕刷单返利类诈骗",
+        "body": "刷单返利是典型的电信诈骗手段，不存在稳赚不赔的情况，请勿轻信任何要求先交保证金的陌生入群邀请，不要随意添加陌生站外联系方式，避免遭受财产损失。",
+        "reasons": [
+          "删除诱导参与刷单诈骗的违规表述",
+          "移除站外引流的微信联系方式",
+          "补充反诈提示引导用户提高防范意识"
+        ],
+        "replacements": [
+          {
+            "riskItemId": "rule_1y4mg9r",
+            "original": "微信 order888",
+            "replacement": "陌生站外联系方式",
+            "reason": "删除违规站外引流账号信息，避免诱导用户跳转至平台外接触诈骗内容"
+          }
+        ]
+      },
+      "checkedAt": "2026-06-11T07:57:01.882Z",
+      "attempt": 1
     },
     {
       "id": "HR-010",
@@ -579,8 +694,8 @@
       "expectedRiskLevel": "high",
       "expectedHighRisk": true,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 21845,
+      "statusCode": null,
+      "elapsedMs": 18089,
       "predictedRiskLevel": "low",
       "predictedHighRisk": false,
       "predictedRiskTypes": [
@@ -611,7 +726,8 @@
         }
       },
       "rewrite": null,
-      "checkedAt": "2026-06-11T05:19:45.465Z"
+      "checkedAt": "2026-06-11T07:57:20.433Z",
+      "attempt": 1
     },
     {
       "id": "HR-011",
@@ -620,8 +736,8 @@
       "expectedRiskLevel": "low",
       "expectedHighRisk": false,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 11331,
+      "statusCode": null,
+      "elapsedMs": 8678,
       "predictedRiskLevel": "low",
       "predictedHighRisk": false,
       "predictedRiskTypes": [
@@ -652,7 +768,8 @@
         }
       },
       "rewrite": null,
-      "checkedAt": "2026-06-11T05:19:57.147Z"
+      "checkedAt": "2026-06-11T07:57:29.569Z",
+      "attempt": 1
     },
     {
       "id": "HR-012",
@@ -661,8 +778,8 @@
       "expectedRiskLevel": "low",
       "expectedHighRisk": false,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 11471,
+      "statusCode": null,
+      "elapsedMs": 10983,
       "predictedRiskLevel": "low",
       "predictedHighRisk": false,
       "predictedRiskTypes": [
@@ -693,7 +810,8 @@
         }
       },
       "rewrite": null,
-      "checkedAt": "2026-06-11T05:20:08.969Z"
+      "checkedAt": "2026-06-11T07:57:41.006Z",
+      "attempt": 1
     },
     {
       "id": "HR-013",
@@ -702,8 +820,8 @@
       "expectedRiskLevel": "low",
       "expectedHighRisk": false,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 11036,
+      "statusCode": null,
+      "elapsedMs": 8359,
       "predictedRiskLevel": "low",
       "predictedHighRisk": false,
       "predictedRiskTypes": [
@@ -734,7 +852,8 @@
         }
       },
       "rewrite": null,
-      "checkedAt": "2026-06-11T05:20:20.360Z"
+      "checkedAt": "2026-06-11T07:57:49.822Z",
+      "attempt": 1
     },
     {
       "id": "HR-014",
@@ -743,8 +862,8 @@
       "expectedRiskLevel": "low",
       "expectedHighRisk": false,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 9938,
+      "statusCode": null,
+      "elapsedMs": 9828,
       "predictedRiskLevel": "low",
       "predictedHighRisk": false,
       "predictedRiskTypes": [
@@ -775,7 +894,8 @@
         }
       },
       "rewrite": null,
-      "checkedAt": "2026-06-11T05:20:30.653Z"
+      "checkedAt": "2026-06-11T07:58:00.106Z",
+      "attempt": 1
     },
     {
       "id": "HR-015",
@@ -784,8 +904,8 @@
       "expectedRiskLevel": "low",
       "expectedHighRisk": false,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 12075,
+      "statusCode": null,
+      "elapsedMs": 9617,
       "predictedRiskLevel": "low",
       "predictedHighRisk": false,
       "predictedRiskTypes": [
@@ -816,7 +936,8 @@
         }
       },
       "rewrite": null,
-      "checkedAt": "2026-06-11T05:20:43.091Z"
+      "checkedAt": "2026-06-11T07:58:10.189Z",
+      "attempt": 1
     },
     {
       "id": "HR-016",
@@ -825,8 +946,8 @@
       "expectedRiskLevel": "low",
       "expectedHighRisk": false,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 14929,
+      "statusCode": null,
+      "elapsedMs": 18355,
       "predictedRiskLevel": "high",
       "predictedHighRisk": true,
       "predictedRiskTypes": [
@@ -840,7 +961,7 @@
           "pornography"
         ],
         "reasons": [
-          "疑似色情网站访问引导或涉黄引流"
+          "疑似色情网站访问引导或涉黄引流；色情词与价格或联系方式组合出现，疑似色情交易或引流"
         ],
         "rewriteAvailable": true,
         "riskItems": [
@@ -855,7 +976,7 @@
             "startOffset": 5,
             "endOffset": 9,
             "ruleId": "porn_site_diversion",
-            "reason": "疑似色情网站访问引导或涉黄引流",
+            "reason": "疑似色情网站访问引导或涉黄引流；色情词与价格或联系方式组合出现，疑似色情交易或引流",
             "suggestion": "删除色情网站访问引导、涉黄描述和站外引流表达。"
           }
         ],
@@ -873,20 +994,21 @@
       },
       "rewrite": {
         "title": "内容安全复盘",
-        "body": "平台应识别色情违规导流行为、涉赌宣传和违法交易，但不能误伤法律科普文章。",
+        "body": "平台应识别色情类违规导流、涉赌宣传和违法交易内容，但不能误伤法律科普文章。",
         "reasons": [
-          "调整高风险敏感表述，完整保留原有内容安全复盘的核心语义，避免规则误判"
+          "调整易触发规则误判的高风险涉黄相关敏感表述，完整保留原内容的核心主题和有效信息"
         ],
         "replacements": [
           {
             "riskItemId": "rule_3n8x2h",
             "original": "涉黄引流",
-            "replacement": "色情违规导流行为",
-            "reason": "优化高风险敏感表述，保留原语义的同时消除违规命中风险"
+            "replacement": "色情类违规导流",
+            "reason": "替换易触发内容安全规则误判的敏感表述，保留原句语义同时符合合规要求"
           }
         ]
       },
-      "checkedAt": "2026-06-11T05:20:58.376Z"
+      "checkedAt": "2026-06-11T07:58:29.001Z",
+      "attempt": 1
     },
     {
       "id": "HR-017",
@@ -895,30 +1017,45 @@
       "expectedRiskLevel": "medium",
       "expectedHighRisk": false,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 17524,
-      "predictedRiskLevel": "low",
+      "statusCode": null,
+      "elapsedMs": 40438,
+      "predictedRiskLevel": "medium",
       "predictedHighRisk": false,
       "predictedRiskTypes": [
-        "none"
+        "sensitive"
       ],
-      "predictedRiskItemCount": 0,
+      "predictedRiskItemCount": 1,
       "audit": {
-        "passed": true,
-        "riskLevel": "low",
+        "passed": false,
+        "riskLevel": "medium",
         "riskTypes": [
-          "none"
+          "sensitive"
         ],
         "reasons": [
-          "未发现明显合规风险"
+          "疑似站外联系方式或引流表达；命中敏感敏感词；命中敏感敏感词"
         ],
-        "rewriteAvailable": false,
-        "riskItems": [],
+        "rewriteAvailable": true,
+        "riskItems": [
+          {
+            "id": "rule_1uw5v96",
+            "source": "rule",
+            "type": "sensitive",
+            "severity": "medium",
+            "confidence": 0.8,
+            "evidence": "微信 aicp2026",
+            "field": "body",
+            "startOffset": 3,
+            "endOffset": 14,
+            "ruleId": "contact_wechat",
+            "reason": "疑似站外联系方式或引流表达；命中敏感敏感词；命中敏感敏感词",
+            "suggestion": "删除站外联系方式，改为平台内合规沟通方式。"
+          }
+        ],
         "categoryScores": {
           "pornography": 0,
           "gambling": 0,
           "drug": 0,
-          "sensitive": 0,
+          "sensitive": 0.8,
           "vulgar": 0,
           "privacy": 0,
           "illegal": 0,
@@ -926,8 +1063,24 @@
           "minor": 0
         }
       },
-      "rewrite": null,
-      "checkedAt": "2026-06-11T05:21:16.259Z"
+      "rewrite": {
+        "title": "前端技术交流社群",
+        "body": "欢迎在本平台内交流前端学习心得和作品打磨经验。",
+        "reasons": [
+          "移除站外引流类违规表达",
+          "删除外部联系方式，引导用户在平台内合规互动"
+        ],
+        "replacements": [
+          {
+            "riskItemId": "rule_1uw5v96",
+            "original": "微信 aicp2026",
+            "replacement": "在本平台内",
+            "reason": "移除站外联系方式引流风险，引导用户在平台内合规交流"
+          }
+        ]
+      },
+      "checkedAt": "2026-06-11T07:59:09.898Z",
+      "attempt": 1
     },
     {
       "id": "HR-018",
@@ -936,30 +1089,60 @@
       "expectedRiskLevel": "medium",
       "expectedHighRisk": false,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 10935,
-      "predictedRiskLevel": "low",
+      "statusCode": null,
+      "elapsedMs": 27540,
+      "predictedRiskLevel": "medium",
       "predictedHighRisk": false,
       "predictedRiskTypes": [
-        "none"
+        "sensitive"
       ],
-      "predictedRiskItemCount": 0,
+      "predictedRiskItemCount": 2,
       "audit": {
-        "passed": true,
-        "riskLevel": "low",
+        "passed": false,
+        "riskLevel": "medium",
         "riskTypes": [
-          "none"
+          "sensitive"
         ],
         "reasons": [
-          "未发现明显合规风险"
+          "疑似二维码或社群引流；命中敏感敏感词",
+          "疑似二维码或社群引流"
         ],
-        "rewriteAvailable": false,
-        "riskItems": [],
+        "rewriteAvailable": true,
+        "riskItems": [
+          {
+            "id": "rule_4ptfkf",
+            "source": "rule",
+            "type": "sensitive",
+            "severity": "medium",
+            "confidence": 0.8,
+            "evidence": "扫码进群",
+            "field": "body",
+            "startOffset": 0,
+            "endOffset": 4,
+            "ruleId": "qr_code_guide",
+            "reason": "疑似二维码或社群引流；命中敏感敏感词",
+            "suggestion": "移除二维码、拉群或私信进群等引流表达。"
+          },
+          {
+            "id": "rule_14tpfi3",
+            "source": "rule",
+            "type": "sensitive",
+            "severity": "medium",
+            "confidence": 0.8,
+            "evidence": "二维码",
+            "field": "title",
+            "startOffset": 0,
+            "endOffset": 3,
+            "ruleId": "qr_code_guide",
+            "reason": "疑似二维码或社群引流",
+            "suggestion": "移除二维码、拉群或私信进群等引流表达。"
+          }
+        ],
         "categoryScores": {
           "pornography": 0,
           "gambling": 0,
           "drug": 0,
-          "sensitive": 0,
+          "sensitive": 0.8,
           "vulgar": 0,
           "privacy": 0,
           "illegal": 0,
@@ -967,8 +1150,30 @@
           "minor": 0
         }
       },
-      "rewrite": null,
-      "checkedAt": "2026-06-11T05:21:27.557Z"
+      "rewrite": {
+        "title": "学习资料领取指引",
+        "body": "可通过官方指定渠道领取课程资料，平台内将为您分享相关学习笔记。",
+        "reasons": [
+          "移除疑似二维码及社群引流的高风险表述",
+          "保留原有学习资料分享的核心有效信息"
+        ],
+        "replacements": [
+          {
+            "riskItemId": "rule_4ptfkf",
+            "original": "扫码进群",
+            "replacement": "可通过官方指定渠道",
+            "reason": "移除社群进群诱导类引流表述，规避站外导流风险"
+          },
+          {
+            "riskItemId": "rule_14tpfi3",
+            "original": "二维码",
+            "replacement": "学习资料",
+            "reason": "移除二维码相关敏感引流表述，符合平台内容发布规范"
+          }
+        ]
+      },
+      "checkedAt": "2026-06-11T07:59:37.902Z",
+      "attempt": 1
     },
     {
       "id": "HR-019",
@@ -977,27 +1182,42 @@
       "expectedRiskLevel": "high",
       "expectedHighRisk": true,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 16049,
-      "predictedRiskLevel": "low",
-      "predictedHighRisk": false,
+      "statusCode": null,
+      "elapsedMs": 24701,
+      "predictedRiskLevel": "high",
+      "predictedHighRisk": true,
       "predictedRiskTypes": [
-        "none"
+        "pornography"
       ],
-      "predictedRiskItemCount": 0,
+      "predictedRiskItemCount": 1,
       "audit": {
-        "passed": true,
-        "riskLevel": "low",
+        "passed": false,
+        "riskLevel": "high",
         "riskTypes": [
-          "none"
+          "pornography"
         ],
         "reasons": [
-          "未发现明显合规风险"
+          "色情词与价格或联系方式组合出现，疑似色情交易或引流；疑似色情资源售卖或站外引流；色情词与价格或联系方式组合出现，疑似色情交易或引流；命中涉黄敏感词；命中涉黄敏感词"
         ],
-        "rewriteAvailable": false,
-        "riskItems": [],
+        "rewriteAvailable": true,
+        "riskItems": [
+          {
+            "id": "rule_l268hj",
+            "source": "rule",
+            "type": "pornography",
+            "severity": "high",
+            "confidence": 0.95,
+            "evidence": "成人视频合集低价出售，QQ 123456789",
+            "field": "body",
+            "startOffset": 0,
+            "endOffset": 23,
+            "ruleId": "combo:porn_price_contact",
+            "reason": "色情词与价格或联系方式组合出现，疑似色情交易或引流；疑似色情资源售卖或站外引流；色情词与价格或联系方式组合出现，疑似色情交易或引流；命中涉黄敏感词；命中涉黄敏感词",
+            "suggestion": "删除高风险引流、交易、联系方式或收益诱导表达。"
+          }
+        ],
         "categoryScores": {
-          "pornography": 0,
+          "pornography": 0.95,
           "gambling": 0,
           "drug": 0,
           "sensitive": 0,
@@ -1008,9 +1228,25 @@
           "minor": 0
         }
       },
-      "rewrite": null,
-      "checkedAt": "2026-06-11T05:26:14.236Z",
-      "retryNo": 1
+      "rewrite": {
+        "title": "正规公开影视内容合规提示",
+        "body": "网络环境需要共同维护，请勿传播违规资源、参与非法内容交易，自觉遵守相关法律法规。",
+        "reasons": [
+          "移除涉色情资源售卖的违规表述",
+          "删除站外引流联系方式",
+          "消除违规交易引导内容"
+        ],
+        "replacements": [
+          {
+            "riskItemId": "rule_l268hj",
+            "original": "成人视频合集低价出售，QQ 123456789",
+            "replacement": "网络环境需要共同维护，请勿传播违规资源",
+            "reason": "移除色情资源售卖相关违规表述，删除站外联系方式，消除违规交易引导，符合内容合规要求"
+          }
+        ]
+      },
+      "checkedAt": "2026-06-11T08:00:03.057Z",
+      "attempt": 1
     },
     {
       "id": "HR-020",
@@ -1019,25 +1255,57 @@
       "expectedRiskLevel": "high",
       "expectedHighRisk": true,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 27631,
-      "predictedRiskLevel": "medium",
-      "predictedHighRisk": false,
+      "statusCode": null,
+      "elapsedMs": 26800,
+      "predictedRiskLevel": "high",
+      "predictedHighRisk": true,
       "predictedRiskTypes": [
-        "gambling"
+        "gambling",
+        "sensitive"
       ],
-      "predictedRiskItemCount": 1,
+      "predictedRiskItemCount": 3,
       "audit": {
         "passed": false,
-        "riskLevel": "medium",
+        "riskLevel": "high",
         "riskTypes": [
-          "gambling"
+          "gambling",
+          "sensitive"
         ],
         "reasons": [
+          "赌博词与站外联系方式组合出现，疑似赌博引流",
+          "疑似二维码或社群引流；命中敏感敏感词",
           "命中涉赌敏感词"
         ],
         "rewriteAvailable": true,
         "riskItems": [
+          {
+            "id": "rule_1rgwde1",
+            "source": "rule",
+            "type": "gambling",
+            "severity": "high",
+            "confidence": 0.95,
+            "evidence": "下注跟我走，电报 tgwin888",
+            "field": "body",
+            "startOffset": 10,
+            "endOffset": 27,
+            "ruleId": "combo:gambling_contact",
+            "reason": "赌博词与站外联系方式组合出现，疑似赌博引流",
+            "suggestion": "删除高风险引流、交易、联系方式或收益诱导表达。"
+          },
+          {
+            "id": "rule_10g2i7r",
+            "source": "rule",
+            "type": "sensitive",
+            "severity": "medium",
+            "confidence": 0.8,
+            "evidence": "进群",
+            "field": "body",
+            "startOffset": 28,
+            "endOffset": 30,
+            "ruleId": "qr_code_guide",
+            "reason": "疑似二维码或社群引流；命中敏感敏感词",
+            "suggestion": "移除二维码、拉群或私信进群等引流表达。"
+          },
           {
             "id": "rule_zz2mql",
             "source": "rule",
@@ -1055,9 +1323,9 @@
         ],
         "categoryScores": {
           "pornography": 0,
-          "gambling": 0.78,
+          "gambling": 0.95,
           "drug": 0,
-          "sensitive": 0,
+          "sensitive": 0.8,
           "vulgar": 0,
           "privacy": 0,
           "illegal": 0,
@@ -1066,24 +1334,36 @@
         }
       },
       "rewrite": {
-        "title": "世界杯赛事看点推荐",
-        "body": "世界杯相关赛事赛程已正式公布，欢迎各位球迷理性观赛，共同感受足球运动的独特魅力。",
+        "title": "世界杯观赛指南",
+        "body": "世界杯赛事赛程已出，欢迎大家理性观赛，享受足球赛事乐趣，远离非法赌博活动，文明观赛。",
         "reasons": [
-          "移除标题中的涉赌敏感词汇",
-          "删除正文所有赌博诱导内容与违规站外引流联系方式",
-          "补充正向观赛引导内容，传递合规正向价值观"
+          "移除标题中的涉赌敏感词",
+          "删除正文内赌博诱导内容与站外联系方式",
+          "移除社群引流类违规表达，规避赌博引流风险"
         ],
         "replacements": [
           {
+            "riskItemId": "rule_1rgwde1",
+            "original": "下注跟我走，电报 tgwin888",
+            "replacement": "请大家理性观赛，远离非法赌博活动",
+            "reason": "移除赌博诱导话术和站外联系方式，消除赌博引流风险"
+          },
+          {
+            "riskItemId": "rule_10g2i7r",
+            "original": "进群",
+            "replacement": "文明观赛",
+            "reason": "移除社群引流相关违规表达，规避导流风险"
+          },
+          {
             "riskItemId": "rule_zz2mql",
             "original": "赌球",
-            "replacement": "世界杯赛事",
-            "reason": "替换涉赌敏感词汇，规避赌博相关违规风险"
+            "replacement": "世界杯观赛",
+            "reason": "移除涉赌敏感词，消除赌博相关违规指向"
           }
         ]
       },
-      "checkedAt": "2026-06-11T05:26:42.683Z",
-      "retryNo": 1
+      "checkedAt": "2026-06-11T08:00:30.313Z",
+      "attempt": 1
     },
     {
       "id": "HR-021",
@@ -1092,8 +1372,8 @@
       "expectedRiskLevel": "low",
       "expectedHighRisk": false,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 5206,
+      "statusCode": null,
+      "elapsedMs": 8801,
       "predictedRiskLevel": "low",
       "predictedHighRisk": false,
       "predictedRiskTypes": [
@@ -1124,8 +1404,8 @@
         }
       },
       "rewrite": null,
-      "checkedAt": "2026-06-11T05:26:48.696Z",
-      "retryNo": 1
+      "checkedAt": "2026-06-11T08:00:39.569Z",
+      "attempt": 1
     },
     {
       "id": "HR-022",
@@ -1134,8 +1414,8 @@
       "expectedRiskLevel": "low",
       "expectedHighRisk": false,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 9932,
+      "statusCode": null,
+      "elapsedMs": 11004,
       "predictedRiskLevel": "low",
       "predictedHighRisk": false,
       "predictedRiskTypes": [
@@ -1166,7 +1446,8 @@
         }
       },
       "rewrite": null,
-      "checkedAt": "2026-06-11T05:22:00.016Z"
+      "checkedAt": "2026-06-11T08:00:51.028Z",
+      "attempt": 1
     },
     {
       "id": "HR-023",
@@ -1175,8 +1456,8 @@
       "expectedRiskLevel": "high",
       "expectedHighRisk": true,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 25985,
+      "statusCode": null,
+      "elapsedMs": 29756,
       "predictedRiskLevel": "low",
       "predictedHighRisk": false,
       "predictedRiskTypes": [
@@ -1207,8 +1488,8 @@
         }
       },
       "rewrite": null,
-      "checkedAt": "2026-06-11T05:27:15.490Z",
-      "retryNo": 1
+      "checkedAt": "2026-06-11T08:01:21.239Z",
+      "attempt": 1
     },
     {
       "id": "HR-024",
@@ -1217,8 +1498,8 @@
       "expectedRiskLevel": "low",
       "expectedHighRisk": false,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 8012,
+      "statusCode": null,
+      "elapsedMs": 5306,
       "predictedRiskLevel": "low",
       "predictedHighRisk": false,
       "predictedRiskTypes": [
@@ -1249,8 +1530,8 @@
         }
       },
       "rewrite": null,
-      "checkedAt": "2026-06-11T05:27:24.313Z",
-      "retryNo": 1
+      "checkedAt": "2026-06-11T08:01:26.999Z",
+      "attempt": 1
     },
     {
       "id": "HR-025",
@@ -1259,8 +1540,8 @@
       "expectedRiskLevel": "high",
       "expectedHighRisk": true,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 18597,
+      "statusCode": null,
+      "elapsedMs": 24507,
       "predictedRiskLevel": "low",
       "predictedHighRisk": false,
       "predictedRiskTypes": [
@@ -1291,8 +1572,8 @@
         }
       },
       "rewrite": null,
-      "checkedAt": "2026-06-11T05:27:43.714Z",
-      "retryNo": 1
+      "checkedAt": "2026-06-11T08:01:51.965Z",
+      "attempt": 1
     },
     {
       "id": "HR-026",
@@ -1301,8 +1582,8 @@
       "expectedRiskLevel": "medium",
       "expectedHighRisk": false,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 33468,
+      "statusCode": null,
+      "elapsedMs": 31797,
       "predictedRiskLevel": "low",
       "predictedHighRisk": false,
       "predictedRiskTypes": [
@@ -1333,7 +1614,8 @@
         }
       },
       "rewrite": null,
-      "checkedAt": "2026-06-11T05:22:56.561Z"
+      "checkedAt": "2026-06-11T08:02:24.219Z",
+      "attempt": 1
     },
     {
       "id": "HR-027",
@@ -1342,8 +1624,8 @@
       "expectedRiskLevel": "medium",
       "expectedHighRisk": false,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 9925,
+      "statusCode": null,
+      "elapsedMs": 10611,
       "predictedRiskLevel": "low",
       "predictedHighRisk": false,
       "predictedRiskTypes": [
@@ -1374,7 +1656,8 @@
         }
       },
       "rewrite": null,
-      "checkedAt": "2026-06-11T05:23:06.851Z"
+      "checkedAt": "2026-06-11T08:02:35.292Z",
+      "attempt": 1
     },
     {
       "id": "HR-028",
@@ -1383,8 +1666,8 @@
       "expectedRiskLevel": "high",
       "expectedHighRisk": true,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 24990,
+      "statusCode": null,
+      "elapsedMs": 36821,
       "predictedRiskLevel": "high",
       "predictedHighRisk": true,
       "predictedRiskTypes": [
@@ -1444,28 +1727,29 @@
         }
       },
       "rewrite": {
-        "title": "禁毒知识科普",
-        "body": "我国法律明确规定大麻属于违禁毒品，严禁任何涉毒交易行为，涉毒将承担严重法律后果。",
+        "title": "远离毒品 珍爱生命",
+        "body": "毒品属于国家严格管制的违禁物品，严禁任何非法交易、流通行为，共同抵制涉毒违法活动。",
         "reasons": [
-          "移除全部涉毒交易相关违规敏感内容",
-          "替换为正向禁毒普法提示内容，消除涉毒交易诱导风险"
+          "移除全部涉毒交易相关违规表述",
+          "替换为正向禁毒提示内容，符合内容合规要求"
         ],
         "replacements": [
           {
             "riskItemId": "rule_15bctku",
             "original": "大麻交易",
-            "replacement": "禁毒知识科普",
-            "reason": "移除涉毒交易类违规标题表述，替换为正向禁毒宣传合规内容"
+            "replacement": "远离毒品 珍爱生命",
+            "reason": "移除涉毒交易相关违规表述，符合公序良俗与内容合规要求"
           },
           {
             "riskItemId": "rule_15t7iwj",
             "original": "大麻现货，价格",
-            "replacement": "我国法律明确规定大麻属于违禁毒品，严禁任何涉毒相关交易",
-            "reason": "移除涉毒交易诱导类违规内容，替换为合法禁毒普法提示内容"
+            "replacement": "毒品属于国家严格管制违禁品",
+            "reason": "删除涉毒交易引导类违规内容，规避涉毒违法风险"
           }
         ]
       },
-      "checkedAt": "2026-06-11T05:23:32.207Z"
+      "checkedAt": "2026-06-11T08:03:12.565Z",
+      "attempt": 1
     },
     {
       "id": "HR-029",
@@ -1474,8 +1758,8 @@
       "expectedRiskLevel": "low",
       "expectedHighRisk": false,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 8983,
+      "statusCode": null,
+      "elapsedMs": 8723,
       "predictedRiskLevel": "low",
       "predictedHighRisk": false,
       "predictedRiskTypes": [
@@ -1506,7 +1790,8 @@
         }
       },
       "rewrite": null,
-      "checkedAt": "2026-06-11T05:23:41.544Z"
+      "checkedAt": "2026-06-11T08:03:21.752Z",
+      "attempt": 1
     },
     {
       "id": "HR-030",
@@ -1515,8 +1800,8 @@
       "expectedRiskLevel": "low",
       "expectedHighRisk": false,
       "ok": true,
-      "statusCode": 201,
-      "elapsedMs": 12010,
+      "statusCode": null,
+      "elapsedMs": 12149,
       "predictedRiskLevel": "low",
       "predictedHighRisk": false,
       "predictedRiskTypes": [
@@ -1547,41 +1832,39 @@
         }
       },
       "rewrite": null,
-      "checkedAt": "2026-06-11T05:23:53.909Z"
+      "checkedAt": "2026-06-11T08:03:34.365Z",
+      "attempt": 1
     }
   ],
   "metrics": {
     "metadata": {
-      "generatedAt": "2026-06-11T05:27:43.715Z",
-      "startedAt": "2026-06-11T05:16:36.131Z",
-      "endpoint": "http://127.0.0.1:3001/api/moderation/text",
-      "evaluator": "full LLM workflow via POST /api/moderation/text; failed requests excluded from confusion matrix and counted separately",
+      "generatedAt": "2026-06-11T08:03:34.365Z",
+      "startedAt": "2026-06-11T07:52:07.490Z",
+      "mode": "Nest application context: ModerationService.checkText -> Workflow.checkText -> SkillExecutor.runContentSafetyReviewer",
+      "httpEndpoint": "POST /api/moderation/text (HTTP server unavailable in this run)",
       "threshold": 0.9
     },
     "totalSamples": 30,
     "completed": 30,
     "failed": 0,
     "confusionMatrix": {
-      "tp": 6,
+      "tp": 9,
       "fp": 1,
       "tn": 15,
-      "fn": 8
+      "fn": 5
     },
     "metrics": {
-      "accuracy": 0.7,
-      "highRiskRecall": 0.42857142857142855,
-      "highRiskPrecision": 0.8571428571428571,
-      "f1": 0.5714285714285714,
+      "accuracy": 0.8,
+      "highRiskRecall": 0.6428571428571429,
+      "highRiskPrecision": 0.9,
+      "f1": 0.75,
       "falsePositiveRate": 0.0625
     },
     "passed": false,
     "missedHighRiskSampleIds": [
-      "HR-002",
       "HR-006",
       "HR-009",
       "HR-010",
-      "HR-019",
-      "HR-020",
       "HR-023",
       "HR-025"
     ],

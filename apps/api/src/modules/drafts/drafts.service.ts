@@ -72,6 +72,20 @@ export class DraftsService {
     }
     const sanitizedPayload = await this.sanitizePayload(userId, body.payload);
 
+    const dataToUpdateInContent: Prisma.ContentUpdateInput = {};
+    if (body.title !== undefined) {
+      dataToUpdateInContent.title = body.title;
+    }
+    if (body.body !== undefined) {
+      dataToUpdateInContent.body = body.body;
+    }
+    if (Object.keys(dataToUpdateInContent).length > 0) {
+      await this.prisma.content.update({
+        where: { id: contentId },
+        data: dataToUpdateInContent,
+      });
+    }
+
     const draft = await this.prisma.draft.upsert({
       where: { contentId },
       create: {
