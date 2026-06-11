@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
-import { AssetAuditStatus, AssetRiskLevel, Prisma } from "@prisma/client";
+import { AssetAuditStatus, Prisma } from "@prisma/client";
 import type { GeneratedImageAsset } from "@aicp/shared";
 import { randomUUID } from "node:crypto";
 import { PrismaService } from "../../infra/prisma/prisma.service";
@@ -146,7 +146,7 @@ export class ImageGenerationService {
         source: "ai_generated",
         auditStatus: AssetAuditStatus.approved,
         auditReason: "AI生成图片默认免检",
-        riskLevel: AssetRiskLevel.low,
+        riskLevel: "low",
         riskTypes: [],
         metadata,
       },
