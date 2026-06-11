@@ -6,6 +6,7 @@ import { RedisService } from "../../infra/redis/redis.service";
 type AmapRegeoResponse = {
   status?: string;
   info?: string;
+  infocode?: string;
   regeocode?: {
     formatted_address?: string;
     addressComponent?: {
@@ -27,6 +28,7 @@ type AmapPoi = {
 type AmapPoiResponse = {
   status?: string;
   info?: string;
+  infocode?: string;
   pois?: AmapPoi[];
 };
 
@@ -120,8 +122,8 @@ export class LocationsService {
     return result;
   }
 
-  private async fetchAmap<T extends { status?: string; info?: string }>(path: string, params: Record<string, string>) {
-    const key = this.config.get<string>("AMAP_API_KEY");
+  private async fetchAmap<T extends { status?: string; info?: string; infocode?: string }>(path: string, params: Record<string, string>) {
+    const key = this.config.get<string>("AMAP_API_KEY")?.trim();
     if (!key) {
       throw new ServiceUnavailableException("AMAP_API_KEY is not configured");
     }
@@ -145,7 +147,8 @@ export class LocationsService {
     }
 
     if (payload.status !== "1") {
-      throw new ServiceUnavailableException(`AMap request failed: ${payload.info ?? "unknown error"}`);
+      const detail = [payload.info, payload.infocode].filter(Boolean).join(" / ");
+      throw new ServiceUnavailableException(`AMap request failed: ${detail || "unknown error"}`);
     }
 
     return payload;

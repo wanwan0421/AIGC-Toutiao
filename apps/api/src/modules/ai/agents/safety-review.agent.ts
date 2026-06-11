@@ -71,6 +71,55 @@ const SAFETY_REVIEW_FALLBACK_PROMPT = `你是中文内容安全审核专家，�
   "rewriteAvailable": true
 }`;
 
+const SAFETY_REVIEW_STRICT_FALLBACK_PROMPT = `You are a strict Chinese content safety reviewer. Judge whether the draft can be published. Do not score quality and do not rewrite the content.
+
+Title:
+{{title}}
+
+Body:
+{{body}}
+
+Rule-engine candidate risks. These may include false positives, but you must verify them and add semantic risks the rules missed:
+{{ruleRiskItemsJson}}
+
+Focus on pornography, gambling, drug, sensitive/contact diversion, vulgar content, privacy leakage, illegal trade, fraud, minor-safety risk, exaggerated absolute claims, and other publication compliance risks.
+
+Return only parseable JSON. Do not output Markdown. Required shape:
+{
+  "passed": false,
+  "riskLevel": "high",
+  "riskTypes": ["gambling"],
+  "categoryScores": {
+    "pornography": 0,
+    "gambling": 0.92,
+    "drug": 0,
+    "sensitive": 0.2,
+    "vulgar": 0,
+    "privacy": 0,
+    "illegal": 0,
+    "fraud": 0,
+    "minor": 0
+  },
+  "riskItems": [
+    {
+      "id": "llm_1",
+      "type": "gambling",
+      "severity": "high",
+      "confidence": 0.92,
+      "evidence": "the exact risky text copied from title or body",
+      "reason": "why this text is unsafe",
+      "source": "llm",
+      "field": "body",
+      "suggestion": "how to remove or rewrite the unsafe expression"
+    }
+  ],
+  "reasons": ["summary of blocking risks"],
+  "rewriteAvailable": true
+}
+
+If the content is unsafe, passed must be false, riskLevel must be medium or high, riskTypes must not contain only "none", and every concrete risky phrase must appear in riskItems with exact evidence copied from the title or body.
+If no obvious safety risk is found, return passed true, riskLevel "low", riskTypes ["none"], riskItems [], category scores near 0, and rewriteAvailable false.`;
+
 @Injectable()
 export class SafetyReviewAgent {
   constructor(
@@ -88,9 +137,9 @@ export class SafetyReviewAgent {
       ...input,
       ruleRiskItemsJson: JSON.stringify(input.ruleRiskItems ?? [], null, 2),
     };
-    const rendered = await this.prompts.render(AI_PROMPT_NAMES.safetyReview, variables, SAFETY_REVIEW_FALLBACK_PROMPT);
+    const rendered = await this.prompts.render(AI_PROMPT_NAMES.safetyReview, variables, SAFETY_REVIEW_STRICT_FALLBACK_PROMPT);
     const prompt = this.shouldUseFallback(rendered.prompt)
-      ? this.interpolate(SAFETY_REVIEW_FALLBACK_PROMPT, variables)
+      ? this.interpolate(SAFETY_REVIEW_STRICT_FALLBACK_PROMPT, variables)
       : rendered.prompt;
 
     try {
@@ -254,7 +303,18 @@ export class SafetyReviewAgent {
   }
 
   private shouldUseFallback(prompt: string) {
-    return !prompt.includes("riskItems");
+    const requiredTokens = [
+      "passed",
+      "riskLevel",
+      "riskTypes",
+      "categoryScores",
+      "riskItems",
+      "evidence",
+      "severity",
+      "confidence",
+      "rewriteAvailable",
+    ];
+    return requiredTokens.some((token) => !prompt.includes(token)) || /娴|妲|閸|绻|鐨|鍚|绉|闄/.test(prompt);
   }
 
   private interpolate(template: string, variables: Record<string, unknown>) {

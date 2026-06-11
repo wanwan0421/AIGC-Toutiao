@@ -1,9 +1,12 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
 import type {
+  AuditResult,
+  ComplianceRewriteResult,
   ContentApprovalResult,
   ContentVisibility,
   CreativeChatRequest,
   DirectGenerateRequest,
+  QualityScoreResult,
   SelectionRewriteRequest,
   TitleGenerateRequest,
 } from "@aicp/shared";
@@ -25,6 +28,25 @@ const contentInclude = {
     orderBy: { sortOrder: "asc" as const },
   },
 };
+
+const QUALITY_COMPLIANCE_BACKSTOP_THRESHOLD = 8;
+const QUALITY_COMPLIANCE_RISK_MARKERS = [
+  "涉赌",
+  "赌博",
+  "博彩",
+  "涉黄",
+  "色情",
+  "涉毒",
+  "毒品",
+  "违法",
+  "违规",
+  "诈骗",
+  "引流",
+  "隐私泄露",
+  "未成年人",
+  "合规性存在明显问题",
+  "合规风险",
+];
 
 @Injectable()
 export class ContentWorkflowEngine {
@@ -156,19 +178,33 @@ export class ContentWorkflowEngine {
       throw new BadRequestException("content must pass safety review before quality scoring");
     }
 
-    // 质量评分只为推荐/分发提供参考，不参与安全审核是否通过。
     const quality = await this.contentQualitySkill.score({ title: content.title, body: content.body });
+    const backstop = this.shouldRunQualityComplianceBackstop(quality)
+      ? await this.runQualityComplianceBackstop(id, content.title, content.body)
+      : null;
+
+    if (backstop && !backstop.audit.passed) {
+      const [, updated] = await this.prisma.$transaction([
+        this.createQualityScoreRecord(id, quality),
+        this.prisma.content.update({
+          where: { id },
+          data: {
+            status: DbContentStatus.rejected,
+            qualityScore: 0,
+          },
+          include: contentInclude,
+        }),
+      ]);
+
+      return {
+        content: toContentSummary(updated),
+        quality,
+      };
+    }
+
     const nextStatus = content.status === DbContentStatus.pending_review ? DbContentStatus.approved : content.status;
     const [, updated] = await this.prisma.$transaction([
-      this.prisma.qualityScore.create({
-        data: {
-          contentId: id,
-          total: quality.total,
-          dimensions: quality.dimensions as unknown as Prisma.InputJsonValue,
-          reason: quality.reason,
-          rawResponse: quality as unknown as Prisma.InputJsonValue,
-        },
-      }),
+      this.createQualityScoreRecord(id, quality),
       this.prisma.content.update({
         where: { id },
         data: {
@@ -215,6 +251,43 @@ export class ContentWorkflowEngine {
     return toContentSummary(updated);
   }
 
+  private shouldRunQualityComplianceBackstop(quality: QualityScoreResult) {
+    if (quality.dimensions.compliance <= QUALITY_COMPLIANCE_BACKSTOP_THRESHOLD) return true;
+    const reason = quality.reason.toLowerCase();
+    return QUALITY_COMPLIANCE_RISK_MARKERS.some((marker) => reason.includes(marker.toLowerCase()));
+  }
+
+  private async runQualityComplianceBackstop(contentId: string, title: string, body: string) {
+    const { audit, rewrite } = await this.skillExecutor.runContentSafetyReviewer({ title, body });
+    const auditRecord = await this.createAuditRecord(contentId, audit, rewrite);
+    return { audit, rewrite, auditRecord };
+  }
+
+  private createAuditRecord(contentId: string, audit: AuditResult, rewrite: ComplianceRewriteResult | null) {
+    return this.prisma.auditRecord.create({
+      data: {
+        contentId,
+        passed: audit.passed,
+        riskLevel: toDbAuditRiskLevel(audit.riskLevel),
+        riskTypes: audit.riskTypes,
+        reasons: audit.reasons,
+        rawResponse: { audit, rewrite } as unknown as Prisma.InputJsonValue,
+      },
+    });
+  }
+
+  private createQualityScoreRecord(contentId: string, quality: QualityScoreResult) {
+    return this.prisma.qualityScore.create({
+      data: {
+        contentId,
+        total: quality.total,
+        dimensions: quality.dimensions as unknown as Prisma.InputJsonValue,
+        reason: quality.reason,
+        rawResponse: quality as unknown as Prisma.InputJsonValue,
+      },
+    });
+  }
+
   async offline(userId: string, id: string) {
     await this.assertOwnedContent(userId, id);
     const updated = await this.prisma.content.update({
@@ -237,17 +310,7 @@ export class ContentWorkflowEngine {
       title: input.title,
       body: input.body,
     });
-    const createAuditRecord = () =>
-      this.prisma.auditRecord.create({
-        data: {
-          contentId: input.contentId,
-          passed: audit.passed,
-          riskLevel: toDbAuditRiskLevel(audit.riskLevel),
-          riskTypes: audit.riskTypes,
-          reasons: audit.reasons,
-          rawResponse: { audit, rewrite } as unknown as Prisma.InputJsonValue,
-        },
-      });
+    const createAuditRecord = () => this.createAuditRecord(input.contentId, audit, rewrite);
 
     const contentUpdateData = !audit.passed
       ? input.updateStatus

@@ -518,6 +518,10 @@ function isTextAsset(asset: AssetSummary) {
   return asset.mimeType.startsWith("text/");
 }
 
+function locationErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error && error.message ? `${fallback}：${error.message}` : fallback;
+}
+
 function assetIdFromUrl(assets: AssetSummary[], url?: string) {
   if (!url) return null;
   return assets.find((asset) => asset.url === url)?.id ?? null;
@@ -1444,6 +1448,13 @@ export default function EditorPage() {
   }
 
   async function refreshNearbyLocations(manual: boolean) {
+    if (typeof window !== "undefined" && !window.isSecureContext) {
+      setLocationStatus("unsupported");
+      setLocationCandidates([]);
+      if (manual) setStatusMessage("当前 HTTP 访问不支持浏览器定位，请使用地点搜索，或配置 HTTPS 后再获取附近地点");
+      return;
+    }
+
     if (typeof navigator === "undefined" || !navigator.geolocation) {
       setLocationStatus("unsupported");
       setLocationCandidates([]);
@@ -1464,6 +1475,7 @@ export default function EditorPage() {
         } catch (error) {
           setLocationStatus("failed");
           setLocationCandidates([]);
+          if (manual) setStatusMessage(locationErrorMessage(error, "附近地点获取失败"));
         }
       },
       (error) => {
@@ -1492,6 +1504,8 @@ export default function EditorPage() {
       setStatusMessage(response.candidates.length ? "已获取地点搜索结果" : "没有找到匹配地点");
     } catch (error) {
       setLocationStatus("failed");
+      setLocationCandidates([]);
+      setStatusMessage(locationErrorMessage(error, "地点搜索失败"));
     } finally {
       setIsSearchingLocation(false);
     }

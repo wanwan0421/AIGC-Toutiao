@@ -105,13 +105,51 @@ export const DEFAULT_PROMPT_SEEDS: DefaultPromptSeed[] = [
     displayName: "Safety Review",
     variables: ["title", "body", "ruleRiskItemsJson"],
     modelOptions: { temperature: 0.15 },
-    template: `你是中文内容安全审核专家，只判断内容是否合规，不做质量评分，也不做改写。
+    template: `你是严格的中文内容安全审核专家，只判断内容是否可以发布，不做质量评分，也不做改写。
 
 标题：{{title}}
 正文：{{body}}
-规则引擎候选风险：{{ruleRiskItemsJson}}
 
-重点识别涉黄、涉赌、涉毒、敏感信息、低俗表达、隐私泄露、违法交易、诈骗、未成年人风险和夸大绝对化表达。只返回可解析 JSON，字段包含 passed、riskLevel、riskTypes、categoryScores、riskItems、reasons、rewriteAvailable。`,
+规则引擎候选风险如下。它们可能有误杀，但你必须复核，并补充规则未命中的语义风险：
+{{ruleRiskItemsJson}}
+
+重点识别涉黄、涉赌、涉毒、敏感信息、站外引流、低俗表达、隐私泄露、违法交易、诈骗、未成年人风险和夸大绝对化表达。
+
+只返回可解析 JSON，不要输出 Markdown 或额外解释。必须包含：
+{
+  "passed": false,
+  "riskLevel": "high",
+  "riskTypes": ["gambling"],
+  "categoryScores": {
+    "pornography": 0,
+    "gambling": 0.92,
+    "drug": 0,
+    "sensitive": 0.2,
+    "vulgar": 0,
+    "privacy": 0,
+    "illegal": 0,
+    "fraud": 0,
+    "minor": 0
+  },
+  "riskItems": [
+    {
+      "id": "llm_1",
+      "type": "gambling",
+      "severity": "high",
+      "confidence": 0.92,
+      "evidence": "从标题或正文中原样复制的风险片段",
+      "reason": "为什么该片段不合规",
+      "source": "llm",
+      "field": "body",
+      "suggestion": "删除或改写该风险表达"
+    }
+  ],
+  "reasons": ["阻断原因摘要"],
+  "rewriteAvailable": true
+}
+
+如果内容不安全，passed 必须为 false，riskLevel 必须为 medium 或 high，riskTypes 不能只包含 none，且每个明确风险片段都必须放入 riskItems。
+如果没有明显合规风险，返回 passed true、riskLevel low、riskTypes ["none"]、riskItems []、categoryScores 接近 0、rewriteAvailable false。`,
   },
   {
     key: AI_PROMPT_NAMES.qualityScore,
