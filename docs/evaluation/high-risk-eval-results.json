@@ -1,0 +1,1150 @@
+[
+  {
+    "id": "HR-001",
+    "title": "兼职副业私聊",
+    "body": "今晚有稳定收益项目，私聊加微信 abc888 带你进群下注，老玩家都知道。",
+    "expectedRiskLevel": "high",
+    "expectedHighRisk": true,
+    "category": "gambling_contact",
+    "rationale": "涉赌表达与站外联系方式组合，属于高危引流。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "high",
+    "predictedHighRisk": true,
+    "predictedRiskTypes": [
+      "sensitive",
+      "pornography"
+    ],
+    "predictedRiskItemCount": 7,
+    "predictedEvidence": [
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "私聊",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:56eB6IGK"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "微信 abc888",
+        "reason": "疑似站外联系方式或引流表达；命中敏感敏感词；命中敏感敏感词",
+        "ruleId": "contact_wechat"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "进群",
+        "reason": "命中敏感敏感词；疑似二维码或社群引流",
+        "ruleId": "lexicon:sensitive:6L-b576k"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "下注",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5LiL5rOo"
+      },
+      {
+        "type": "pornography",
+        "severity": "high",
+        "evidence": "兼职副业私聊",
+        "reason": "色情词与价格或联系方式组合出现，疑似色情交易或引流；命中涉黄敏感词",
+        "ruleId": "combo:porn_price_contact"
+      }
+    ]
+  },
+  {
+    "id": "HR-002",
+    "title": "快速回血技巧",
+    "body": "私彩盘口今晚开放，想跟单的加V vip168，下单前先看赔率。",
+    "expectedRiskLevel": "high",
+    "expectedHighRisk": true,
+    "category": "gambling_contact",
+    "rationale": "私彩、盘口、赔率和加 V 组合，疑似赌博交易/引流。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "medium",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 2,
+    "predictedEvidence": [
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "私彩",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:56eB5b2p"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "加V vip168",
+        "reason": "疑似站外联系方式或引流表达；命中敏感敏感词",
+        "ruleId": "contact_wechat"
+      }
+    ]
+  },
+  {
+    "id": "HR-003",
+    "title": "同城交友",
+    "body": "包夜价格可谈，微信 night520，先付定金再安排。",
+    "expectedRiskLevel": "high",
+    "expectedHighRisk": true,
+    "category": "pornography_price_contact",
+    "rationale": "色情交易价格和联系方式组合。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "high",
+    "predictedHighRisk": true,
+    "predictedRiskTypes": [
+      "pornography",
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 4,
+    "predictedEvidence": [
+      {
+        "type": "pornography",
+        "severity": "high",
+        "evidence": "包夜价格可谈，微信 night5",
+        "reason": "色情词与价格或联系方式组合出现，疑似色情交易或引流；命中涉黄敏感词",
+        "ruleId": "combo:porn_price_contact"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "包夜",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5YyF5aSc"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "价格",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5Lu35qC8"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "微信 night520",
+        "reason": "疑似站外联系方式或引流表达；命中敏感敏感词",
+        "ruleId": "contact_wechat"
+      }
+    ]
+  },
+  {
+    "id": "HR-004",
+    "title": "裸聊资源",
+    "body": "付费裸聊接单，私聊报价，联系方式 VX hotgirl88。",
+    "expectedRiskLevel": "high",
+    "expectedHighRisk": true,
+    "category": "pornography_price_contact",
+    "rationale": "裸聊、付费、报价、联系方式组合。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "high",
+    "predictedHighRisk": true,
+    "predictedRiskTypes": [
+      "pornography",
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 7,
+    "predictedEvidence": [
+      {
+        "type": "pornography",
+        "severity": "high",
+        "evidence": "付费裸聊接单，私聊报价，联系方式 VX hot",
+        "reason": "色情词与价格或联系方式组合出现，疑似色情交易或引流；命中涉黄敏感词",
+        "ruleId": "combo:porn_price_contact"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "裸聊",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:6KO46IGK"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "私聊",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:56eB6IGK"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "联系方式",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:6IGU57O75pa55byP"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "VX hotgirl88",
+        "reason": "疑似站外联系方式或引流表达",
+        "ruleId": "contact_wechat"
+      }
+    ]
+  },
+  {
+    "id": "HR-005",
+    "title": "特殊渠道",
+    "body": "有冰毒货源，价格私聊，下单包邮，渠道稳定。",
+    "expectedRiskLevel": "high",
+    "expectedHighRisk": true,
+    "category": "drug_transaction",
+    "rationale": "涉毒词与购买/价格/下单等交易表达组合。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "high",
+    "predictedHighRisk": true,
+    "predictedRiskTypes": [
+      "drug",
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 4,
+    "predictedEvidence": [
+      {
+        "type": "drug",
+        "severity": "high",
+        "evidence": "有冰毒货源，价格私聊，下单包邮，渠道稳定。",
+        "reason": "涉毒词与交易表达组合出现，疑似涉毒交易；命中涉毒敏感词",
+        "ruleId": "combo:drug_transaction"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "冰毒",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5Yaw5q-S"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "价格",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5Lu35qC8"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "私聊",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:56eB6IGK"
+      }
+    ]
+  },
+  {
+    "id": "HR-006",
+    "title": "违禁品代购",
+    "body": "违禁品可代购，报价透明，货到付款，想要的私聊。",
+    "expectedRiskLevel": "high",
+    "expectedHighRisk": true,
+    "category": "illegal_trade",
+    "rationale": "违法交易与交易/联系方式表达。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "medium",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 6,
+    "predictedEvidence": [
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "违禁品",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:6L-d56aB5ZOB"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "代购",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5Luj6LSt"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "货到付款",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:6LSn5Yiw5LuY5qy-"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "私聊",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:56eB6IGK"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "违禁品",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:6L-d56aB5ZOB"
+      }
+    ]
+  },
+  {
+    "id": "HR-007",
+    "title": "个人资料误发",
+    "body": "身份证号 110101199003079876 和银行卡 6222 0212 3456 7890 123 请帮我核对。",
+    "expectedRiskLevel": "high",
+    "expectedHighRisk": true,
+    "category": "privacy",
+    "rationale": "身份证号和银行卡号属于高危隐私泄露。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "high",
+    "predictedHighRisk": true,
+    "predictedRiskTypes": [
+      "sensitive",
+      "privacy"
+    ],
+    "predictedRiskItemCount": 4,
+    "predictedEvidence": [
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "身份证",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:6Lqr5Lu96K-B"
+      },
+      {
+        "type": "privacy",
+        "severity": "high",
+        "evidence": "110101199003079876",
+        "reason": "疑似身份证号泄露；疑似银行卡号泄露",
+        "ruleId": "privacy_id_card_cn"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "银行卡",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:6ZO26KGM5Y2h"
+      },
+      {
+        "type": "privacy",
+        "severity": "high",
+        "evidence": "6222 0212 3456 7890 123 ",
+        "reason": "疑似银行卡号泄露",
+        "ruleId": "privacy_bank_card"
+      }
+    ]
+  },
+  {
+    "id": "HR-008",
+    "title": "用户信息清单",
+    "body": "张三手机号 13812345678，邮箱 test@example.com，可以直接联系。",
+    "expectedRiskLevel": "medium",
+    "expectedHighRisk": false,
+    "category": "privacy_contact",
+    "rationale": "手机号/邮箱为隐私与联系方式风险，但不按高危目标计入。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "medium",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "sensitive",
+      "privacy"
+    ],
+    "predictedRiskItemCount": 7,
+    "predictedEvidence": [
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "手机",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5omL5py6"
+      },
+      {
+        "type": "privacy",
+        "severity": "medium",
+        "evidence": "13812345678",
+        "reason": "疑似手机号泄露",
+        "ruleId": "privacy_phone_cn"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "test",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:VEVzVA"
+      },
+      {
+        "type": "privacy",
+        "severity": "medium",
+        "evidence": "test@example.com",
+        "reason": "疑似邮箱等联系方式泄露",
+        "ruleId": "privacy_email"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": ".com",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:LmNvbQ"
+      }
+    ]
+  },
+  {
+    "id": "HR-009",
+    "title": "刷单返利",
+    "body": "刷单返利稳赚不赔，加微信 order888，先交保证金即可入群。",
+    "expectedRiskLevel": "high",
+    "expectedHighRisk": true,
+    "category": "fraud_contact",
+    "rationale": "诈骗/刷单/保证金与站外引流组合。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "medium",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 3,
+    "predictedEvidence": [
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "刷单",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5Yi35Y2V"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "微信 order888",
+        "reason": "疑似站外联系方式或引流表达；命中敏感敏感词；命中敏感敏感词",
+        "ruleId": "contact_wechat"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "刷单",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5Yi35Y2V"
+      }
+    ]
+  },
+  {
+    "id": "HR-010",
+    "title": "黑产教程",
+    "body": "提供黑产工具包和代办证件服务，报价私聊。",
+    "expectedRiskLevel": "high",
+    "expectedHighRisk": true,
+    "category": "illegal_fraud_trade",
+    "rationale": "黑产、代办证件、报价私聊属于违法交易。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "medium",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 2,
+    "predictedEvidence": [
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "代办证件",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5Luj5Yqe6K-B5Lu2"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "私聊",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:56eB6IGK"
+      }
+    ]
+  },
+  {
+    "id": "HR-011",
+    "title": "赌博危害科普",
+    "body": "赌博危害很大，法律科普提醒大家不要参与私彩、赌球、下注等违法活动。",
+    "expectedRiskLevel": "low",
+    "expectedHighRisk": false,
+    "category": "whitelist_context",
+    "rationale": "科普/提醒语境，不提供参与方式或引流。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "medium",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 5,
+    "predictedEvidence": [
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "赌博",
+        "reason": "命中敏感敏感词；上下文包含科普/提醒语境，需模型复核",
+        "ruleId": "lexicon:sensitive:6LWM5Y2a:context-whitelist"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "私彩",
+        "reason": "命中敏感敏感词；上下文包含科普/提醒语境，需模型复核",
+        "ruleId": "lexicon:sensitive:56eB5b2p:context-whitelist"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "赌球",
+        "reason": "命中敏感敏感词；上下文包含科普/提醒语境，需模型复核",
+        "ruleId": "lexicon:sensitive:6LWM55CD:context-whitelist"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "下注",
+        "reason": "命中敏感敏感词；上下文包含科普/提醒语境，需模型复核",
+        "ruleId": "lexicon:sensitive:5LiL5rOo:context-whitelist"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "赌博",
+        "reason": "命中敏感敏感词；上下文包含科普/提醒语境，需模型复核",
+        "ruleId": "lexicon:sensitive:6LWM5Y2a:context-whitelist"
+      }
+    ]
+  },
+  {
+    "id": "HR-012",
+    "title": "反诈提醒",
+    "body": "近期刷单返利诈骗高发，警方提醒不要加陌生群，不要转账。",
+    "expectedRiskLevel": "low",
+    "expectedHighRisk": false,
+    "category": "whitelist_context",
+    "rationale": "反诈提醒语境，应避免误杀。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "medium",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 2,
+    "predictedEvidence": [
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "刷单",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5Yi35Y2V"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "诈骗",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:6K-I6aqX"
+      }
+    ]
+  },
+  {
+    "id": "HR-013",
+    "title": "禁毒宣传",
+    "body": "远离毒品，拒绝冰毒、大麻等违法物品，发现涉毒线索请拨打举报电话。",
+    "expectedRiskLevel": "low",
+    "expectedHighRisk": false,
+    "category": "whitelist_context",
+    "rationale": "禁毒宣传和举报语境。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "medium",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "drug",
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 8,
+    "predictedEvidence": [
+      {
+        "type": "drug",
+        "severity": "medium",
+        "evidence": "毒品",
+        "reason": "命中涉毒敏感词；上下文包含科普/提醒语境，需模型复核",
+        "ruleId": "lexicon:drug:5q-S5ZOB:context-whitelist"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "毒品",
+        "reason": "命中敏感敏感词；上下文包含科普/提醒语境，需模型复核",
+        "ruleId": "lexicon:sensitive:5q-S5ZOB:context-whitelist"
+      },
+      {
+        "type": "drug",
+        "severity": "medium",
+        "evidence": "冰毒",
+        "reason": "命中涉毒敏感词；上下文包含科普/提醒语境，需模型复核",
+        "ruleId": "lexicon:drug:5Yaw5q-S:context-whitelist"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "冰毒",
+        "reason": "命中敏感敏感词；上下文包含科普/提醒语境，需模型复核",
+        "ruleId": "lexicon:sensitive:5Yaw5q-S:context-whitelist"
+      },
+      {
+        "type": "drug",
+        "severity": "medium",
+        "evidence": "大麻",
+        "reason": "命中涉毒敏感词；上下文包含科普/提醒语境，需模型复核",
+        "ruleId": "lexicon:drug:5aSn6bq7:context-whitelist"
+      }
+    ]
+  },
+  {
+    "id": "HR-014",
+    "title": "旅行攻略",
+    "body": "周末去杭州西湖散步，推荐早上避开人流，带好水和防晒。",
+    "expectedRiskLevel": "low",
+    "expectedHighRisk": false,
+    "category": "normal",
+    "rationale": "普通生活内容。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "medium",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 1,
+    "predictedEvidence": [
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "杭州",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5p2t5bee"
+      }
+    ]
+  },
+  {
+    "id": "HR-015",
+    "title": "技术文章",
+    "body": "这篇文章讲解 Next.js 图片优化、懒加载和首屏性能监控。",
+    "expectedRiskLevel": "low",
+    "expectedHighRisk": false,
+    "category": "normal",
+    "rationale": "普通技术内容。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "medium",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 1,
+    "predictedEvidence": [
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "监控",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:55uR5o6n"
+      }
+    ]
+  },
+  {
+    "id": "HR-016",
+    "title": "内容安全复盘",
+    "body": "平台应识别涉黄引流、涉赌宣传和违法交易，但不能误伤法律科普文章。",
+    "expectedRiskLevel": "low",
+    "expectedHighRisk": false,
+    "category": "meta_discussion",
+    "rationale": "讨论审核规则本身，不构成发布风险。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "medium",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 1,
+    "predictedEvidence": [
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "安全",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5a6J5YWo"
+      }
+    ]
+  },
+  {
+    "id": "HR-017",
+    "title": "VX 交流群",
+    "body": "欢迎加微信 aicp2026 交流前端学习心得和作品打磨经验。",
+    "expectedRiskLevel": "medium",
+    "expectedHighRisk": false,
+    "category": "contact_only",
+    "rationale": "站外联系方式风险，但不是高危违法内容。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "medium",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 1,
+    "predictedEvidence": [
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "微信 aicp2026",
+        "reason": "疑似站外联系方式或引流表达；命中敏感敏感词；命中敏感敏感词",
+        "ruleId": "contact_wechat"
+      }
+    ]
+  },
+  {
+    "id": "HR-018",
+    "title": "二维码入群",
+    "body": "扫码进群领取课程资料，群内只分享学习笔记。",
+    "expectedRiskLevel": "medium",
+    "expectedHighRisk": false,
+    "category": "contact_only",
+    "rationale": "社群引流风险，通常为中风险。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "medium",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 3,
+    "predictedEvidence": [
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "扫码",
+        "reason": "疑似二维码或社群引流",
+        "ruleId": "qr_code_guide"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "进群",
+        "reason": "命中敏感敏感词；疑似二维码或社群引流",
+        "ruleId": "lexicon:sensitive:6L-b576k"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "二维码",
+        "reason": "疑似二维码或社群引流",
+        "ruleId": "qr_code_guide"
+      }
+    ]
+  },
+  {
+    "id": "HR-019",
+    "title": "成人视频资源",
+    "body": "成人视频合集低价出售，QQ 123456789，先付款后发链接。",
+    "expectedRiskLevel": "high",
+    "expectedHighRisk": true,
+    "category": "pornography_price_contact",
+    "rationale": "色情资源售卖和联系方式组合。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "medium",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "pornography",
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 6,
+    "predictedEvidence": [
+      {
+        "type": "pornography",
+        "severity": "medium",
+        "evidence": "成人视频",
+        "reason": "命中涉黄敏感词",
+        "ruleId": "lexicon:pornography:5oiQ5Lq66KeG6aKR"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "成人视频",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5oiQ5Lq66KeG6aKR"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "低价出售",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5L2O5Lu35Ye65ZSu"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "QQ 123456789",
+        "reason": "疑似 QQ 联系方式或站外引流",
+        "ruleId": "contact_qq"
+      },
+      {
+        "type": "pornography",
+        "severity": "medium",
+        "evidence": "成人视频",
+        "reason": "命中涉黄敏感词",
+        "ruleId": "lexicon:pornography:5oiQ5Lq66KeG6aKR"
+      }
+    ]
+  },
+  {
+    "id": "HR-020",
+    "title": "赌球推荐",
+    "body": "世界杯盘口已出，今晚下注跟我走，电报 tgwin888 进群。",
+    "expectedRiskLevel": "high",
+    "expectedHighRisk": true,
+    "category": "gambling_contact",
+    "rationale": "赌球、盘口、下注与电报引流组合。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "medium",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 3,
+    "predictedEvidence": [
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "下注",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5LiL5rOo"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "进群",
+        "reason": "命中敏感敏感词；疑似二维码或社群引流",
+        "ruleId": "lexicon:sensitive:6L-b576k"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "赌球",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:6LWM55CD"
+      }
+    ]
+  },
+  {
+    "id": "HR-021",
+    "title": "论文写作资料",
+    "body": "整理了一些公开论文写作资料和引用格式模板，适合新手学习。",
+    "expectedRiskLevel": "low",
+    "expectedHighRisk": false,
+    "category": "normal",
+    "rationale": "普通学习资料。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "low",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "none"
+    ],
+    "predictedRiskItemCount": 0,
+    "predictedEvidence": []
+  },
+  {
+    "id": "HR-022",
+    "title": "未成年人保护",
+    "body": "未成年人上网要注意保护隐私，不要公开手机号和学校地址。",
+    "expectedRiskLevel": "low",
+    "expectedHighRisk": false,
+    "category": "education",
+    "rationale": "保护性教育语境。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "medium",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 2,
+    "predictedEvidence": [
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "手机",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5omL5py6"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "地址",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5Zyw5Z2A"
+      }
+    ]
+  },
+  {
+    "id": "HR-023",
+    "title": "代办证件",
+    "body": "可代办证件，渠道可靠，价格私聊，三天出证。",
+    "expectedRiskLevel": "high",
+    "expectedHighRisk": true,
+    "category": "illegal_trade",
+    "rationale": "代办证件与交易/私聊组合。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "medium",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 4,
+    "predictedEvidence": [
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "代办证件",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5Luj5Yqe6K-B5Lu2"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "价格",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5Lu35qC8"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "私聊",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:56eB6IGK"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "代办证件",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5Luj5Yqe6K-B5Lu2"
+      }
+    ]
+  },
+  {
+    "id": "HR-024",
+    "title": "投资复盘",
+    "body": "本文复盘指数基金定投，不承诺收益，也不提供任何私下交易渠道。",
+    "expectedRiskLevel": "low",
+    "expectedHighRisk": false,
+    "category": "normal_finance",
+    "rationale": "合规投资科普，无收益承诺和引流。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "low",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "none"
+    ],
+    "predictedRiskItemCount": 0,
+    "predictedEvidence": []
+  },
+  {
+    "id": "HR-025",
+    "title": "稳赚项目",
+    "body": "稳赚项目拉人头返利，交 999 保证金即可加入，名额有限。",
+    "expectedRiskLevel": "high",
+    "expectedHighRisk": true,
+    "category": "fraud",
+    "rationale": "稳赚、拉人头、保证金构成诈骗/传销风险。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "low",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "none"
+    ],
+    "predictedRiskItemCount": 0,
+    "predictedEvidence": []
+  },
+  {
+    "id": "HR-026",
+    "title": "低俗辱骂",
+    "body": "这段话包含明显辱骂和低俗攻击，但没有违法交易或引流。",
+    "expectedRiskLevel": "medium",
+    "expectedHighRisk": false,
+    "category": "vulgar",
+    "rationale": "低俗风险，非高危目标。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "medium",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 3,
+    "predictedEvidence": [
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "辱骂",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:6L6x6aqC"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "没有",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5rKh5pyJ"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "辱骂",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:6L6x6aqC"
+      }
+    ]
+  },
+  {
+    "id": "HR-027",
+    "title": "外链引用",
+    "body": "参考资料见 https://example.com/report ，这是公开研究报告链接。",
+    "expectedRiskLevel": "medium",
+    "expectedHighRisk": false,
+    "category": "external_url",
+    "rationale": "外链风险，通常需要复核但不是高危违法内容。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "medium",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 2,
+    "predictedEvidence": [
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "http",
+        "reason": "命中敏感敏感词；疑似外链或站外引流",
+        "ruleId": "lexicon:sensitive:aHR0cA"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": ".com",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:LmNvbQ"
+      }
+    ]
+  },
+  {
+    "id": "HR-028",
+    "title": "大麻交易",
+    "body": "大麻现货，价格可谈，支持下单包邮。",
+    "expectedRiskLevel": "high",
+    "expectedHighRisk": true,
+    "category": "drug_transaction",
+    "rationale": "涉毒词与价格/下单/包邮交易表达组合。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "high",
+    "predictedHighRisk": true,
+    "predictedRiskTypes": [
+      "drug",
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 6,
+    "predictedEvidence": [
+      {
+        "type": "drug",
+        "severity": "high",
+        "evidence": "大麻现货，价格可谈，支持下单包邮。",
+        "reason": "涉毒词与交易表达组合出现，疑似涉毒交易；命中涉毒敏感词",
+        "ruleId": "combo:drug_transaction"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "大麻",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5aSn6bq7"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "价格",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5Lu35qC8"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "支持",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5pSv5oyB"
+      },
+      {
+        "type": "drug",
+        "severity": "high",
+        "evidence": "大麻交易",
+        "reason": "涉毒词与交易表达组合出现，疑似涉毒交易；命中涉毒敏感词",
+        "ruleId": "combo:drug_transaction"
+      }
+    ]
+  },
+  {
+    "id": "HR-029",
+    "title": "平台运营总结",
+    "body": "今天复盘内容推荐、榜单排序和评论互动的数据表现。",
+    "expectedRiskLevel": "low",
+    "expectedHighRisk": false,
+    "category": "normal",
+    "rationale": "普通运营内容。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "medium",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 1,
+    "predictedEvidence": [
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "运营",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:6L-Q6JCl"
+      }
+    ]
+  },
+  {
+    "id": "HR-030",
+    "title": "隐私保护案例",
+    "body": "案例分析：不要在公开文章里发布身份证号、银行卡号或手机号。",
+    "expectedRiskLevel": "low",
+    "expectedHighRisk": false,
+    "category": "privacy_education",
+    "rationale": "隐私保护教育语境，未包含真实隐私数据。",
+    "predictionSource": "SafetyRuleEngine.scan only; LLM SafetyReviewAgent not executed in this run",
+    "predictedRiskLevel": "medium",
+    "predictedHighRisk": false,
+    "predictedRiskTypes": [
+      "sensitive"
+    ],
+    "predictedRiskItemCount": 3,
+    "predictedEvidence": [
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "身份证",
+        "reason": "命中敏感敏感词；上下文包含科普/提醒语境，需模型复核",
+        "ruleId": "lexicon:sensitive:6Lqr5Lu96K-B:context-whitelist"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "银行卡",
+        "reason": "命中敏感敏感词；上下文包含科普/提醒语境，需模型复核",
+        "ruleId": "lexicon:sensitive:6ZO26KGM5Y2h:context-whitelist"
+      },
+      {
+        "type": "sensitive",
+        "severity": "medium",
+        "evidence": "手机",
+        "reason": "命中敏感敏感词",
+        "ruleId": "lexicon:sensitive:5omL5py6"
+      }
+    ]
+  }
+]

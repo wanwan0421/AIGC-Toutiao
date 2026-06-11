@@ -1,0 +1,156 @@
+{
+  "generatedAt": "2026-06-11T05:28:19.658Z",
+  "sourceDir": "docs/lighthouse",
+  "url": [
+    "http://47.99.127.195/dashboard"
+  ],
+  "runCount": 3,
+  "groups": {
+    "desktop": {
+      "runs": [
+        {
+          "file": "桌面端1.json",
+          "metrics": {
+            "performance": 95,
+            "accessibility": 96,
+            "bestPractices": 78,
+            "seo": 100,
+            "firstContentfulPaint": 348.48855,
+            "largestContentfulPaint": 903.0829999999999,
+            "totalBlockingTime": 0,
+            "cumulativeLayoutShift": 0.117647,
+            "speedIndex": 570.7742691686011,
+            "serverResponseTime": 39
+          },
+          "lcpElement": null,
+          "clsItems": [
+            {
+              "selector": "body.flex > div.flex",
+              "nodeLabel": "发布作品\n首页\n创作中心\n作品管理\n素材管理\nPrompt 管理\n成长指南\n小李一定行\n账号状态正常\n\n账号ID：100002\n\n|\n\n简介：我要进字节！\n\n…",
+              "score": 0.117647
+            },
+            {
+              "selector": "div.min-h-full > main.grid > aside.space-y-5 > section.rounded-2xl",
+              "nodeLabel": "创作成长任务\n本周\n发布进度\n100%\n互动进度\n1%\n质量进度\n79%\n查看成长指南",
+              "score": 0.03656
+            }
+          ]
+        },
+        {
+          "file": "桌面端2.json",
+          "metrics": {
+            "performance": 96,
+            "accessibility": 96,
+            "bestPractices": 78,
+            "seo": 100,
+            "firstContentfulPaint": 317.0216,
+            "largestContentfulPaint": 855.5323999999999,
+            "totalBlockingTime": 0,
+            "cumulativeLayoutShift": 0.117647,
+            "speedIndex": 690.6824625548243,
+            "serverResponseTime": 42
+          },
+          "lcpElement": null,
+          "clsItems": [
+            {
+              "selector": "body.flex > div.flex",
+              "nodeLabel": "发布作品\n首页\n创作中心\n作品管理\n素材管理\nPrompt 管理\n成长指南\n小李一定行\n账号状态正常\n\n账号ID：100002\n\n|\n\n简介：我要进字节！\n\n…",
+              "score": 0.117647
+            },
+            {
+              "selector": "div.min-h-full > main.grid > aside.space-y-5 > section.rounded-2xl",
+              "nodeLabel": "创作成长任务\n本周\n发布进度\n100%\n互动进度\n1%\n质量进度\n79%\n查看成长指南",
+              "score": 0.03656
+            }
+          ]
+        },
+        {
+          "file": "桌面端3.json",
+          "metrics": {
+            "performance": 95,
+            "accessibility": 96,
+            "bestPractices": 78,
+            "seo": 100,
+            "firstContentfulPaint": 350.2935,
+            "largestContentfulPaint": 905.44025,
+            "totalBlockingTime": 0,
+            "cumulativeLayoutShift": 0.117647,
+            "speedIndex": 669.4195575429919,
+            "serverResponseTime": 45
+          },
+          "lcpElement": null,
+          "clsItems": [
+            {
+              "selector": "body.flex > div.flex",
+              "nodeLabel": "发布作品\n首页\n创作中心\n作品管理\n素材管理\nPrompt 管理\n成长指南\n小李一定行\n账号状态正常\n\n账号ID：100002\n\n|\n\n简介：我要进字节！\n\n…",
+              "score": 0.117647
+            },
+            {
+              "selector": "div.min-h-full > main.grid > aside.space-y-5 > section.rounded-2xl",
+              "nodeLabel": "创作成长任务\n本周\n发布进度\n100%\n互动进度\n1%\n质量进度\n79%\n查看成长指南",
+              "score": 0.03656
+            }
+          ]
+        }
+      ],
+      "summary": {
+        "performance": {
+          "avg": 95.33,
+          "min": 95,
+          "max": 96
+        },
+        "accessibility": {
+          "avg": 96,
+          "min": 96,
+          "max": 96
+        },
+        "bestPractices": {
+          "avg": 78,
+          "min": 78,
+          "max": 78
+        },
+        "seo": {
+          "avg": 100,
+          "min": 100,
+          "max": 100
+        },
+        "firstContentfulPaint": {
+          "avg": 338.6,
+          "min": 317.02,
+          "max": 350.29
+        },
+        "largestContentfulPaint": {
+          "avg": 888.02,
+          "min": 855.53,
+          "max": 905.44
+        },
+        "totalBlockingTime": {
+          "avg": 0,
+          "min": 0,
+          "max": 0
+        },
+        "cumulativeLayoutShift": {
+          "avg": 0.12,
+          "min": 0.12,
+          "max": 0.12
+        },
+        "speedIndex": {
+          "avg": 643.63,
+          "min": 570.77,
+          "max": 690.68
+        },
+        "serverResponseTime": {
+          "avg": 42,
+          "min": 39,
+          "max": 45
+        }
+      }
+    }
+  },
+  "findings": {
+    "desktop": [
+      "Desktop performance is stable and strong: average score 95.33, average LCP 888.02 ms, TBT 0 ms.",
+      "Desktop residual risk is CLS 0.118, mainly the main content container and growth task card shifting after hydrated data renders."
+    ]
+  }
+}

@@ -153,7 +153,6 @@ function buildPlainTextPositionMap(editor: Editor) {
 }
 
 function replaceTextRange(editor: Editor, input: RichTextReplaceInput) {
-  if (!input.replacement) return false;
   const original = input.original;
   const { text, positions } = buildPlainTextPositionMap(editor);
   let start = -1;
@@ -176,7 +175,11 @@ function replaceTextRange(editor: Editor, input: RichTextReplaceInput) {
   const to = positions[end];
   if (start < 0 || end < 0 || from === undefined || to === undefined || from > to) return false;
 
-  editor.chain().focus().setTextSelection({ from, to }).insertContent(input.replacement).run();
+  if (input.replacement) {
+    editor.chain().focus().setTextSelection({ from, to }).insertContent(input.replacement).run();
+  } else {
+    editor.chain().focus().setTextSelection({ from, to }).deleteSelection().run();
+  }
   return true;
 }
 

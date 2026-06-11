@@ -42,7 +42,7 @@ export class ModelClientService {
       });
 
       if (!response.ok) {
-        throw new Error(`Ark request failed: ${response.status}`);
+        throw new Error(await this.formatArkError(response, "Ark request failed", this.modelName(options.model)));
       }
       const payload = (await response.json()) as Record<string, unknown>;
       const text = this.extractText(payload);
@@ -106,8 +106,11 @@ export class ModelClientService {
         },
         body: JSON.stringify(this.buildRequestBody(options, true)),
       });
-      if (!response.ok || !response.body) {
-        throw new Error(`Ark stream failed: ${response.status}`);
+      if (!response.ok) {
+        throw new Error(await this.formatArkError(response, "Ark stream failed", this.modelName(options.model)));
+      }
+      if (!response.body) {
+        throw new Error("Ark stream failed: empty response body");
       }
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -152,9 +155,35 @@ export class ModelClientService {
     if (!this.apiKey) {
       throw new Error("ARK_API_KEY is required for AI calls");
     }
-    if (!this.modelName(model)) {
+    const modelName = this.modelName(model);
+    if (!modelName) {
       throw new Error("ARK_MODEL_ID or ARK_MODEL is required for AI calls");
     }
+    if (this.isPlaceholderModel(modelName)) {
+      throw new Error(`Invalid Ark model configuration: ${modelName}`);
+    }
+  }
+
+  private isPlaceholderModel(model: string) {
+    const normalized = model.trim().toLowerCase();
+    return (
+      normalized === "replace-with-model-id" ||
+      normalized === "your-ark-model-id" ||
+      normalized === "your-model-id" ||
+      normalized === "doubao-seed"
+    );
+  }
+
+  private async formatArkError(response: Response, prefix = "Ark request failed", model = this.modelName()) {
+    const body = await response.text().catch(() => "");
+    const detail = body.trim().replace(/\s+/g, " ").slice(0, 500);
+    const suffix = [
+      `status=${response.status}`,
+      model ? `model=${model}` : "",
+      `url=${this.apiUrl}`,
+      detail ? `body=${detail}` : "",
+    ].filter(Boolean);
+    return `${prefix}: ${suffix.join("; ")}`;
   }
 
   private buildRequestBody(

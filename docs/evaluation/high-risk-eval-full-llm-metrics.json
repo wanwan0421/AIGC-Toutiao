@@ -1,0 +1,40 @@
+{
+  "metadata": {
+    "generatedAt": "2026-06-11T05:27:43.715Z",
+    "startedAt": "2026-06-11T05:16:36.131Z",
+    "endpoint": "http://127.0.0.1:3001/api/moderation/text",
+    "evaluator": "full LLM workflow via POST /api/moderation/text; failed requests excluded from confusion matrix and counted separately",
+    "threshold": 0.9
+  },
+  "totalSamples": 30,
+  "completed": 30,
+  "failed": 0,
+  "confusionMatrix": {
+    "tp": 6,
+    "fp": 1,
+    "tn": 15,
+    "fn": 8
+  },
+  "metrics": {
+    "accuracy": 0.7,
+    "highRiskRecall": 0.42857142857142855,
+    "highRiskPrecision": 0.8571428571428571,
+    "f1": 0.5714285714285714,
+    "falsePositiveRate": 0.0625
+  },
+  "passed": false,
+  "missedHighRiskSampleIds": [
+    "HR-002",
+    "HR-006",
+    "HR-009",
+    "HR-010",
+    "HR-019",
+    "HR-020",
+    "HR-023",
+    "HR-025"
+  ],
+  "falseAlarmSampleIds": [
+    "HR-016"
+  ],
+  "failedSampleIds": []
+}

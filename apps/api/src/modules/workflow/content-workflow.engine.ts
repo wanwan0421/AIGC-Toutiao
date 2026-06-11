@@ -1,6 +1,9 @@
 import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { AuditRiskLevel } from "@aicp/shared";
 import type {
   AuditResult,
+  AuditRiskItem,
+  AuditRiskType,
   ComplianceRewriteResult,
   ContentApprovalResult,
   ContentVisibility,
@@ -30,22 +33,62 @@ const contentInclude = {
 };
 
 const QUALITY_COMPLIANCE_BACKSTOP_THRESHOLD = 8;
-const QUALITY_COMPLIANCE_RISK_MARKERS = [
-  "涉赌",
-  "赌博",
-  "博彩",
-  "涉黄",
-  "色情",
-  "涉毒",
-  "毒品",
-  "违法",
-  "违规",
-  "诈骗",
-  "引流",
-  "隐私泄露",
-  "未成年人",
-  "合规性存在明显问题",
-  "合规风险",
+type QualityComplianceSignal = {
+  type: Exclude<AuditRiskType, "none">;
+  markers: string[];
+  reason: string;
+  suggestion: string;
+};
+
+const QUALITY_COMPLIANCE_SIGNALS: QualityComplianceSignal[] = [
+  {
+    type: "gambling",
+    markers: ["涉赌", "赌博", "博彩", "诱导参与赌博", "投注", "下注", "私彩", "赌球"],
+    reason: "质量评估识别到涉赌宣传或赌博引流风险",
+    suggestion: "删除赌博玩法、投注引导、收益承诺和站外引流内容",
+  },
+  {
+    type: "pornography",
+    markers: ["涉黄", "色情", "色情网站", "黄色网站", "成人网站", "约炮", "裸聊", "涉黄引流"],
+    reason: "质量评估识别到涉黄内容或色情网站引流风险",
+    suggestion: "删除色情描述、色情网站访问引导和相关站外引流内容",
+  },
+  {
+    type: "drug",
+    markers: ["涉毒", "毒品", "贩毒", "吸毒"],
+    reason: "质量评估识别到涉毒风险",
+    suggestion: "删除毒品相关交易、使用或引导表达",
+  },
+  {
+    type: "illegal",
+    markers: ["违法", "违规内容", "违法交易", "违禁", "黑产"],
+    reason: "质量评估识别到违法或违禁风险",
+    suggestion: "删除违法交易、违禁服务或黑产相关表达",
+  },
+  {
+    type: "fraud",
+    markers: ["诈骗", "欺诈", "刷单", "返利", "稳赚", "拉人头"],
+    reason: "质量评估识别到诈骗或欺诈风险",
+    suggestion: "删除诈骗诱导、虚假收益承诺和欺诈性转化内容",
+  },
+  {
+    type: "privacy",
+    markers: ["隐私泄露", "身份证", "手机号", "银行卡"],
+    reason: "质量评估识别到隐私泄露风险",
+    suggestion: "删除个人身份、联系方式、账户等隐私信息",
+  },
+  {
+    type: "minor",
+    markers: ["未成年人", "未成年"],
+    reason: "质量评估识别到未成年人安全风险",
+    suggestion: "删除可能伤害未成年人安全的内容",
+  },
+  {
+    type: "sensitive",
+    markers: ["合规性存在明显问题", "合规性存在严重问题", "合规风险", "不合规内容"],
+    reason: "质量评估识别到明确合规风险",
+    suggestion: "删除或重写质量评估指出的不合规表达",
+  },
 ];
 
 @Injectable()
@@ -179,25 +222,35 @@ export class ContentWorkflowEngine {
     }
 
     const quality = await this.contentQualitySkill.score({ title: content.title, body: content.body });
-    const backstop = this.shouldRunQualityComplianceBackstop(quality)
+    const qualityComplianceSignals = this.qualityComplianceSignals(quality);
+    const backstop = this.shouldRunQualityComplianceBackstop(quality, qualityComplianceSignals)
       ? await this.runQualityComplianceBackstop(id, content.title, content.body)
       : null;
+    const syntheticAudit =
+      backstop?.audit.passed && qualityComplianceSignals.length
+        ? this.auditFromQualityComplianceSignals(quality, content.title, content.body, qualityComplianceSignals)
+        : null;
 
-    if (backstop && !backstop.audit.passed) {
-      const [, updated] = await this.prisma.$transaction([
-        this.createQualityScoreRecord(id, quality),
-        this.prisma.content.update({
-          where: { id },
-          data: {
-            status: DbContentStatus.rejected,
-            qualityScore: 0,
-          },
-          include: contentInclude,
-        }),
-      ]);
+    if (backstop && (!backstop.audit.passed || syntheticAudit)) {
+      const updateContent = this.prisma.content.update({
+        where: { id },
+        data: {
+          status: DbContentStatus.rejected,
+          qualityScore: 0,
+        },
+        include: contentInclude,
+      });
+      const results = syntheticAudit
+        ? await this.prisma.$transaction([
+            this.createQualityScoreRecord(id, quality),
+            this.createAuditRecord(id, syntheticAudit, null),
+            updateContent,
+          ])
+        : await this.prisma.$transaction([this.createQualityScoreRecord(id, quality), updateContent]);
+      const updated = results.at(-1);
 
       return {
-        content: toContentSummary(updated),
+        content: toContentSummary(updated as Awaited<typeof updateContent>),
         quality,
       };
     }
@@ -251,10 +304,87 @@ export class ContentWorkflowEngine {
     return toContentSummary(updated);
   }
 
-  private shouldRunQualityComplianceBackstop(quality: QualityScoreResult) {
+  private shouldRunQualityComplianceBackstop(quality: QualityScoreResult, signals = this.qualityComplianceSignals(quality)) {
     if (quality.dimensions.compliance <= QUALITY_COMPLIANCE_BACKSTOP_THRESHOLD) return true;
+    return signals.length > 0;
+  }
+
+  private qualityComplianceSignals(quality: QualityScoreResult) {
     const reason = quality.reason.toLowerCase();
-    return QUALITY_COMPLIANCE_RISK_MARKERS.some((marker) => reason.includes(marker.toLowerCase()));
+    return QUALITY_COMPLIANCE_SIGNALS.filter((signal) =>
+      signal.markers.some((marker) => reason.includes(marker.toLowerCase()))
+    );
+  }
+
+  private auditFromQualityComplianceSignals(
+    quality: QualityScoreResult,
+    title: string,
+    body: string,
+    signals: QualityComplianceSignal[]
+  ): AuditResult {
+    const riskItems = signals.map((signal, index) => this.qualityRiskItem(signal, index, title, body));
+    const riskTypes = Array.from(new Set(signals.map((signal) => signal.type)));
+    const categoryScores = Object.fromEntries(riskTypes.map((type) => [type, 0.92])) as AuditResult["categoryScores"];
+
+    return {
+      passed: false,
+      riskLevel: AuditRiskLevel.High,
+      riskTypes,
+      reasons: Array.from(new Set([...signals.map((signal) => signal.reason), quality.reason])).slice(0, 8),
+      rewriteAvailable: true,
+      riskItems,
+      categoryScores,
+    };
+  }
+
+  private qualityRiskItem(signal: QualityComplianceSignal, index: number, title: string, body: string): AuditRiskItem {
+    const located = this.locateQualityRiskEvidence(signal, title, body);
+    return {
+      id: `quality_backstop_${index + 1}`,
+      type: signal.type,
+      severity: "high",
+      confidence: 0.92,
+      evidence: located.evidence,
+      reason: signal.reason,
+      source: "llm",
+      field: located.field,
+      startOffset: located.startOffset,
+      endOffset: located.endOffset,
+      suggestion: signal.suggestion,
+    };
+  }
+
+  private locateQualityRiskEvidence(
+    signal: QualityComplianceSignal,
+    title: string,
+    body: string
+  ): { field: "title" | "body"; evidence: string; startOffset?: number; endOffset?: number } {
+    const fields = [
+      { field: "body" as const, text: body },
+      { field: "title" as const, text: title },
+    ];
+
+    for (const current of fields) {
+      const lowerText = current.text.toLowerCase();
+      const marker = signal.markers.find((item) => lowerText.includes(item.toLowerCase()));
+      if (marker) {
+        const index = lowerText.indexOf(marker.toLowerCase());
+        const startOffset = Math.max(0, index - 24);
+        const endOffset = Math.min(current.text.length, index + Math.max(marker.length, 48));
+        return {
+          field: current.field,
+          evidence: current.text.slice(startOffset, endOffset),
+          startOffset,
+          endOffset,
+        };
+      }
+    }
+
+    const fallback = body.trim() ? { field: "body" as const, text: body } : { field: "title" as const, text: title };
+    return {
+      field: fallback.field,
+      evidence: "全文",
+    };
   }
 
   private async runQualityComplianceBackstop(contentId: string, title: string, body: string) {

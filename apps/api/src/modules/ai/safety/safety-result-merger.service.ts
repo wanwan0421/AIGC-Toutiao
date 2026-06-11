@@ -37,7 +37,7 @@ export class SafetyResultMerger {
       if (severityDiff !== 0) return severityDiff;
       const confidenceDiff = b.confidence - a.confidence;
       if (confidenceDiff !== 0) return confidenceDiff;
-      return b.evidence.length - a.evidence.length;
+      return a.evidence.length - b.evidence.length;
     });
 
     for (const item of sorted) {
@@ -75,6 +75,7 @@ export class SafetyResultMerger {
     const isContextWhitelist = Boolean(item.ruleId?.includes(":context-whitelist"));
     const isCombinationRule = Boolean(item.ruleId?.startsWith("combo:"));
     const isHighSignalLexicon = isLexiconRule && this.isHighSignalLexiconItem(item);
+    const isStrongRegexRule = this.isStrongRegexRule(item);
 
     if (hasLlmMatch) {
       return {
@@ -87,6 +88,7 @@ export class SafetyResultMerger {
     if (isContextWhitelist && score < 0.5) return null;
     if (item.severity === "high") return item;
     if (isCombinationRule) return item;
+    if (isStrongRegexRule) return item;
     if (isRuleOnly && isHighSignalLexicon && !isContextWhitelist && item.confidence >= 0.75) return item;
     if (isRuleOnly && isLexiconRule && !llmTypeConfirmed) return null;
     if (isRuleOnly && score < 0.45 && !llmResult.rewriteAvailable) return null;
@@ -153,6 +155,7 @@ export class SafetyResultMerger {
   // 合并
   private coversRisk(parent: AuditRiskItem, child: AuditRiskItem) {
     if (parent.field !== child.field) return false;
+    if (parent.evidence.length > Math.max(child.evidence.length * 2, child.evidence.length + 80)) return false;
 
     if (
       parent.startOffset !== undefined &&
@@ -230,7 +233,7 @@ export class SafetyResultMerger {
       return { field: "body" as const, evidence: "\u5168\u6587", startOffset: 0, endOffset: 0 };
     }
 
-    return this.evidenceWindow(fallback.field, fallback.text, 0, Math.min(fallback.text.length, 80));
+    return { field: fallback.field, evidence: "\u5168\u6587", startOffset: undefined, endOffset: undefined };
   }
 
   private evidenceWindow(field: "title" | "body", text: string, index: number, length: number) {
@@ -264,7 +267,7 @@ export class SafetyResultMerger {
 
     const evidence = item.evidence.toLowerCase();
     const terms: Record<Exclude<AuditRiskType, "none">, string[]> = {
-      pornography: ["约炮", "裸聊", "招嫖", "卖淫", "嫖娼", "色情服务", "涉黄引流"],
+      pornography: ["约炮", "裸聊", "招嫖", "卖淫", "嫖娼", "色情服务", "色情网站", "黄色网站", "成人网站", "涉黄引流"],
       gambling: ["赌博", "博彩", "私彩", "网赌", "赌球", "下注", "盘口", "赔率", "赌资", "涉赌宣传"],
       drug: ["毒品", "冰毒", "大麻", "摇头丸", "贩毒", "吸毒", "涉毒"],
       sensitive: [],
@@ -276,6 +279,14 @@ export class SafetyResultMerger {
     };
 
     return terms[item.type as Exclude<AuditRiskType, "none">].some((term) => evidence.includes(term.toLowerCase()));
+  }
+
+  private isStrongRegexRule(item: AuditRiskItem) {
+    return Boolean(
+      item.ruleId &&
+        ["contact_wechat", "contact_qq", "qr_code_guide", "url_external"].includes(item.ruleId) &&
+        item.confidence >= 0.72
+    );
   }
 
   private riskEvidenceTerms(type: AuditRiskType) {
@@ -324,7 +335,7 @@ export class SafetyResultMerger {
     const severityDiff = this.severityWeight(a.severity) - this.severityWeight(b.severity);
     if (severityDiff !== 0) return severityDiff > 0 ? a : b;
     if (a.confidence !== b.confidence) return a.confidence > b.confidence ? a : b;
-    return a.evidence.length >= b.evidence.length ? a : b;
+    return a.evidence.length <= b.evidence.length ? a : b;
   }
 
   private sortItems(items: AuditRiskItem[]) {

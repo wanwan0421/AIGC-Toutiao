@@ -6,7 +6,7 @@ import { SAFETY_RISK_TYPES, type SafetyLexiconEntry } from "./safety-rule.types"
 
 const RISK_FILE_HINTS: Array<{ type: Exclude<AuditRiskType, "none">; hints: string[] }> = [
   { type: "pornography", hints: ["porn", "sexual", "sex", "erotic", "涉黄", "色情", "黄色"] },
-  { type: "gambling", hints: ["gambling", "casino", "bet", "涉赌", "赌博", "博彩"] },
+  { type: "gambling", hints: ["gamble", "gambling", "casino", "bet", "涉赌", "赌博", "博彩"] },
   { type: "drug", hints: ["drug", "narcotic", "涉毒", "毒品", "吸毒", "违禁药"] },
   { type: "vulgar", hints: ["vulgar", "abuse", "低俗", "辱骂", "脏话"] },
   { type: "privacy", hints: ["privacy", "personal", "隐私", "身份证", "手机号"] },

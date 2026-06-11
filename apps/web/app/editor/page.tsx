@@ -134,6 +134,22 @@ type EditorSnapshotInput = Partial<DraftCache> & {
 type CloudDraft = Awaited<ReturnType<typeof getDraft>>;
 type ContentDetailForDraft = Awaited<ReturnType<typeof getContentDetail>>;
 
+function isRemovableRiskItem(item: AuditRiskItem) {
+  const evidence = item.evidence.trim();
+  if (!evidence || evidence === "全文") return false;
+  if (item.startOffset !== undefined && item.endOffset !== undefined && item.endOffset <= item.startOffset) return false;
+  return true;
+}
+
+function createRemovalReplacement(item: AuditRiskItem): ComplianceReplacement {
+  return {
+    riskItemId: item.id,
+    original: item.evidence,
+    replacement: "",
+    reason: item.suggestion || "删除风险片段",
+  };
+}
+
 const defaultIdeas = [
   "帮我把当前主题拆成 3 个可发布角度",
   "帮我补充一个更有冲突感的开头",
@@ -841,6 +857,7 @@ export default function EditorPage() {
   const [selectedLocation, setSelectedLocation] = useState("");
   const [locationCandidates, setLocationCandidates] = useState<LocationCandidate[]>([]);
   const [locationStatus, setLocationStatus] = useState<LocationStatus>("idle");
+  const [processedRiskItemIds, setProcessedRiskItemIds] = useState<Set<string>>(new Set());
   const [contentStatementOpen, setContentStatementOpen] = useState(false);
   const [locationPickerOpen, setLocationPickerOpen] = useState(false);
   const [visibilityOpen, setVisibilityOpen] = useState(false);
@@ -874,13 +891,28 @@ export default function EditorPage() {
   const textAssets = useMemo(() => assets.filter(isTextAsset), [assets]);
   const wordCount = useMemo(() => body.replace(/\s/g, "").length, [body]);
   const visibleReviewRiskItems = useMemo(
-    () => (reviewResult?.audit.riskItems ?? []).filter((item) => item.severity !== "low"),
-    [reviewResult],
+    () => (reviewResult?.audit.riskItems ?? []).filter((item) => item.severity !== "low" && !processedRiskItemIds.has(item.id)),
+    [reviewResult, processedRiskItemIds],
   );
   const reviewReplacements = useMemo(() => reviewRewrite?.replacements ?? [], [reviewRewrite]);
   const reviewReplacementByRiskItem = useMemo(
     () => new Map(reviewReplacements.map((replacement) => [replacement.riskItemId, replacement])),
     [reviewReplacements],
+  );
+  const reviewRemovals = useMemo(
+    () =>
+      visibleReviewRiskItems
+        .filter((item) => !reviewReplacementByRiskItem.has(item.id) && isRemovableRiskItem(item))
+        .map(createRemovalReplacement),
+    [visibleReviewRiskItems, reviewReplacementByRiskItem],
+  );
+  const reviewActions = useMemo(
+    () => [...reviewReplacements, ...reviewRemovals],
+    [reviewReplacements, reviewRemovals],
+  );
+  const reviewActionByRiskItem = useMemo(
+    () => new Map(reviewActions.map((replacement) => [replacement.riskItemId, replacement])),
+    [reviewActions],
   );
   const selectedTopicNameSet = useMemo(
     () => new Set(normalizeTopicList(selectedTopics)),
@@ -2566,13 +2598,17 @@ export default function EditorPage() {
   function applyReplacement(replacement: ComplianceReplacement) {
     const riskItem = reviewResult?.audit.riskItems.find((item) => item.id === replacement.riskItemId);
     const changed = applyReplacementByRiskItem(replacement, riskItem);
-    setStatusMessage(changed ? `已替换风险片段：${replacement.reason}` : "未找到可替换的风险片段");
+    const action = replacement.replacement ? "替换" : "删除";
+    if (changed) {
+      setProcessedRiskItemIds((prev) => new Set([...prev, replacement.riskItemId]));
+    }
+    setStatusMessage(changed ? `已${action}风险片段：${replacement.reason}` : "未找到可处理的风险片段");
   }
 
   function applyAllReplacements() {
-    const replacements = reviewReplacements;
+    const replacements = reviewActions;
     if (!replacements.length) {
-      setStatusMessage("暂无可逐条替换的风险片段");
+      setStatusMessage("暂无可处理的风险片段");
       return;
     }
 
@@ -2631,7 +2667,16 @@ export default function EditorPage() {
     if (changed > 0 || nextTitle !== title) {
       setTitle(nextTitle);
     }
-    setStatusMessage(changed ? `已替换 ${changed} 个风险片段` : "未找到可替换的风险片段");
+    if (changed > 0) {
+      setProcessedRiskItemIds((prev) => {
+        const next = new Set(prev);
+        for (const replacement of sorted) {
+          next.add(replacement.riskItemId);
+        }
+        return next;
+      });
+    }
+    setStatusMessage(changed ? `已处理 ${changed} 个风险片段` : "未找到可处理的风险片段");
   }
 
   function applyReplacementByRiskItem(replacement: ComplianceReplacement, riskItem?: AuditRiskItem) {
@@ -3568,22 +3613,23 @@ export default function EditorPage() {
                       ? "安全审核通过"
                       : "安全审核未通过"}
                   </p>
-                  {!reviewResult.audit.passed && reviewReplacements.length ? (
+                  {!reviewResult.audit.passed && reviewActions.length ? (
                     <button
                       type="button"
                       onClick={applyAllReplacements}
                       className="shrink-0 rounded-full bg-[#ff2442] px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-rose-100"
                     >
-                      一键替换全部风险片段
+                      一键处理全部风险片段
                     </button>
                   ) : null}
                 </div>
                 {visibleReviewRiskItems.length ? (
                   <div className="mt-3 grid gap-2">
                     {visibleReviewRiskItems.map((item) => {
-                      const replacement = reviewReplacementByRiskItem.get(
+                      const replacement = reviewActionByRiskItem.get(
                         item.id,
                       );
+                      const isRemoval = replacement && !replacement.replacement;
                       return (
                         <div
                           key={item.id}
@@ -3611,7 +3657,7 @@ export default function EditorPage() {
                           {replacement ? (
                             <div className="flex flex-wrap items-center justify-between mt-2 rounded-xl bg-rose-50 px-3 py-2 text-rose-900">
                               <p className="font-bold">
-                                替代表达：{replacement.replacement}
+                                {isRemoval ? "处理方式：删除该风险片段" : `替代表达：${replacement.replacement}`}
                               </p>
                               <div className="flex flex-wrap items-center justify-between gap-2">
                                 <button
@@ -3619,7 +3665,7 @@ export default function EditorPage() {
                                   onClick={() => applyReplacement(replacement)}
                                   className="shrink-0 rounded-full bg-white px-3 py-1 font-bold text-[#ff2442] shadow-sm transition hover:bg-[#fff3f5]"
                                 >
-                                  替换该片段
+                                  {isRemoval ? "删除该片段" : "替换该片段"}
                                 </button>
                               </div>
                             </div>
