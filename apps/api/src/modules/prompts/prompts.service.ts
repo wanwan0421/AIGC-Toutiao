@@ -1,6 +1,11 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import {
   PromptScene,
+  type PromptEvalComparisonSummary,
+  type PromptEvalJudgeSummary,
+  type PromptEvalMetrics,
+  type PromptEvalMode,
+  type PromptEvalRunRequest,
   type PromptDefinitionSummary,
   type PromptEvalRunSummary,
   type PromptRenderPreviewResult,
@@ -12,11 +17,24 @@ import { Prisma } from "@prisma/client";
 import { toApiPromptScene, toDbPromptScene } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { RedisService } from "../../infra/redis/redis.service";
+import { AiCallLogService } from "../ai/ai-call-log.service";
+import { ModelClientService } from "../ai/model-client.service";
+import { promptTemperature } from "../ai/prompt-model-options";
+import { parseJsonObject } from "../ai/structured-output";
 
 type DefinitionWithActiveVersion = Prisma.PromptDefinitionGetPayload<{ include: { activeVersion: true } }>;
 type VersionRecord = Prisma.PromptVersionGetPayload<Record<string, never>>;
 type TestCaseRecord = Prisma.PromptTestCaseGetPayload<Record<string, never>>;
 type EvalRunWithResults = Prisma.PromptEvalRunGetPayload<{ include: { results: true } }>;
+
+type PromptEvalStoredOutput = {
+  issues?: PromptValidationIssue[];
+  renderedPromptLength?: number;
+  rawText?: string;
+  parsedOutput?: unknown;
+  judge?: PromptEvalJudgeSummary;
+  error?: string;
+};
 
 type VersionInput = {
   template: string;
@@ -28,11 +46,18 @@ type VersionInput = {
   status?: "active" | "draft" | "disabled";
 };
 
+const DEFAULT_LLM_EVAL_CASE_LIMIT = 5;
+const MAX_EVAL_CASE_LIMIT = 50;
+
 @Injectable()
 export class PromptsService {
+  private readonly logger = new Logger(PromptsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
-    private readonly redisService: RedisService
+    private readonly redisService: RedisService,
+    private readonly modelClient: ModelClientService,
+    private readonly logs: AiCallLogService
   ) {}
 
   async list(scene?: PromptScene) {
@@ -261,17 +286,18 @@ export class PromptsService {
     };
   }
 
-  async listTestCases(idOrKey: string): Promise<PromptTestCaseSummary[]> {
+  async listTestCases(idOrKey: string, userId: string): Promise<PromptTestCaseSummary[]> {
     const definition = await this.getDefinition(idOrKey);
     const items = await this.prisma.promptTestCase.findMany({
       where: { definitionId: definition.id },
       orderBy: { updatedAt: "desc" },
     });
-    return items.map((item) => this.toTestCaseSummary(item));
+    return items.map((item) => this.toTestCaseSummary(item, userId, definition.creatorId));
   }
 
   async createTestCase(
     idOrKey: string,
+    userId: string,
     body: {
       name: string;
       input: Record<string, unknown>;
@@ -289,14 +315,16 @@ export class PromptsService {
         expectedOutput: this.toJsonInputOrUndefined(body.expectedOutput),
         assertions: this.toJsonInputOrUndefined(body.assertions),
         enabled: body.enabled ?? true,
+        createdById: userId,
       },
     });
-    return this.toTestCaseSummary(item);
+    return this.toTestCaseSummary(item, userId, definition.creatorId);
   }
 
   async updateTestCase(
     idOrKey: string,
     caseId: string,
+    userId: string,
     body: Partial<{
       name: string;
       input: Record<string, unknown>;
@@ -319,79 +347,202 @@ export class PromptsService {
         enabled: body.enabled,
       },
     });
-    return this.toTestCaseSummary(item);
+    return this.toTestCaseSummary(item, userId, definition.creatorId);
   }
 
-  async deleteTestCase(idOrKey: string, caseId: string) {
+  async deleteTestCase(idOrKey: string, caseId: string, userId: string) {
     const definition = await this.getDefinition(idOrKey);
     const current = await this.prisma.promptTestCase.findFirst({ where: { id: caseId, definitionId: definition.id } });
     if (!current) throw new NotFoundException("prompt test case not found");
+    if (!this.canDeleteTestCase(current, userId, definition.creatorId)) {
+      throw new ForbiddenException("platform test cases cannot be deleted");
+    }
     await this.prisma.promptTestCase.delete({ where: { id: caseId } });
     return { ok: true, id: caseId };
   }
 
-  async runEval(idOrKey: string, body: { versionId?: string; includeDisabled?: boolean } = {}): Promise<PromptEvalRunSummary> {
+  async runEval(idOrKey: string, body: PromptEvalRunRequest = {}): Promise<PromptEvalRunSummary> {
     const definition = await this.getDefinition(idOrKey);
     const version = body.versionId
       ? await this.prisma.promptVersion.findFirst({ where: { id: body.versionId, definitionId: definition.id } })
       : definition.activeVersion ?? (await this.latestVersion(definition.id));
     if (!version) throw new NotFoundException("prompt version not found");
+    const mode = body.mode === "llm_eval" ? "llm_eval" : "dry_run";
 
-    const testCases = await this.prisma.promptTestCase.findMany({
+    const allTestCases = await this.prisma.promptTestCase.findMany({
       where: { definitionId: definition.id, enabled: body.includeDisabled ? undefined : true },
       orderBy: { updatedAt: "desc" },
     });
+    const testCases = this.limitEvalCases(allTestCases, mode, body.caseLimit);
     const run = await this.prisma.promptEvalRun.create({
       data: {
         definitionId: definition.id,
         versionId: version.id,
-        mode: "dry_run",
+        mode,
         status: "running",
         total: testCases.length,
-      },
-    });
-
-    let passed = 0;
-    let failed = 0;
-    for (const testCase of testCases) {
-      const startedAt = Date.now();
-      const input = this.jsonObject(testCase.input) ?? {};
-      const renderedPrompt = this.interpolate(version.template, input);
-      const issues = this.validateTemplate(version.template, this.jsonStringArray(version.variables), input);
-      const assertionError = this.evaluateAssertions(renderedPrompt, testCase.assertions);
-      const hasError = issues.some((item) => item.severity === "error") || Boolean(assertionError);
-      if (hasError) failed += 1;
-      else passed += 1;
-
-      await this.prisma.promptEvalResult.create({
-        data: {
-          runId: run.id,
-          testCaseId: testCase.id,
-          status: hasError ? "failed" : "passed",
-          input: this.toJsonInput(input),
-          output: this.toJsonInput({
-            issues,
-            renderedPromptLength: renderedPrompt.length,
-          }),
-          renderedPrompt,
-          errorMessage: assertionError,
-          latencyMs: Date.now() - startedAt,
-        },
-      });
-    }
-
-    const updated = await this.prisma.promptEvalRun.update({
-      where: { id: run.id },
-      data: {
-        status: failed > 0 ? "failed" : "succeeded",
-        passed,
-        failed,
-        completedAt: new Date(),
       },
       include: { results: true },
     });
 
-    return this.toEvalRunSummary(updated);
+    if (mode === "llm_eval") {
+      this.startEvalRunInBackground(run.id, definition.key, version, testCases, mode);
+      return this.toEvalRunSummary(run);
+    }
+
+    return this.executeEvalRun(run.id, definition.key, version, testCases, mode);
+  }
+
+  private startEvalRunInBackground(
+    runId: string,
+    promptKey: string,
+    version: VersionRecord,
+    testCases: TestCaseRecord[],
+    mode: PromptEvalMode
+  ) {
+    void this.executeEvalRun(runId, promptKey, version, testCases, mode).catch((error) => {
+      const message = error instanceof Error ? error.message : "unknown prompt eval error";
+      this.logger.error(`Prompt eval background run failed: ${message}`);
+    });
+  }
+
+  private async executeEvalRun(
+    runId: string,
+    promptKey: string,
+    version: VersionRecord,
+    testCases: TestCaseRecord[],
+    mode: PromptEvalMode
+  ): Promise<PromptEvalRunSummary> {
+    let passed = 0;
+    let failed = 0;
+    let processed = 0;
+
+    try {
+      for (const testCase of testCases) {
+        const startedAt = Date.now();
+        const input = this.jsonObject(testCase.input) ?? {};
+        const renderedPrompt = this.interpolate(version.template, input);
+        const issues = this.validateTemplate(version.template, this.jsonStringArray(version.variables), input);
+        const assertionError = this.evaluateAssertions(renderedPrompt, testCase.assertions);
+        let output: PromptEvalStoredOutput = {
+          issues,
+          renderedPromptLength: renderedPrompt.length,
+        };
+        let errorMessage = assertionError;
+
+        if (mode === "llm_eval" && !issues.some((item) => item.severity === "error")) {
+          const llmResult = await this.runLlmEvalCase(promptKey, version, testCase, renderedPrompt, startedAt);
+          output = { ...output, ...llmResult.output };
+          errorMessage = llmResult.errorMessage ?? assertionError;
+        }
+
+        const hasError =
+          issues.some((item) => item.severity === "error") ||
+          Boolean(errorMessage) ||
+          (mode === "llm_eval" && output.judge?.matched === false);
+        if (hasError) failed += 1;
+        else passed += 1;
+        processed += 1;
+
+        await this.prisma.promptEvalResult.create({
+          data: {
+            runId,
+            testCaseId: testCase.id,
+            status: hasError ? "failed" : "passed",
+            input: this.toJsonInput(input),
+            output: this.toJsonInput(output),
+            renderedPrompt,
+            errorMessage,
+            latencyMs: Date.now() - startedAt,
+          },
+        });
+
+        await this.prisma.promptEvalRun
+          .update({
+            where: { id: runId },
+            data: { passed, failed },
+          })
+          .catch(() => undefined);
+      }
+
+      const updated = await this.prisma.promptEvalRun.update({
+        where: { id: runId },
+        data: {
+          status: failed > 0 ? "failed" : "succeeded",
+          passed,
+          failed,
+          completedAt: new Date(),
+        },
+        include: { results: true },
+      });
+
+      return this.toEvalRunSummary(updated);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "unknown prompt eval error";
+      this.logger.error(`Prompt eval run ${runId} failed: ${message}`);
+      const remainingFailures = Math.max(testCases.length - processed, 0);
+      const updated = await this.prisma.promptEvalRun.update({
+        where: { id: runId },
+        data: {
+          status: "failed",
+          passed,
+          failed: Math.max(failed + remainingFailures, 1),
+          completedAt: new Date(),
+        },
+        include: { results: true },
+      });
+      return this.toEvalRunSummary(updated);
+    }
+  }
+
+  async compareEvalRuns(
+    idOrKey: string,
+    baselineRunId: string,
+    candidateRunId: string
+  ): Promise<PromptEvalComparisonSummary> {
+    const definition = await this.getDefinition(idOrKey);
+    const [baseline, candidate] = await Promise.all([
+      this.prisma.promptEvalRun.findFirst({
+        where: { id: baselineRunId, definitionId: definition.id },
+        include: { results: true },
+      }),
+      this.prisma.promptEvalRun.findFirst({
+        where: { id: candidateRunId, definitionId: definition.id },
+        include: { results: true },
+      }),
+    ]);
+    if (!baseline || !candidate) throw new NotFoundException("prompt eval run not found");
+
+    const baselineSummary = this.toEvalRunSummary(baseline);
+    const candidateSummary = this.toEvalRunSummary(candidate);
+    const baselineMetrics = baselineSummary.metrics ?? {};
+    const candidateMetrics = candidateSummary.metrics ?? {};
+    const baselineResults = new Map(baseline.results.map((item) => [item.testCaseId ?? item.id, item]));
+    const fixedCaseIds: string[] = [];
+    const regressedCaseIds: string[] = [];
+    const newlyFailedCaseIds: string[] = [];
+
+    for (const result of candidate.results) {
+      const key = result.testCaseId ?? result.id;
+      const previous = baselineResults.get(key);
+      if (!previous) continue;
+      if (previous.status === "failed" && result.status === "passed") fixedCaseIds.push(key);
+      if (previous.status === "passed" && result.status === "failed") {
+        regressedCaseIds.push(key);
+        newlyFailedCaseIds.push(key);
+      }
+    }
+
+    return {
+      baselineRunId: baseline.id,
+      candidateRunId: candidate.id,
+      baselineMetrics,
+      candidateMetrics,
+      delta: this.diffMetrics(baselineMetrics, candidateMetrics),
+      fixedCaseIds,
+      regressedCaseIds,
+      newlyFailedCaseIds,
+    };
   }
 
   async getEvalRun(idOrKey: string, runId: string): Promise<PromptEvalRunSummary> {
@@ -499,7 +650,7 @@ export class PromptsService {
     };
   }
 
-  private toTestCaseSummary(item: TestCaseRecord): PromptTestCaseSummary {
+  private toTestCaseSummary(item: TestCaseRecord, userId?: string, definitionCreatorId?: string | null): PromptTestCaseSummary {
     return {
       id: item.id,
       definitionId: item.definitionId,
@@ -508,9 +659,16 @@ export class PromptsService {
       expectedOutput: item.expectedOutput,
       assertions: this.jsonObject(item.assertions),
       enabled: item.enabled,
+      canDelete: this.canDeleteTestCase(item, userId, definitionCreatorId),
       createdAt: item.createdAt.toISOString(),
       updatedAt: item.updatedAt.toISOString(),
     };
+  }
+
+  private canDeleteTestCase(item: TestCaseRecord, userId?: string, definitionCreatorId?: string | null) {
+    if (!userId) return false;
+    if (item.createdById) return item.createdById === userId;
+    return definitionCreatorId === userId;
   }
 
   private toEvalRunSummary(run: EvalRunWithResults): PromptEvalRunSummary {
@@ -523,6 +681,7 @@ export class PromptsService {
       total: run.total,
       passed: run.passed,
       failed: run.failed,
+      metrics: this.evalMetrics(run.results),
       startedAt: run.startedAt.toISOString(),
       completedAt: run.completedAt?.toISOString() ?? null,
       createdAt: run.createdAt.toISOString(),
@@ -533,12 +692,236 @@ export class PromptsService {
         status: item.status,
         input: this.jsonObject(item.input) ?? {},
         output: item.output,
+        parsedOutput: this.evalStoredOutput(item.output).parsedOutput,
+        judge: this.evalStoredOutput(item.output).judge ?? null,
         renderedPrompt: item.renderedPrompt,
         errorMessage: item.errorMessage,
         latencyMs: item.latencyMs,
         createdAt: item.createdAt.toISOString(),
       })),
     };
+  }
+
+  private async runLlmEvalCase(
+    promptKey: string,
+    version: VersionRecord,
+    testCase: TestCaseRecord,
+    renderedPrompt: string,
+    startedAt: number
+  ): Promise<{ output: PromptEvalStoredOutput; errorMessage?: string }> {
+    try {
+      const rawText = await this.modelClient.complete({
+        model: version.model ?? undefined,
+        temperature: promptTemperature(this.jsonObject(version.modelOptions), 0.2),
+        messages: [
+          {
+            role: "system",
+            content: "Follow the user prompt exactly. Return parseable JSON only.",
+          },
+          { role: "user", content: renderedPrompt },
+        ],
+      });
+      const parsedOutput = parseJsonObject<Record<string, unknown>>(rawText);
+      const judge = this.evaluateLlmJudge(parsedOutput, testCase);
+      const errorMessage = this.evalJudgeError(judge);
+
+      await this.logEvalCall({
+        scene: `prompt_eval:${promptKey}`,
+        model: this.modelClient.modelName(version.model ?? undefined),
+        promptKey,
+        promptVersionId: version.id,
+        inputSummary: testCase.name,
+        output: { rawText, parsedOutput, judge },
+        latencyMs: Date.now() - startedAt,
+        success: !errorMessage,
+        errorMessage,
+      });
+
+      return {
+        output: {
+          rawText,
+          parsedOutput,
+          judge,
+        },
+        errorMessage,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "unknown llm eval error";
+      const judge = this.evaluateLlmJudge(null, testCase);
+      await this.logEvalCall({
+        scene: `prompt_eval:${promptKey}`,
+        model: this.modelClient.modelName(version.model ?? undefined),
+        promptKey,
+        promptVersionId: version.id,
+        inputSummary: testCase.name,
+        latencyMs: Date.now() - startedAt,
+        success: false,
+        errorMessage: message,
+      });
+      return {
+        output: { error: message, judge },
+        errorMessage: message,
+      };
+    }
+  }
+
+  private async logEvalCall(data: Parameters<AiCallLogService["log"]>[0]) {
+    try {
+      await this.logs.log(data);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "unknown ai call log error";
+      this.logger.warn(`Prompt eval log skipped: ${message}`);
+    }
+  }
+
+  private evaluateLlmJudge(parsedOutput: Record<string, unknown> | null, testCase: TestCaseRecord): PromptEvalJudgeSummary {
+    const assertions = this.jsonObject(testCase.assertions) ?? {};
+    const expectedOutput = this.jsonObject(testCase.expectedOutput) ?? {};
+    const expectedRiskLevel =
+      this.normalizeRiskText(assertions.expectedRiskLevel) ??
+      this.normalizeRiskText(expectedOutput.expectedRiskLevel) ??
+      this.normalizeRiskText(expectedOutput.riskLevel);
+    const expectedHighRisk =
+      this.booleanValue(assertions.expectedHighRisk) ??
+      this.booleanValue(expectedOutput.expectedHighRisk) ??
+      (expectedRiskLevel ? this.isHighRisk(expectedRiskLevel) : null);
+    const predictedRiskLevel = parsedOutput ? this.predictedRiskLevel(parsedOutput) : null;
+    const predictedHighRisk = predictedRiskLevel ? this.isHighRisk(predictedRiskLevel) : null;
+    const parseSucceeded = Boolean(parsedOutput);
+    const matched =
+      expectedHighRisk === null
+        ? parseSucceeded
+        : parseSucceeded && predictedHighRisk !== null && predictedHighRisk === expectedHighRisk;
+
+    return {
+      expectedRiskLevel,
+      predictedRiskLevel,
+      expectedHighRisk,
+      predictedHighRisk,
+      parseSucceeded,
+      matched,
+    };
+  }
+
+  private evalJudgeError(judge: PromptEvalJudgeSummary) {
+    if (!judge.parseSucceeded) return "LLM output is not parseable JSON";
+    if (judge.matched === false) {
+      return `expected highRisk=${judge.expectedHighRisk}, predicted highRisk=${judge.predictedHighRisk}`;
+    }
+    return undefined;
+  }
+
+  private evalMetrics(results: Array<{ output: Prisma.JsonValue | null; latencyMs: number | null }>): PromptEvalMetrics {
+    const metrics: PromptEvalMetrics = {};
+    const latencies = results.map((item) => item.latencyMs).filter((item): item is number => typeof item === "number");
+    if (latencies.length) {
+      metrics.avgLatencyMs = Math.round(latencies.reduce((sum, item) => sum + item, 0) / latencies.length);
+    }
+
+    const judges = results.map((item) => this.evalStoredOutput(item.output).judge).filter(Boolean) as PromptEvalJudgeSummary[];
+    if (!judges.length) return metrics;
+
+    metrics.parseSuccessRate = this.ratio(judges.filter((item) => item.parseSucceeded).length, judges.length);
+    const comparable = judges.filter((item) => typeof item.expectedHighRisk === "boolean");
+    if (!comparable.length) return metrics;
+
+    let tp = 0;
+    let fp = 0;
+    let tn = 0;
+    let fn = 0;
+    for (const judge of comparable) {
+      if (!judge.parseSucceeded || typeof judge.predictedHighRisk !== "boolean") {
+        if (judge.expectedHighRisk) fn += 1;
+        else fp += 1;
+        continue;
+      }
+      if (judge.expectedHighRisk && judge.predictedHighRisk) tp += 1;
+      else if (!judge.expectedHighRisk && judge.predictedHighRisk) fp += 1;
+      else if (judge.expectedHighRisk && !judge.predictedHighRisk) fn += 1;
+      else tn += 1;
+    }
+
+    metrics.accuracy = this.ratio(tp + tn, tp + tn + fp + fn);
+    metrics.highRiskRecall = this.ratio(tp, tp + fn);
+    metrics.highRiskPrecision = this.ratio(tp, tp + fp);
+    metrics.falsePositiveRate = this.ratio(fp, fp + tn);
+    metrics.f1 =
+      metrics.highRiskPrecision && metrics.highRiskRecall
+        ? (2 * metrics.highRiskPrecision * metrics.highRiskRecall) / (metrics.highRiskPrecision + metrics.highRiskRecall)
+        : 0;
+    return metrics;
+  }
+
+  private diffMetrics(baseline: PromptEvalMetrics, candidate: PromptEvalMetrics): PromptEvalMetrics {
+    const keys: Array<keyof PromptEvalMetrics> = [
+      "accuracy",
+      "highRiskRecall",
+      "highRiskPrecision",
+      "f1",
+      "falsePositiveRate",
+      "parseSuccessRate",
+      "avgLatencyMs",
+    ];
+    return Object.fromEntries(
+      keys
+        .filter((key) => typeof baseline[key] === "number" && typeof candidate[key] === "number")
+        .map((key) => [key, Number(((candidate[key] ?? 0) - (baseline[key] ?? 0)).toFixed(4))])
+    ) as PromptEvalMetrics;
+  }
+
+  private evalStoredOutput(value: unknown): PromptEvalStoredOutput {
+    return (this.jsonObject(value) ?? {}) as PromptEvalStoredOutput;
+  }
+
+  private predictedRiskLevel(value: Record<string, unknown>) {
+    const direct = this.normalizeRiskText(value.riskLevel);
+    if (direct) return direct;
+    const passed = this.booleanValue(value.passed);
+    if (passed === true) return "low";
+    if (passed === false) return "high";
+    return null;
+  }
+
+  private normalizeRiskText(value: unknown): string | null {
+    const text = String(value ?? "").trim().toLowerCase();
+    if (!text) return null;
+    if (["high", "risk_high", "unsafe"].includes(text)) return "high";
+    if (["medium", "risk_medium"].includes(text)) return "medium";
+    if (["low", "safe", "none", "pass", "passed"].includes(text)) return "low";
+    return null;
+  }
+
+  private isHighRisk(value: string) {
+    return this.normalizeRiskText(value) === "high";
+  }
+
+  private booleanValue(value: unknown): boolean | null {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === "true") return true;
+      if (normalized === "false") return false;
+    }
+    return null;
+  }
+
+  private ratio(numerator: number, denominator: number) {
+    if (!denominator) return 0;
+    return Number((numerator / denominator).toFixed(4));
+  }
+
+  private limitEvalCases(items: TestCaseRecord[], mode: PromptEvalMode, requestedLimit?: number) {
+    const limit = this.evalCaseLimit(mode, requestedLimit);
+    return limit ? items.slice(0, limit) : items;
+  }
+
+  private evalCaseLimit(mode: PromptEvalMode, requestedLimit?: unknown) {
+    const parsedLimit =
+      typeof requestedLimit === "number" ? requestedLimit : Number.parseInt(String(requestedLimit ?? ""), 10);
+    if (Number.isFinite(parsedLimit) && parsedLimit > 0) {
+      return Math.min(Math.floor(parsedLimit), MAX_EVAL_CASE_LIMIT);
+    }
+    return mode === "llm_eval" ? DEFAULT_LLM_EVAL_CASE_LIMIT : undefined;
   }
 
   private validateTemplate(template: string, declaredVariables: string[], input: Record<string, unknown>): PromptValidationIssue[] {

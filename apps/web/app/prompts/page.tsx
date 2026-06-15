@@ -4,6 +4,9 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   PromptScene,
   type PromptDefinitionSummary,
+  type PromptEvalComparisonSummary,
+  type PromptEvalMetrics,
+  type PromptEvalMode,
   type PromptEvalRunSummary,
   type PromptRenderPreviewResult,
   type PromptTestCaseSummary,
@@ -20,13 +23,17 @@ import {
   Plus,
   Search,
   Send,
+  Trash2,
 } from "lucide-react";
 import {
   activatePromptVersion,
+  comparePromptEvalRuns,
   createPrompt,
   createPromptTestCase,
   createPromptVersion,
+  deletePromptTestCase,
   getPromptDefinitions,
+  getPromptEvalRun,
   getPromptTestCases,
   getPromptVersions,
   renderPromptPreview,
@@ -99,6 +106,9 @@ const defaultTemplate = `你是 AI 内容创作平台的中文 Prompt 工程助�
 请根据任务要求返回结果。`;
 
 type BusyState = null | "activate" | "preview" | "test" | "eval";
+const LLM_EVAL_CASE_LIMIT = 5;
+const EVAL_POLL_INTERVAL_MS = 1500;
+const EVAL_POLL_ATTEMPTS = 80;
 
 export default function PromptManagePage() {
   const [definitions, setDefinitions] = useState<PromptDefinitionSummary[]>([]);
@@ -106,6 +116,9 @@ export default function PromptManagePage() {
   const [versions, setVersions] = useState<PromptVersionSummary[]>([]);
   const [testCases, setTestCases] = useState<PromptTestCaseSummary[]>([]);
   const [evalRun, setEvalRun] = useState<PromptEvalRunSummary | null>(null);
+  const [previousEvalRun, setPreviousEvalRun] = useState<PromptEvalRunSummary | null>(null);
+  const [evalVersionId, setEvalVersionId] = useState("");
+  const [comparison, setComparison] = useState<PromptEvalComparisonSummary | null>(null);
   const [preview, setPreview] = useState<PromptRenderPreviewResult | null>(null);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(true);
@@ -178,6 +191,9 @@ export default function PromptManagePage() {
     });
     setPreview(null);
     setEvalRun(null);
+    setPreviousEvalRun(null);
+    setComparison(null);
+    setEvalVersionId(active?.id ?? "");
     void loadPromptArtifacts(selected.key);
   }, [selected]);
 
@@ -209,6 +225,11 @@ export default function PromptManagePage() {
       const [versionItems, caseItems] = await Promise.all([getPromptVersions(key), getPromptTestCases(key)]);
       setVersions(versionItems);
       setTestCases(caseItems);
+      setEvalVersionId((current) =>
+        current && versionItems.some((item) => item.id === current)
+          ? current
+          : versionItems.find((item) => item.status === "active")?.id ?? versionItems[0]?.id ?? ""
+      );
     } catch (error) {
       setMessage(errorMessage(error, "Prompt 版本或测试集加载失败"));
     }
@@ -219,6 +240,9 @@ export default function PromptManagePage() {
     setVersions([]);
     setTestCases([]);
     setEvalRun(null);
+    setPreviousEvalRun(null);
+    setComparison(null);
+    setEvalVersionId("");
     setPreview(null);
     setForm({
       key: "new_prompt",
@@ -253,7 +277,7 @@ export default function PromptManagePage() {
         });
         // 创建新版本
         await createPromptVersion(selected.key, payload);
-        setMessage("新版本已保存并激活，后续 LLM 调用会使用它。");
+        setMessage("Draft candidate version saved. Run eval before activating it.");
         await loadDefinitions(selected.key);
         await loadPromptArtifacts(selected.key);
       } else {
@@ -324,15 +348,74 @@ export default function PromptManagePage() {
     }
   }
 
-  async function handleEvalRun() {
+  async function handleDeleteTestCase(item: PromptTestCaseSummary) {
     if (!selected) return;
+    if (!item.canDelete) {
+      setMessage("平台内置测试用例不可删除");
+      return;
+    }
+    if (!window.confirm(`确认删除测试用例「${item.name}」？`)) return;
+
+    setBusy("test");
+    try {
+      await deletePromptTestCase(selected.key, item.id);
+      await loadPromptArtifacts(selected.key);
+      setEvalRun(null);
+      setPreviousEvalRun(null);
+      setComparison(null);
+      setMessage("测试用例已删除");
+    } catch (error) {
+      setMessage(errorMessage(error, "测试用例删除失败"));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleEvalRun(mode: PromptEvalMode = "dry_run") {
+    if (!selected) return;
+    const promptKey = selected.key;
     setBusy("eval");
     try {
-      const run = await runPromptEval(selected.key);
+      const caseLimit = mode === "llm_eval" ? LLM_EVAL_CASE_LIMIT : undefined;
+      const run = await runPromptEval(promptKey, {
+        mode,
+        versionId: evalVersionId || undefined,
+        caseLimit,
+      });
+      setPreviousEvalRun(evalRun);
       setEvalRun(run);
-      setMessage(`测试回放完成：通过 ${run.passed}/${run.total}`);
+      setComparison(null);
+      if (run.status === "running") {
+        setMessage(`${mode} eval started: running ${run.total} sampled cases`);
+        for (let attempt = 0; attempt < EVAL_POLL_ATTEMPTS; attempt += 1) {
+          await delay(EVAL_POLL_INTERVAL_MS);
+          const next = await getPromptEvalRun(promptKey, run.id);
+          setEvalRun(next);
+          if (next.status !== "running") {
+            setMessage(evalRunMessage(mode, next));
+            return;
+          }
+        }
+        setMessage(`${mode} eval is still running in the background`);
+        return;
+      }
+      setMessage(evalRunMessage(mode, run));
     } catch (error) {
       setMessage(errorMessage(error, "测试回放失败"));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleCompareEvalRuns() {
+    if (!selected || !previousEvalRun || !evalRun) return;
+    setBusy("eval");
+    try {
+      const result = await comparePromptEvalRuns(selected.key, previousEvalRun.id, evalRun.id);
+      setComparison(result);
+      setMessage("Eval comparison generated");
+    } catch (error) {
+      setMessage(errorMessage(error, "Eval comparison failed"));
     } finally {
       setBusy(null);
     }
@@ -360,8 +443,8 @@ export default function PromptManagePage() {
       model: form.model.trim() || undefined,
       modelOptions: { temperature: parseTemperature(form.temperature) },
       outputSchema: parseOptionalJson(form.outputSchema),
-      changeNote: form.changeNote.trim() || "保存并激活版本",
-      status: "active" as const,
+      changeNote: form.changeNote.trim() || "Save draft candidate version",
+      status: "draft" as const,
     };
   }
 
@@ -380,315 +463,575 @@ export default function PromptManagePage() {
 
   return (
     <section className="min-h-full bg-[#f6f6f7] px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
-      <div className="mx-auto grid max-w-440 gap-5 xl:grid-cols-[320px_minmax(0,1fr)_390px]">
-          <aside className="h-auto rounded-3xl border border-slate-100 bg-white shadow-sm xl:sticky xl:top-5">
-            <div className="border-b border-slate-100 p-4">
-              <div className="mb-4 flex items-center justify-between gap-3">
-                <h1 className="text-xl font-bold text-slate-950">Prompt管理</h1>
-                <button type="button" onClick={resetForCreate} className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-2xl bg-[#ff2442] px-3 text-sm font-semibold text-white transition hover:bg-[#e91635]">
-                  <Plus className="h-4 w-4" />
-                  新建
-                </button>
-              </div>
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-                <input
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                  placeholder="搜索 key / 名称 / 描述"
-                  className="h-10 w-full rounded-2xl border border-slate-100 bg-slate-50 pl-9 pr-3 text-sm outline-none focus:border-[#ff2442]/40 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10"
-                />
-              </div>
+      <div className="mx-auto grid max-w-472 gap-5 grid-cols-[292px_minmax(0,1fr)_340px] 2xl:grid-cols-[300px_minmax(0,1fr)_352px]">
+        <aside className="sticky top-[var(--app-page-y)] flex h-[var(--app-sticky-panel-height)] self-start flex-col overflow-hidden rounded-3xl border border-slate-100 bg-white shadow-sm">
+          <div className="shrink-0 border-b border-slate-100 p-4">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h1 className="text-xl font-bold text-slate-950">Prompt管理</h1>
+              <button
+                type="button"
+                onClick={resetForCreate}
+                className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-2xl bg-[#ff2442] px-3 text-sm font-semibold text-white transition hover:bg-[#e91635]"
+              >
+                <Plus className="h-4 w-4" />
+                新建
+              </button>
             </div>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="搜索 key / 名称 / 描述"
+                className="h-10 w-full rounded-2xl border border-slate-100 bg-slate-50 pl-9 pr-3 text-sm outline-none focus:border-[#ff2442]/40 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10"
+              />
+            </div>
+          </div>
 
-            <div className="space-y-5 p-4">
-              {loading ? (
-                <div className="grid h-40 place-items-center text-sm text-slate-400">正在加载 Prompt...</div>
-              ) : (
-                groupedDefinitions.map((group) => (
-                  <div key={group.scene}>
-                    <div className="mb-2 pl-3 flex items-center justify-between gap-2">
-                      <div>
-                        <h2 className="text-base font-bold text-slate-900">{sceneLabels[group.scene]}</h2>
-                      </div>
-                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-500">
-                        {group.items.length}
+          <div className="prompt-local-scroll min-h-0 flex-1 space-y-5 overflow-y-auto p-4 pr-3">
+            {loading ? (
+              <div className="grid h-40 place-items-center text-sm text-slate-400">
+                正在加载 Prompt...
+              </div>
+            ) : (
+              groupedDefinitions.map((group) => (
+                <div key={group.scene}>
+                  <div className="mb-2 pl-3 flex items-center justify-between gap-2">
+                    <div>
+                      <h2 className="text-base font-bold text-slate-900">
+                        {sceneLabels[group.scene]}
+                      </h2>
+                    </div>
+                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-500">
+                      {group.items.length}
+                    </span>
+                  </div>
+                  <div className="space-y-2">
+                    {group.items.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => setSelectedKey(item.key)}
+                        className={`w-full rounded-2xl border p-3 text-left transition ${
+                          selected?.id === item.id
+                            ? "border-[#ff2442]/20 bg-[#fff3f5]"
+                            : "border-slate-100 bg-white hover:border-[#ff2442]/20 hover:bg-[#fff3f5]"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate text-sm text-slate-900">
+                            {item.displayName}
+                          </span>
+                          <StatusBadge status={item.status} />
+                        </div>
+                        <p className="mt-2 text-xs text-slate-400">
+                          v{item.activeVersion?.version ?? 0} · 使用{" "}
+                          {item.usageCount} 次
+                        </p>
+                      </button>
+                    ))}
+                    {!group.items.length ? (
+                      <p className="rounded-2xl bg-slate-50 px-3 py-3 text-xs text-slate-400">
+                        暂无模板
+                      </p>
+                    ) : null}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </aside>
+
+        <main className="min-w-0">
+          <form onSubmit={handleSave} className="space-y-5">
+            <section className="overflow-hidden rounded-3xl border border-slate-100 bg-white shadow-sm">
+              <div className="sticky top-0 z-10 border-b border-slate-100 bg-white/95 px-4 py-4 backdrop-blur sm:px-5">
+                <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-center 2xl:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="min-w-0 truncate text-xl font-bold text-slate-950">
+                        {selected ? displayName(selected) : "新建 Prompt"}
+                      </h2>
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-500">
+                        {sceneLabels[form.scene]}
                       </span>
                     </div>
-                    <div className="space-y-2">
-                      {group.items.map((item) => (
-                        <button
-                          key={item.id}
-                          type="button"
-                          onClick={() => setSelectedKey(item.key)}
-                          className={`w-full rounded-2xl border p-3 text-left transition ${
-                            selected?.id === item.id
-                              ? "border-[#ff2442]/20 bg-[#fff3f5]"
-                              : "border-slate-100 bg-white hover:border-[#ff2442]/20 hover:bg-[#fff3f5]"
-                          }`}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="min-w-0 flex items-center gap-2">
-                              <span className="truncate text-sm text-slate-900">{item.displayName}</span>
-                              <p className="truncate text-xs text-slate-500">{item.key}</p>
-                            </div>                            
-                            <StatusBadge status={item.status} />
-                          </div>
-                          <p className="mt-2 text-xs text-slate-400">
-                            v{item.activeVersion?.version ?? 0} · 使用 {item.usageCount} 次
-                          </p>
-                        </button>
-                      ))}
-                      {!group.items.length ? (
-                        <p className="rounded-2xl bg-slate-50 px-3 py-3 text-xs text-slate-400">暂无模板</p>
-                      ) : null}
+                    <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-500">
+                      {promptDescriptions[form.key] ??
+                        (form.description ||
+                          "用于维护一个可版本化、可测试、可激活的 Prompt。")}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handlePreview}
+                      disabled={Boolean(busy) || !selected}
+                      className={secondaryButton()}
+                    >
+                      {busy === "preview" ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Eye className="h-4 w-4" />
+                      )}
+                      预览
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={Boolean(busy) || !form.template.trim()}
+                      className={primaryButton()}
+                    >
+                      {busy === "activate" ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Send className="h-4 w-4" />
+                      )}
+                      保存
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-5 p-4 sm:p-5">
+                <div
+                  className={`rounded-2xl px-4 py-3 text-sm ${message.includes("失败") ? "bg-rose-50 text-rose-700" : "bg-slate-50 text-slate-500"}`}
+                >
+                  {message}
+                </div>
+
+                <section className="rounded-2xl border border-slate-100 p-4">
+                  <h3 className="text-base font-bold text-slate-900">
+                    基础信息
+                  </h3>
+                  <div className="mt-4 grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-4">
+                    <Field
+                      label="Prompt key"
+                      value={form.key}
+                      disabled={Boolean(selected)}
+                      onChange={(value) =>
+                        setForm((prev) => ({ ...prev, key: value }))
+                      }
+                    />
+                    <Field
+                      label="显示名称"
+                      value={form.displayName}
+                      onChange={(value) =>
+                        setForm((prev) => ({ ...prev, displayName: value }))
+                      }
+                    />
+                    <label className="grid min-w-0 gap-2">
+                      <span className="text-sm font-semibold text-slate-700">
+                        业务场景
+                      </span>
+                      <select
+                        value={form.scene}
+                        onChange={(event) =>
+                          setForm((prev) => ({
+                            ...prev,
+                            scene: event.target.value as PromptScene,
+                          }))
+                        }
+                        className={inputClass()}
+                      >
+                        {sceneOrder.map((scene) => (
+                          <option key={scene} value={scene}>
+                            {sceneLabels[scene]}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <Field
+                      label="模型"
+                      value={form.model}
+                      placeholder="默认使用 ARK_MODEL"
+                      onChange={(value) =>
+                        setForm((prev) => ({ ...prev, model: value }))
+                      }
+                    />
+                  </div>
+                  <div className="mt-4 grid min-w-0 grid-cols-1 gap-4 grid-cols-[minmax(0,1fr)_160px]">
+                    <VariableTags variables={extractedVariables} />
+                    <Field
+                      label="temperature"
+                      value={form.temperature}
+                      onChange={(value) =>
+                        setForm((prev) => ({ ...prev, temperature: value }))
+                      }
+                    />
+                  </div>
+                  <div className="mt-4">
+                    <Field
+                      label="描述"
+                      value={form.description}
+                      onChange={(value) =>
+                        setForm((prev) => ({ ...prev, description: value }))
+                      }
+                    />
+                  </div>
+                </section>
+
+                <section className="rounded-2xl border border-slate-100 bg-white p-4">
+                  <h3 className="text-base font-bold text-slate-900">
+                    模板内容
+                  </h3>
+                  <label className="mt-4 grid min-w-0 gap-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-sm font-semibold text-slate-700">
+                        Prompt 模板
+                      </span>
+                      <span className="text-xs text-slate-400">
+                        {form.template.length} 字符
+                      </span>
+                    </div>
+                    <textarea
+                      value={form.template}
+                      onChange={(event) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          template: event.target.value,
+                        }))
+                      }
+                      rows={20}
+                      className="prompt-local-scroll block w-full min-w-0 max-w-full resize-y rounded-2xl border border-slate-200 bg-slate-50 p-4 font-mono text-sm leading-7 text-slate-800 outline-none focus:border-[#ff2442]/40 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10"
+                    />
+                  </label>
+                </section>
+
+                <section className="rounded-2xl border border-slate-100 p-4">
+                  <h3 className="text-base font-bold text-slate-900">
+                    结构化配置
+                  </h3>
+                  <div className="mt-4 grid min-w-0 grid-cols-1 gap-4 2xl:grid-cols-2">
+                    <TextareaField
+                      label="输出 Schema JSON"
+                      value={form.outputSchema}
+                      rows={8}
+                      placeholder='{"type":"object","required":["title"]}'
+                      onChange={(value) =>
+                        setForm((prev) => ({ ...prev, outputSchema: value }))
+                      }
+                    />
+                    <TextareaField
+                      label="预览输入 JSON"
+                      value={form.previewInput}
+                      rows={8}
+                      placeholder='{"body":"这里粘贴正文"}'
+                      onChange={(value) =>
+                        setForm((prev) => ({ ...prev, previewInput: value }))
+                      }
+                    />
+                  </div>
+                </section>
+
+                <section className="rounded-2xl border border-slate-100 bg-white p-4">
+                  <h3 className="text-base font-bold text-slate-900">
+                    版本说明
+                  </h3>
+                  <div className="mt-4">
+                    <Field
+                      label="变更说明"
+                      value={form.changeNote}
+                      placeholder="说明这次 Prompt 改了什么、为什么改"
+                      onChange={(value) =>
+                        setForm((prev) => ({ ...prev, changeNote: value }))
+                      }
+                    />
+                  </div>
+                </section>
+              </div>
+            </section>
+          </form>
+          <section className="mt-5 rounded-3xl border border-slate-100 bg-white p-5 shadow-sm">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <h3 className="inline-flex items-center gap-2 text-lg font-black text-slate-950">
+                <Eye className="h-4 w-4 text-[#ff2442]" />
+                渲染预览
+              </h3>
+              {preview ? (
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-500">
+                  {preview.prompt.length} 字符
+                </span>
+              ) : null}
+            </div>
+            {preview ? (
+              <div className="grid gap-4">
+                <div className="space-y-2">
+                  {issueCount ? (
+                    preview.issues.map((issue, index) => (
+                      <div
+                        key={`${issue.type}-${issue.variable}-${index}`}
+                        className={issueClass(issue.severity)}
+                      >
+                        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                        <span>{issue.message}</span>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="flex items-start gap-2 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
+                      <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                      暂未发现变量问题
+                    </div>
+                  )}
+                </div>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <PreviewMeta
+                    label="模板变量"
+                    values={preview.variables.map((item) => `{{${item}}}`)}
+                    empty="无变量"
+                  />
+                  <PreviewMeta
+                    label="输入变量"
+                    values={preview.inputKeys}
+                    empty="无输入"
+                  />
+                  <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm">
+                    <p className="text-xs font-semibold text-slate-400">
+                      模型参数
+                    </p>
+                    <p className="mt-2 font-semibold text-slate-700">
+                      {preview.model || "默认模型"}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      temperature: {formatTemperature(preview.modelOptions)}
+                    </p>
+                  </div>
+                </div>
+                <pre className="prompt-local-scroll max-h-96 overflow-auto rounded-2xl bg-slate-950 p-4 text-sm leading-7 text-slate-100">
+                  {preview.prompt}
+                </pre>
+              </div>
+            ) : (
+              <div className="grid min-h-40 place-items-center rounded-2xl bg-slate-50 px-5 text-center text-sm leading-6 text-slate-400">
+                选择已保存的 Prompt 后点击“预览”，这里会展示最终渲染结果。
+              </div>
+            )}
+          </section>
+        </main>
+
+        <aside className="sticky top-[var(--app-page-y)] flex h-[var(--app-sticky-panel-height)] min-h-0 self-start flex-col gap-5 overflow-hidden">
+          {/* Section 1: 版本历史 (限制最大高度，内部列表滚动) */}
+          <section className="flex min-h-0 basis-[38%] shrink-0 flex-col overflow-hidden rounded-3xl border border-slate-100 bg-white p-4 shadow-sm">
+            <div className="mb-3 shrink-0 flex items-center justify-between gap-2">
+              <h3 className="inline-flex items-center gap-2 text-xl font-bold text-slate-950">
+                <History className="h-4 w-4 text-[#ff2442]" />
+                版本历史
+              </h3>
+              <span className="text-xs text-slate-400">
+                {versions.length} 个版本
+              </span>
+            </div>
+
+            {/* 增加内部滚动容器：flex-1 min-h-0 overflow-y-auto */}
+            <div className="flex-1 min-h-0 overflow-y-auto pr-1 space-y-2 prompt-local-scroll">
+              {versions.length ? (
+                versions.map((version) => (
+                  <div
+                    key={version.id}
+                    className="rounded-2xl border border-slate-100 bg-slate-50 p-3"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-sm font-bold text-slate-900">
+                        v{version.version}
+                      </span>
+                      <StatusBadge status={version.status} />
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-500">
+                      {version.changeNote || "无变更说明"}
+                    </p>
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => applyVersionToForm(version)}
+                        className="flex-1 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100"
+                      >
+                        查看
+                      </button>
+                      <button
+                        type="button"
+                        disabled={Boolean(busy) || version.status === "active"}
+                        onClick={() => void handleActivateVersion(version)}
+                        className="flex-1 rounded-xl bg-[#ff2442] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-rose-200"
+                      >
+                        激活
+                      </button>
                     </div>
                   </div>
                 ))
+              ) : (
+                <div className="grid h-28 place-items-center rounded-2xl bg-slate-50 text-sm text-slate-400">
+                  暂无版本
+                </div>
               )}
             </div>
-          </aside>
+          </section>
 
-          <main className="min-w-0">
-            <form onSubmit={handleSave} className="space-y-5">
-              <section className="overflow-hidden rounded-3xl border border-slate-100 bg-white shadow-sm">
-                <div className="sticky top-0 z-10 border-b border-slate-100 bg-white/95 px-4 py-4 backdrop-blur sm:px-5">
-                  <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-center 2xl:justify-between">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h2 className="min-w-0 truncate text-xl font-bold text-slate-950">
-                          {selected ? displayName(selected) : "新建 Prompt"}
-                        </h2>
-                        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-500">
-                          {sceneLabels[form.scene]}
-                        </span>
-                      </div>
-                      <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-500">
-                        {promptDescriptions[form.key] ?? (form.description || "用于维护一个可版本化、可测试、可激活的 Prompt。")}
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <button type="button" onClick={handlePreview} disabled={Boolean(busy) || !selected} className={secondaryButton()}>
-                        {busy === "preview" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}
-                        预览
-                      </button>
-                      <button type="submit" disabled={Boolean(busy) || !form.template.trim()} className={primaryButton()}>
-                        {busy === "activate" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                        保存并激活
-                      </button>
-                    </div>
-                  </div>
-                </div>
+          {/* Section 2: 测试回放 (自适应剩余高度，内部整体滚动) */}
+          <section className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border border-slate-100 bg-white p-4 shadow-sm">
+            <div className="mb-3 flex shrink-0 items-center justify-between gap-2">
+              <h3 className="inline-flex items-center gap-2 text-xl font-bold text-slate-950">
+                <FlaskConical className="h-4 w-4 text-[#ff2442]" />
+                测试回放
+              </h3>
+              <button
+                type="button"
+                onClick={handleCreateTestCase}
+                disabled={Boolean(busy) || !selected}
+                className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                加用例
+              </button>
+            </div>
 
-                <div className="space-y-5 p-4 sm:p-5">
-                  <div className={`rounded-2xl px-4 py-3 text-sm ${message.includes("失败") ? "bg-rose-50 text-rose-700" : "bg-slate-50 text-slate-500"}`}>
-                    {message}
-                  </div>
-
-                  <section className="rounded-2xl border border-slate-100 p-4">
-                    <h3 className="text-base font-bold text-slate-900">基础信息</h3>
-                    <div className="mt-4 grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-4">
-                      <Field label="Prompt key" value={form.key} disabled={Boolean(selected)} onChange={(value) => setForm((prev) => ({ ...prev, key: value }))} />
-                      <Field label="显示名称" value={form.displayName} onChange={(value) => setForm((prev) => ({ ...prev, displayName: value }))} />
-                      <label className="grid min-w-0 gap-2">
-                        <span className="text-sm font-semibold text-slate-700">业务场景</span>
-                        <select value={form.scene} onChange={(event) => setForm((prev) => ({ ...prev, scene: event.target.value as PromptScene }))} className={inputClass()}>
-                          {sceneOrder.map((scene) => (
-                            <option key={scene} value={scene}>
-                              {sceneLabels[scene]}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <Field label="模型" value={form.model} placeholder="默认使用 ARK_MODEL" onChange={(value) => setForm((prev) => ({ ...prev, model: value }))} />
-                    </div>
-                    <div className="mt-4 grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_160px]">
-                      <VariableTags variables={extractedVariables} />
-                      <Field label="temperature" value={form.temperature} onChange={(value) => setForm((prev) => ({ ...prev, temperature: value }))} />
-                    </div>
-                    <div className="mt-4">
-                      <Field label="描述" value={form.description} onChange={(value) => setForm((prev) => ({ ...prev, description: value }))} />
-                    </div>
-                  </section>
-
-                  <section className="rounded-2xl border border-slate-100 bg-white p-4">
-                    <h3 className="text-base font-bold text-slate-900">模板内容</h3>
-                    <label className="mt-4 grid min-w-0 gap-2">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span className="text-sm font-semibold text-slate-700">Prompt 模板</span>
-                        <span className="text-xs text-slate-400">{form.template.length} 字符</span>
-                      </div>
-                      <textarea
-                        value={form.template}
-                        onChange={(event) => setForm((prev) => ({ ...prev, template: event.target.value }))}
-                        rows={20}
-                        className="block w-full min-w-0 max-w-full resize-y rounded-2xl border border-slate-200 bg-slate-50 p-4 font-mono text-sm leading-7 text-slate-800 outline-none focus:border-[#ff2442]/40 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10"
-                      />
-                    </label>
-                  </section>
-
-                  <section className="rounded-2xl border border-slate-100 p-4">
-                    <h3 className="text-base font-bold text-slate-900">结构化配置</h3>
-                    <div className="mt-4 grid min-w-0 grid-cols-1 gap-4 2xl:grid-cols-2">
-                      <TextareaField
-                        label="输出 Schema JSON"
-                        value={form.outputSchema}
-                        rows={8}
-                        placeholder='{"type":"object","required":["title"]}'
-                        onChange={(value) => setForm((prev) => ({ ...prev, outputSchema: value }))}
-                      />
-                      <TextareaField
-                        label="预览输入 JSON"
-                        value={form.previewInput}
-                        rows={8}
-                        placeholder='{"body":"这里粘贴正文"}'
-                        onChange={(value) => setForm((prev) => ({ ...prev, previewInput: value }))}
-                      />
-                    </div>
-                  </section>
-
-                  <section className="rounded-2xl border border-slate-100 bg-white p-4">
-                    <h3 className="text-base font-bold text-slate-900">版本说明</h3>
-                    <div className="mt-4">
-                      <Field
-                        label="变更说明"
-                        value={form.changeNote}
-                        placeholder="说明这次 Prompt 改了什么、为什么改"
-                        onChange={(value) => setForm((prev) => ({ ...prev, changeNote: value }))}
-                      />
-                    </div>
-                  </section>
-                </div>
-              </section>
-            </form>
-            <section className="mt-5 rounded-3xl border border-slate-100 bg-white p-5 shadow-sm">
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                <h3 className="inline-flex items-center gap-2 text-lg font-black text-slate-950">
-                  <Eye className="h-4 w-4 text-[#ff2442]" />
-                  渲染预览
-                </h3>
-                {preview ? <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-500">{preview.prompt.length} 字符</span> : null}
-              </div>
-              {preview ? (
-                <div className="grid gap-4">
-                  <div className="space-y-2">
-                    {issueCount ? (
-                      preview.issues.map((issue, index) => (
-                        <div key={`${issue.type}-${issue.variable}-${index}`} className={issueClass(issue.severity)}>
-                          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-                          <span>{issue.message}</span>
-                        </div>
-                      ))
-                    ) : (
-                      <div className="flex items-start gap-2 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-700">
-                        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
-                        暂未发现变量问题
-                      </div>
-                    )}
-                  </div>
-                  <div className="grid gap-3 md:grid-cols-3">
-                    <PreviewMeta label="模板变量" values={preview.variables.map((item) => `{{${item}}}`)} empty="无变量" />
-                    <PreviewMeta label="输入变量" values={preview.inputKeys} empty="无输入" />
-                    <div className="rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-sm">
-                      <p className="text-xs font-semibold text-slate-400">模型参数</p>
-                      <p className="mt-2 font-semibold text-slate-700">{preview.model || "默认模型"}</p>
-                      <p className="mt-1 text-xs text-slate-500">temperature: {formatTemperature(preview.modelOptions)}</p>
-                    </div>
-                  </div>
-                  <pre className="max-h-96 overflow-auto rounded-2xl bg-slate-950 p-4 text-sm leading-7 text-slate-100">
-                    {preview.prompt}
-                  </pre>
-                </div>
-              ) : (
-                <div className="grid min-h-40 place-items-center rounded-2xl bg-slate-50 px-5 text-center text-sm leading-6 text-slate-400">
-                  选择已保存的 Prompt 后点击“预览”，这里会展示最终渲染结果。
-                </div>
-              )}
-            </section>
-          </main>
-
-          <aside className="space-y-5 xl:sticky xl:top-5 xl:max-h-[calc(100vh-2.5rem)] xl:overflow-y-auto">
-            <section className="rounded-3xl border border-slate-100 bg-white p-4 shadow-sm">
-              <div className="mb-3 flex items-center justify-between gap-2">
-                <h3 className="inline-flex items-center gap-2 text-base font-bold text-slate-950">
-                  <History className="h-4 w-4 text-[#ff2442]" />
-                  版本历史
-                </h3>
-                <span className="text-xs text-slate-400">{versions.length} 个版本</span>
-              </div>
-              <div className="space-y-2">
-                {versions.length ? (
-                  versions.map((version) => (
-                    <div key={version.id} className="rounded-2xl border border-slate-100 bg-slate-50 p-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-sm font-bold text-slate-900">v{version.version}</span>
-                        <StatusBadge status={version.status} />
-                      </div>
-                      <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-500">{version.changeNote || "无变更说明"}</p>
-                      <div className="mt-3 flex gap-2">
-                    <button type="button" onClick={() => applyVersionToForm(version)} className="flex-1 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100">
-                          查看
-                        </button>
-                    <button type="button" disabled={Boolean(busy) || version.status === "active"} onClick={() => void handleActivateVersion(version)} className="flex-1 rounded-xl bg-[#ff2442] px-3 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:bg-rose-200">
-                          激活
-                        </button>
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="grid h-28 place-items-center rounded-2xl bg-slate-50 text-sm text-slate-400">暂无版本</div>
-                )}
-              </div>
-            </section>
-
-            <section className="rounded-3xl border border-slate-100 bg-white p-4 shadow-sm">
-              <div className="mb-3 flex items-center justify-between gap-2">
-                <h3 className="inline-flex items-center gap-2 text-base font-bold text-slate-950">
-                  <FlaskConical className="h-4 w-4 text-[#ff2442]" />
-                  测试回放
-                </h3>
-                <button type="button" onClick={handleCreateTestCase} disabled={Boolean(busy) || !selected} className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600 disabled:cursor-not-allowed disabled:opacity-50">
-                  加用例
-                </button>
-              </div>
-              <div className="space-y-2">
+            {/* 测试回放本身不滚动，只让测试数据和结果列表各自滚动。 */}
+            <div className="flex min-h-0 flex-1 flex-col gap-3">
+              {/* 测试数据 */}
+              <div className="flex min-h-0 basis-[32%] flex-col overflow-hidden">
+                <div className="prompt-local-scroll min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
                 {testCases.length ? (
                   testCases.map((item) => (
-                    <div key={item.id} className="rounded-2xl bg-slate-50 p-3 text-sm">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="font-semibold text-slate-900">{item.name}</span>
-                        <span className={`text-xs font-semibold ${item.enabled ? "text-emerald-600" : "text-slate-400"}`}>
-                          {item.enabled ? "启用" : "停用"}
-                        </span>
+                    <div
+                      key={item.id}
+                      className="rounded-2xl bg-slate-50 p-3 text-sm"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <span className="block truncate font-semibold text-slate-900">
+                            {item.name}
+                          </span>
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                            <span
+                              className={`text-xs font-semibold ${item.enabled ? "text-emerald-600" : "text-slate-400"}`}
+                            >
+                              {item.enabled ? "启用" : "停用"}
+                            </span>
+                            <span className="text-xs text-slate-300">·</span>
+                            <span className="text-xs font-semibold text-slate-400">
+                              {item.canDelete ? "用户添加" : "平台内置"}
+                            </span>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void handleDeleteTestCase(item)}
+                          disabled={Boolean(busy) || !item.canDelete}
+                          title={
+                            item.canDelete
+                              ? "删除测试用例"
+                              : "平台内置用例不可删除"
+                          }
+                          className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-white text-slate-400 transition hover:bg-rose-50 hover:text-rose-600 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-300"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
                       </div>
-                      <p className="mt-1 truncate text-xs text-slate-400">{Object.keys(item.input).join("、") || "无输入变量"}</p>
                     </div>
                   ))
                 ) : (
-                  <div className="grid h-28 place-items-center rounded-2xl bg-slate-50 text-sm text-slate-400">暂无测试用例</div>
+                  <div className="grid h-28 place-items-center rounded-2xl bg-slate-50 text-sm text-slate-400">
+                    暂无测试用例
+                  </div>
                 )}
+                </div>
               </div>
-              <button type="button" onClick={handleEvalRun} disabled={Boolean(busy) || !selected || !testCases.length} className={`${primaryButton()} mt-3 w-full justify-center`}>
-                {busy === "eval" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                运行 dry-run 回放
+
+              <label className="grid shrink-0 gap-2">
+                <span className="text-xs font-semibold text-slate-500">
+                  评估版本
+                </span>
+                <select
+                  value={evalVersionId}
+                  onChange={(event) => setEvalVersionId(event.target.value)}
+                  disabled={Boolean(busy) || !versions.length}
+                  className={inputClass()}
+                >
+                  {versions.map((version) => (
+                    <option key={version.id} value={version.id}>
+                      v{version.version} - {version.status}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="grid shrink-0 grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => void handleEvalRun("dry_run")}
+                  disabled={Boolean(busy) || !selected || !testCases.length}
+                  className={`${secondaryButton()} justify-center`}
+                >
+                  {busy === "eval" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Play className="h-4 w-4" />
+                  )}
+                  Dry-run
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleEvalRun("llm_eval")}
+                  disabled={Boolean(busy) || !selected || !testCases.length}
+                  className={`${primaryButton()} justify-center`}
+                >
+                  {busy === "eval" ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Play className="h-4 w-4" />
+                  )}
+                  LLM Eval ({LLM_EVAL_CASE_LIMIT})
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => void handleCompareEvalRuns()}
+                disabled={
+                  Boolean(busy) || !selected || !previousEvalRun || !evalRun
+                }
+                className={`${secondaryButton()} w-full shrink-0 justify-center`}
+              >
+                比较回放结果
               </button>
+
+              {/* 回放结果 */}
               {evalRun ? (
-                <div className="mt-3 rounded-2xl border border-slate-100 bg-slate-50 p-3 text-sm">
-                  <p className="font-bold text-slate-900">最近回放：{statusLabels[evalRun.status] ?? evalRun.status}</p>
-                  <p className="mt-1 text-slate-500">
-                    通过 {evalRun.passed} / {evalRun.total}，失败 {evalRun.failed}
+                <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-100 bg-slate-50 p-3 text-sm">
+                  <p className="font-bold text-slate-900">
+                    最近回放：{statusLabels[evalRun.status] ?? evalRun.status}
                   </p>
-                  <div className="mt-2 max-h-40 space-y-2 overflow-auto">
+                  <p className="mt-1 text-slate-500">
+                    通过 {evalRun.passed} / {evalRun.total}，失败{" "}
+                    {evalRun.failed}
+                  </p>
+                  <EvalMetrics metrics={evalRun.metrics} />
+                  <div className="prompt-local-scroll mt-2 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
                     {evalRun.results?.map((item) => (
-                      <div key={item.id} className="rounded-xl bg-white px-2 py-1.5 text-xs text-slate-500">
-                        {item.status} · {item.errorMessage ?? "变量检查通过"}
+                      <div
+                        key={item.id}
+                        className="rounded-xl bg-white px-2 py-1.5 text-xs text-slate-500"
+                      >
+                        {item.status} · {item.errorMessage ?? "passed"}
                       </div>
                     ))}
                   </div>
                 </div>
               ) : null}
-            </section>
-          </aside>
+
+              {/* 比较结果 */}
+              {comparison ? (
+                <div className="flex max-h-40 shrink-0 flex-col overflow-hidden rounded-2xl border border-slate-100 bg-white p-3 text-sm">
+                  <p className="font-bold text-slate-900">Comparison delta</p>
+                  <div className="prompt-local-scroll min-h-0 overflow-y-auto pr-1">
+                    <EvalMetrics metrics={comparison.delta} signed />
+                    <p className="mt-2 text-xs text-slate-500">
+                      fixed {comparison.fixedCaseIds.length} / regressed{" "}
+                      {comparison.regressedCaseIds.length}
+                    </p>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </section>
+        </aside>
       </div>
     </section>
   );
@@ -742,7 +1085,7 @@ function TextareaField({
         onChange={(event) => onChange(event.target.value)}
         rows={rows}
         placeholder={placeholder}
-        className="block w-full min-w-0 max-w-full resize-y rounded-2xl border border-slate-200 bg-slate-50 p-3 font-mono text-sm leading-6 text-slate-800 outline-none placeholder:text-slate-400 focus:border-[#ff2442]/40 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10"
+        className="prompt-local-scroll block w-full min-w-0 max-w-full resize-y rounded-2xl border border-slate-200 bg-slate-50 p-3 font-mono text-sm leading-6 text-slate-800 outline-none placeholder:text-slate-400 focus:border-[#ff2442]/40 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10"
       />
     </label>
   );
@@ -788,6 +1131,31 @@ function PreviewMeta({ label, values, empty }: { label: string; values: string[]
   );
 }
 
+function EvalMetrics({ metrics, signed = false }: { metrics?: PromptEvalMetrics; signed?: boolean }) {
+  const items = [
+    ["accuracy", metrics?.accuracy],
+    ["recall", metrics?.highRiskRecall],
+    ["precision", metrics?.highRiskPrecision],
+    ["f1", metrics?.f1],
+    ["fp rate", metrics?.falsePositiveRate],
+    ["parse", metrics?.parseSuccessRate],
+    ["latency", metrics?.avgLatencyMs],
+  ] as const;
+  const visible = items.filter(([, value]) => typeof value === "number");
+  if (!visible.length) return null;
+
+  return (
+    <div className="mt-3 grid grid-cols-2 gap-2">
+      {visible.map(([label, value]) => (
+        <div key={label} className="rounded-xl bg-white px-2 py-2">
+          <p className="text-[11px] font-semibold uppercase text-slate-400">{label}</p>
+          <p className="mt-1 text-sm font-bold text-slate-800">{formatEvalMetric(label, value, signed)}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function StatusBadge({ status }: { status: string }) {
   const color =
     status === "active"
@@ -821,6 +1189,13 @@ function issueClass(severity: string) {
   if (severity === "error") return "flex items-start gap-2 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-700";
   if (severity === "warning") return "flex items-start gap-2 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-sm text-amber-700";
   return "flex items-start gap-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-sm text-slate-500";
+}
+
+function formatEvalMetric(label: string, value: number | undefined, signed: boolean) {
+  if (typeof value !== "number") return "-";
+  const prefix = signed && value > 0 ? "+" : "";
+  if (label === "latency") return `${prefix}${Math.round(value)}ms`;
+  return `${prefix}${Math.round(value * 1000) / 10}%`;
 }
 
 function extractVariables(template: string) {
@@ -935,6 +1310,15 @@ function parseJsonObject(value: string, label: string): Record<string, unknown> 
     if (error instanceof Error && error.message.includes("必须是")) throw error;
     throw new Error(`${label} 格式不是合法 JSON`);
   }
+}
+
+function evalRunMessage(mode: PromptEvalMode, run: PromptEvalRunSummary) {
+  const suffix = mode === "llm_eval" ? " sampled cases" : "";
+  return `${mode} eval done: passed ${run.passed}/${run.total}${suffix}`;
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function errorMessage(error: unknown, fallback: string) {

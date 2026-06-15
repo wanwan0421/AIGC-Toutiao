@@ -20,6 +20,7 @@ model User {
   updatedAt    DateTime          @updatedAt
   promptDefinitions PromptDefinition[]
   promptVersions PromptVersion[]
+  promptTestCases PromptTestCase[]
   assets       Asset[]
   contents     Content[]
   events       UserActionEvent[]
@@ -205,12 +206,15 @@ model PromptTestCase {
   expectedOutput Json?
   assertions    Json?
   enabled       Boolean          @default(true)
+  createdById   String?
   createdAt     DateTime         @default(now())
   updatedAt     DateTime         @updatedAt
   definition    PromptDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+  createdBy     User?            @relation(fields: [createdById], references: [id])
   evalResults   PromptEvalResult[]
 
   @@index([definitionId, enabled])
+  @@index([createdById])
 }
 
 model PromptEvalRun {

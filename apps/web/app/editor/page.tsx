@@ -2740,7 +2740,7 @@ export default function EditorPage() {
   return (
     <section className="min-h-full bg-[#f6f6f7] px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
       <div className="mx-auto grid max-w-440 gap-5 xl:grid-cols-[320px_minmax(0,1fr)_390px]">
-        <aside className="space-y-5 xl:sticky xl:top-5 xl:max-h-[calc(100vh-2.5rem)] xl:overflow-y-auto xl:pr-1">
+        <aside className="space-y-5 xl:sticky xl:top-[var(--app-page-y)] xl:max-h-[var(--app-sticky-panel-height)] xl:overflow-y-auto xl:pr-1">
           <section className="rounded-3xl border border-slate-100 bg-white p-4 shadow-sm">
             <div className="mb-3 flex rounded-2xl bg-slate-100 p-1">
               {[
@@ -3754,7 +3754,7 @@ export default function EditorPage() {
           </section>
         </main>
 
-        <aside className="space-y-5 xl:sticky xl:top-5 xl:max-h-[calc(100vh-2.5rem)] xl:pr-1">
+        <aside className="space-y-5 xl:sticky xl:top-[var(--app-page-y)] xl:max-h-[var(--app-sticky-panel-height)] xl:pr-1">
           <section className="rounded-3xl border border-slate-100 bg-white p-4 shadow-sm">
             <div className="mb-4 flex items-center gap-2 text-slate-950">
               <MessageCircle size={18} className="text-[#ff2442]" />

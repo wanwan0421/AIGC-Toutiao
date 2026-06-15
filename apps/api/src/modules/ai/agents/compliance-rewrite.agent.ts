@@ -88,6 +88,8 @@ export class ComplianceRewriteAgent {
       await this.logs.log({
         scene: AI_PROMPT_NAMES.complianceRewrite,
         model: this.modelClient.modelName(rendered.model),
+        promptKey: rendered.promptKey,
+        promptVersionId: rendered.promptVersionId,
         inputSummary: `${input.title} / ${input.reasons?.join("; ") ?? ""}`,
         output: result,
         latencyMs: Date.now() - startedAt,
@@ -98,6 +100,8 @@ export class ComplianceRewriteAgent {
       await this.logs.log({
         scene: AI_PROMPT_NAMES.complianceRewrite,
         model: this.modelClient.modelName(rendered.model),
+        promptKey: rendered.promptKey,
+        promptVersionId: rendered.promptVersionId,
         inputSummary: `${input.title} / ${input.reasons?.join("; ") ?? ""}`,
         latencyMs: Date.now() - startedAt,
         success: false,

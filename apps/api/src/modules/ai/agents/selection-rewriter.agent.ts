@@ -52,6 +52,8 @@ export class SelectionRewriterAgent {
       await this.logs.log({
         scene: selectionPromptName(input.action),
         model: this.modelClient.modelName(model),
+        promptKey: rendered.promptKey,
+        promptVersionId: rendered.promptVersionId,
         inputSummary: selectedText.slice(0, 120),
         output: result,
         latencyMs: Date.now() - startedAt,
@@ -63,6 +65,8 @@ export class SelectionRewriterAgent {
       await this.logs.log({
         scene: selectionPromptName(input.action),
         model: this.modelClient.modelName(model),
+        promptKey: rendered.promptKey,
+        promptVersionId: rendered.promptVersionId,
         inputSummary: selectedText.slice(0, 120),
         latencyMs: Date.now() - startedAt,
         success: false,

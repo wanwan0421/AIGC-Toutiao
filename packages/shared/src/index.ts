@@ -76,8 +76,37 @@ export interface PromptTestCaseSummary {
   expectedOutput?: unknown;
   assertions?: Record<string, unknown> | null;
   enabled: boolean;
+  canDelete: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export type PromptEvalMode = "dry_run" | "llm_eval";
+
+export interface PromptEvalRunRequest {
+  versionId?: string;
+  includeDisabled?: boolean;
+  mode?: PromptEvalMode;
+  caseLimit?: number;
+}
+
+export interface PromptEvalMetrics {
+  accuracy?: number;
+  highRiskRecall?: number;
+  highRiskPrecision?: number;
+  f1?: number;
+  falsePositiveRate?: number;
+  parseSuccessRate?: number;
+  avgLatencyMs?: number;
+}
+
+export interface PromptEvalJudgeSummary {
+  expectedRiskLevel?: string | null;
+  predictedRiskLevel?: string | null;
+  expectedHighRisk?: boolean | null;
+  predictedHighRisk?: boolean | null;
+  parseSucceeded?: boolean;
+  matched?: boolean;
 }
 
 export interface PromptEvalResultSummary {
@@ -87,6 +116,8 @@ export interface PromptEvalResultSummary {
   status: string;
   input: Record<string, unknown>;
   output?: unknown;
+  parsedOutput?: unknown;
+  judge?: PromptEvalJudgeSummary | null;
   renderedPrompt?: string | null;
   errorMessage?: string | null;
   latencyMs?: number | null;
@@ -97,15 +128,27 @@ export interface PromptEvalRunSummary {
   id: string;
   definitionId: string;
   versionId?: string | null;
-  mode: string;
+  mode: PromptEvalMode | string;
   status: string;
   total: number;
   passed: number;
   failed: number;
+  metrics?: PromptEvalMetrics;
   startedAt: string;
   completedAt?: string | null;
   createdAt: string;
   results?: PromptEvalResultSummary[];
+}
+
+export interface PromptEvalComparisonSummary {
+  baselineRunId: string;
+  candidateRunId: string;
+  baselineMetrics: PromptEvalMetrics;
+  candidateMetrics: PromptEvalMetrics;
+  delta: PromptEvalMetrics;
+  fixedCaseIds: string[];
+  regressedCaseIds: string[];
+  newlyFailedCaseIds: string[];
 }
 
 export enum AiJobStatus {

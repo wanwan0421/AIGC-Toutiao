@@ -100,6 +100,8 @@ export class DraftGeneratorAgent {
     await this.logs.log({
       scene: AI_PROMPT_NAMES.directGenerate,
       model: this.modelClient.modelName(renderSettings.model),
+      promptKey: renderSettings.promptKey,
+      promptVersionId: renderSettings.promptVersionId,
       inputSummary: `${input.theme} / ${input.materialNotes?.slice(0, 80) ?? ""}`,
       output: {
         ...result,

@@ -66,6 +66,8 @@ export class QualityScoringAgent {
       await this.logs.log({
         scene: AI_PROMPT_NAMES.qualityScore,
         model: this.modelClient.modelName(model),
+        promptKey: rendered.promptKey,
+        promptVersionId: rendered.promptVersionId,
         inputSummary: `${input.title} / ${input.body.slice(0, 120)}`,
         output: result,
         latencyMs: Date.now() - startedAt,
@@ -76,6 +78,8 @@ export class QualityScoringAgent {
       await this.logs.log({
         scene: AI_PROMPT_NAMES.qualityScore,
         model: this.modelClient.modelName(model),
+        promptKey: rendered.promptKey,
+        promptVersionId: rendered.promptVersionId,
         inputSummary: `${input.title} / ${input.body.slice(0, 120)}`,
         latencyMs: Date.now() - startedAt,
         success: false,

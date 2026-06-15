@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
-import { PromptScene, type UserProfileSummary } from "@aicp/shared";
+import { PromptScene, type PromptEvalRunRequest, type UserProfileSummary } from "@aicp/shared";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { PromptsService } from "./prompts.service";
@@ -108,12 +108,13 @@ export class PromptsController {
   }
 
   @Get(":key/test-cases")
-  listTestCases(@Param("key") key: string) {
-    return this.promptsService.listTestCases(key);
+  listTestCases(@CurrentUser() user: UserProfileSummary, @Param("key") key: string) {
+    return this.promptsService.listTestCases(key, user.id);
   }
 
   @Post(":key/test-cases")
   createTestCase(
+    @CurrentUser() user: UserProfileSummary,
     @Param("key") key: string,
     @Body()
     body: {
@@ -124,11 +125,12 @@ export class PromptsController {
       enabled?: boolean;
     }
   ) {
-    return this.promptsService.createTestCase(key, body);
+    return this.promptsService.createTestCase(key, user.id, body);
   }
 
   @Patch(":key/test-cases/:caseId")
   updateTestCase(
+    @CurrentUser() user: UserProfileSummary,
     @Param("key") key: string,
     @Param("caseId") caseId: string,
     @Body()
@@ -140,17 +142,29 @@ export class PromptsController {
       enabled: boolean;
     }>
   ) {
-    return this.promptsService.updateTestCase(key, caseId, body);
+    return this.promptsService.updateTestCase(key, caseId, user.id, body);
   }
 
   @Delete(":key/test-cases/:caseId")
-  deleteTestCase(@Param("key") key: string, @Param("caseId") caseId: string) {
-    return this.promptsService.deleteTestCase(key, caseId);
+  deleteTestCase(@CurrentUser() user: UserProfileSummary, @Param("key") key: string, @Param("caseId") caseId: string) {
+    return this.promptsService.deleteTestCase(key, caseId, user.id);
   }
 
   @Post(":key/eval-runs")
-  runEval(@Param("key") key: string, @Body() body: { versionId?: string; includeDisabled?: boolean }) {
+  runEval(
+    @Param("key") key: string,
+    @Body() body: PromptEvalRunRequest
+  ) {
     return this.promptsService.runEval(key, body);
+  }
+
+  @Get(":key/eval-runs/compare")
+  compareEvalRuns(
+    @Param("key") key: string,
+    @Query("baselineRunId") baselineRunId: string,
+    @Query("candidateRunId") candidateRunId: string
+  ) {
+    return this.promptsService.compareEvalRuns(key, baselineRunId, candidateRunId);
   }
 
   @Get(":key/eval-runs/:runId")

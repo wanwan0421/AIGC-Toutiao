@@ -163,6 +163,8 @@ export class SafetyReviewAgent {
       await this.logs.log({
         scene: AI_PROMPT_NAMES.safetyReview,
         model: this.modelClient.modelName(rendered.model),
+        promptKey: rendered.promptKey,
+        promptVersionId: rendered.promptVersionId,
         inputSummary: `${input.title} / ${input.body.slice(0, 120)}`,
         output: result,
         latencyMs: Date.now() - startedAt,
@@ -173,6 +175,8 @@ export class SafetyReviewAgent {
       await this.logs.log({
         scene: AI_PROMPT_NAMES.safetyReview,
         model: this.modelClient.modelName(rendered.model),
+        promptKey: rendered.promptKey,
+        promptVersionId: rendered.promptVersionId,
         inputSummary: `${input.title} / ${input.body.slice(0, 120)}`,
         latencyMs: Date.now() - startedAt,
         success: false,

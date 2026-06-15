@@ -43,6 +43,8 @@ export class TitleAgent {
     await this.logs.log({
       scene: AI_PROMPT_NAMES.titleGenerate,
       model: this.modelClient.modelName(model),
+      promptKey: rendered.promptKey,
+      promptVersionId: rendered.promptVersionId,
       inputSummary: `${input.currentTitle ?? ""} / ${input.body.slice(0, 100)}`,
       output: parsed,
       latencyMs: Date.now() - startedAt,

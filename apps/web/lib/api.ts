@@ -23,6 +23,8 @@ import type {
   LocationSearchResponse,
   NearbyLocationsResponse,
   PromptDefinitionSummary,
+  PromptEvalComparisonSummary,
+  PromptEvalRunRequest,
   PromptEvalRunSummary,
   PromptRenderPreviewResult,
   PromptScene,
@@ -931,13 +933,25 @@ export async function deletePromptTestCase(key: string, caseId: string) {
   );
 }
 
-export async function runPromptEval(key: string, body: { versionId?: string; includeDisabled?: boolean } = {}) {
+export async function runPromptEval(
+  key: string,
+  body: PromptEvalRunRequest = {}
+) {
   return apiRequest<PromptEvalRunSummary>(
     `/prompts/${encodeURIComponent(key)}/eval-runs`,
     {
       method: "POST",
       body: JSON.stringify(body),
     },
+    true
+  );
+}
+
+export async function comparePromptEvalRuns(key: string, baselineRunId: string, candidateRunId: string) {
+  const query = new URLSearchParams({ baselineRunId, candidateRunId });
+  return apiRequest<PromptEvalComparisonSummary>(
+    `/prompts/${encodeURIComponent(key)}/eval-runs/compare?${query.toString()}`,
+    {},
     true
   );
 }

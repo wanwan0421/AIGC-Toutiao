@@ -11,6 +11,7 @@ export class ModelClientService {
   private readonly apiKey = process.env.ARK_API_KEY;
   private readonly apiUrl = (process.env.ARK_API_URL ?? process.env.ARK_BASE_URL ?? "https://ark.cn-beijing.volces.com/api/v3/chat/completions").replace(/\/$/, "");
   private readonly defaultModel = process.env.ARK_MODEL_ID ?? process.env.ARK_MODEL;
+  private readonly requestTimeoutMs = this.resolveRequestTimeoutMs();
 
   hasRemoteProvider(model?: string) {
     return Boolean(this.apiKey && this.modelName(model));
@@ -32,7 +33,7 @@ export class ModelClientService {
     this.assertConfigured(options.model);
 
     try {
-      const response = await fetch(this.apiUrl, {
+      const response = await this.fetchWithTimeout(this.apiUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -66,7 +67,7 @@ export class ModelClientService {
     const dataUri = `data:${mimeType};base64,${base64}`;
 
     try {
-      const response = await fetch(this.apiUrl, {
+      const response = await this.fetchWithTimeout(this.apiUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -98,7 +99,7 @@ export class ModelClientService {
     this.assertConfigured(options.model);
 
     try {
-      const response = await fetch(this.apiUrl, {
+      const response = await this.fetchWithTimeout(this.apiUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -172,6 +173,29 @@ export class ModelClientService {
       normalized === "your-model-id" ||
       normalized === "doubao-seed"
     );
+  }
+
+  private async fetchWithTimeout(input: string, init: RequestInit) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    try {
+      return await fetch(input, { ...init, signal: controller.signal });
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new Error(`Ark request timed out after ${this.requestTimeoutMs}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private resolveRequestTimeoutMs() {
+    const configured = Number.parseInt(process.env.ARK_TIMEOUT_MS ?? process.env.ARK_REQUEST_TIMEOUT_MS ?? "", 10);
+    if (Number.isFinite(configured) && configured > 0) {
+      return Math.min(Math.max(configured, 1000), 120000);
+    }
+    return 30000;
   }
 
   private async formatArkError(response: Response, prefix = "Ark request failed", model = this.modelName()) {

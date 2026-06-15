@@ -18,6 +18,7 @@
     "db:migrate": "npm run prisma -w @aicp/api -- migrate dev --name init",
     "db:seed": "npm run prisma -w @aicp/api -- db seed",
     "db:seed:prompts": "npm run seed:prompts -w @aicp/api",
+    "db:seed:prompt-eval:safety": "npm run seed:prompt-eval:safety -w @aicp/api",
     "db:studio": "npm run prisma -w @aicp/api -- studio"
   },
   "dependencies": {
