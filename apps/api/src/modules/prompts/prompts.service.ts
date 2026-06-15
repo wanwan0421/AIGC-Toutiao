@@ -713,6 +713,7 @@ export class PromptsService {
       const rawText = await this.modelClient.complete({
         model: version.model ?? undefined,
         temperature: promptTemperature(this.jsonObject(version.modelOptions), 0.2),
+        timeoutMs: this.promptEvalTimeoutMs(),
         messages: [
           {
             role: "system",
@@ -772,6 +773,13 @@ export class PromptsService {
       const message = error instanceof Error ? error.message : "unknown ai call log error";
       this.logger.warn(`Prompt eval log skipped: ${message}`);
     }
+  }
+
+  private promptEvalTimeoutMs() {
+    return this.modelClient.resolveTimeoutMs(
+      process.env.ARK_PROMPT_EVAL_TIMEOUT_MS ?? process.env.PROMPT_EVAL_TIMEOUT_MS,
+      30000
+    );
   }
 
   private evaluateLlmJudge(parsedOutput: Record<string, unknown> | null, testCase: TestCaseRecord): PromptEvalJudgeSummary {

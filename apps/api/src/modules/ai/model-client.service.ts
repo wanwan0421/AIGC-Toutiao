@@ -11,7 +11,6 @@ export class ModelClientService {
   private readonly apiKey = process.env.ARK_API_KEY;
   private readonly apiUrl = (process.env.ARK_API_URL ?? process.env.ARK_BASE_URL ?? "https://ark.cn-beijing.volces.com/api/v3/chat/completions").replace(/\/$/, "");
   private readonly defaultModel = process.env.ARK_MODEL_ID ?? process.env.ARK_MODEL;
-  private readonly requestTimeoutMs = this.resolveRequestTimeoutMs();
 
   hasRemoteProvider(model?: string) {
     return Boolean(this.apiKey && this.modelName(model));
@@ -29,18 +28,23 @@ export class ModelClientService {
     messages: ChatMessage[];
     model?: string;
     temperature?: number;
+    timeoutMs?: number;
   }) {
     this.assertConfigured(options.model);
 
     try {
-      const response = await this.fetchWithTimeout(this.apiUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.apiKey}`,
+      const response = await this.fetchWithTimeout(
+        this.apiUrl,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify(this.buildRequestBody(options, false)),
         },
-        body: JSON.stringify(this.buildRequestBody(options, false)),
-      });
+        options.timeoutMs
+      );
 
       if (!response.ok) {
         throw new Error(await this.formatArkError(response, "Ark request failed", this.modelName(options.model)));
@@ -175,14 +179,17 @@ export class ModelClientService {
     );
   }
 
-  private async fetchWithTimeout(input: string, init: RequestInit) {
+  private async fetchWithTimeout(input: string, init: RequestInit, timeoutMs?: number) {
+    if (!timeoutMs) {
+      return fetch(input, init);
+    }
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       return await fetch(input, { ...init, signal: controller.signal });
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") {
-        throw new Error(`Ark request timed out after ${this.requestTimeoutMs}ms`);
+        throw new Error(`Ark request timed out after ${timeoutMs}ms`);
       }
       throw error;
     } finally {
@@ -190,12 +197,12 @@ export class ModelClientService {
     }
   }
 
-  private resolveRequestTimeoutMs() {
-    const configured = Number.parseInt(process.env.ARK_TIMEOUT_MS ?? process.env.ARK_REQUEST_TIMEOUT_MS ?? "", 10);
+  public resolveTimeoutMs(value: unknown, fallback: number) {
+    const configured = Number.parseInt(String(value ?? ""), 10);
     if (Number.isFinite(configured) && configured > 0) {
-      return Math.min(Math.max(configured, 1000), 120000);
+      return Math.min(Math.max(configured, 1000), 300000);
     }
-    return 30000;
+    return fallback;
   }
 
   private async formatArkError(response: Response, prefix = "Ark request failed", model = this.modelName()) {
