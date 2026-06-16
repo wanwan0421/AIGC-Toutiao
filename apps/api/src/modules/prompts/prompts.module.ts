@@ -7,6 +7,7 @@ import { PromptsService } from "./prompts.service";
 @Module({
   imports: [AuthModule, AiCoreModule],
   controllers: [PromptsController],
-  providers: [PromptsService]
+  providers: [PromptsService],
+  exports: [PromptsService]
 })
 export class PromptsModule {}

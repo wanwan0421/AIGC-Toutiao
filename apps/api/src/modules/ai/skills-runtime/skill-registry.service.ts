@@ -35,6 +35,7 @@ const FALLBACK_SKILLS: Record<AiSkillKey, SkillManifest> = {
 
 @Injectable()
 export class SkillRegistryService {
+  // 为路由智能体提供技能列表接口
   listForRouter() {
     return Object.values(FALLBACK_SKILLS).map((skill) => {
       const loaded = this.loadSkill(skill.key);
@@ -50,6 +51,7 @@ export class SkillRegistryService {
     return typeof value === "string" && value in FALLBACK_SKILLS;
   }
 
+  // 为技能执行器提供技能加载接口
   loadSkill(key: AiSkillKey): LoadedSkillManifest {
     const fallback = FALLBACK_SKILLS[key];
     const resources = this.resourceIndex(key);
@@ -74,6 +76,7 @@ export class SkillRegistryService {
     };
   }
 
+  // 为技能执行器提供可信上下文构建接口
   trustedContextFor(key: AiSkillKey, selection: SkillResourceSelection = {}): SkillTrustedContext {
     const loaded = this.loadSkill(key);
     return {
@@ -143,6 +146,7 @@ export class SkillRegistryService {
     return walk(base).sort();
   }
 
+  // 根据选择的资源列表构建可信上下文文本，供技能执行器使用
   private selectedResourceText(key: AiSkillKey, selection: SkillResourceSelection) {
     const root = this.skillRoot(key);
     if (!root) return "";
@@ -159,6 +163,7 @@ export class SkillRegistryService {
     return sections.join("\n\n");
   }
 
+  // 安全地读取资源文件内容，防止路径穿越攻击
   private readResource(root: string, folder: SkillResourceFolder, file: string) {
     const safeFile = file.replace(/\\/g, "/");
     if (safeFile.includes("..")) return "";

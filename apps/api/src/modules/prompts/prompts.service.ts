@@ -20,6 +20,7 @@ import { RedisService } from "../../infra/redis/redis.service";
 import { AiCallLogService } from "../ai/ai-call-log.service";
 import { ModelClientService } from "../ai/model-client.service";
 import { promptTemperature } from "../ai/prompt-model-options";
+import { AI_PROMPT_NAMES } from "../ai/prompt-names";
 import { parseJsonObject } from "../ai/structured-output";
 
 type DefinitionWithActiveVersion = Prisma.PromptDefinitionGetPayload<{ include: { activeVersion: true } }>;
@@ -46,8 +47,21 @@ type VersionInput = {
   status?: "active" | "draft" | "disabled";
 };
 
+type ListTestCaseOptions = {
+  limit?: number;
+  sample?: "random" | string;
+};
+
+type PromptEvalExecutionHooks = {
+  progress?: (progress: number, currentStep: string, message: string) => Promise<void>;
+  partial?: (kind: string, value: unknown) => Promise<void>;
+  assertNotCancelled?: () => Promise<void>;
+};
+
 const DEFAULT_LLM_EVAL_CASE_LIMIT = 5;
 const MAX_EVAL_CASE_LIMIT = 50;
+const SAFETY_REVIEW_SAMPLE_LIMIT = 5;
+const JOB_CANCELLED_MESSAGE = "AI job was cancelled";
 
 @Injectable()
 export class PromptsService {
@@ -286,13 +300,20 @@ export class PromptsService {
     };
   }
 
-  async listTestCases(idOrKey: string, userId: string): Promise<PromptTestCaseSummary[]> {
+  async listTestCases(idOrKey: string, userId: string, options: ListTestCaseOptions = {}): Promise<PromptTestCaseSummary[]> {
     const definition = await this.getDefinition(idOrKey);
+    const isSafetyReview = definition.key === AI_PROMPT_NAMES.safetyReview;
     const items = await this.prisma.promptTestCase.findMany({
-      where: { definitionId: definition.id },
+      where: {
+        definitionId: definition.id,
+        enabled: isSafetyReview ? true : undefined,
+      },
       orderBy: { updatedAt: "desc" },
     });
-    return items.map((item) => this.toTestCaseSummary(item, userId, definition.creatorId));
+    const limit = this.testCaseListLimit(options.limit, isSafetyReview);
+    const sampled = this.shouldRandomSample(options.sample, isSafetyReview) ? this.shuffle(items) : items;
+    const visible = limit ? sampled.slice(0, limit) : sampled;
+    return visible.map((item) => this.toTestCaseSummary(item, userId, definition.creatorId, definition.key));
   }
 
   async createTestCase(
@@ -318,7 +339,7 @@ export class PromptsService {
         createdById: userId,
       },
     });
-    return this.toTestCaseSummary(item, userId, definition.creatorId);
+    return this.toTestCaseSummary(item, userId, definition.creatorId, definition.key);
   }
 
   async updateTestCase(
@@ -347,14 +368,14 @@ export class PromptsService {
         enabled: body.enabled,
       },
     });
-    return this.toTestCaseSummary(item, userId, definition.creatorId);
+    return this.toTestCaseSummary(item, userId, definition.creatorId, definition.key);
   }
 
   async deleteTestCase(idOrKey: string, caseId: string, userId: string) {
     const definition = await this.getDefinition(idOrKey);
     const current = await this.prisma.promptTestCase.findFirst({ where: { id: caseId, definitionId: definition.id } });
     if (!current) throw new NotFoundException("prompt test case not found");
-    if (!this.canDeleteTestCase(current, userId, definition.creatorId)) {
+    if (!this.canDeleteTestCase(current, userId, definition.creatorId, definition.key)) {
       throw new ForbiddenException("platform test cases cannot be deleted");
     }
     await this.prisma.promptTestCase.delete({ where: { id: caseId } });
@@ -362,47 +383,115 @@ export class PromptsService {
   }
 
   async runEval(idOrKey: string, body: PromptEvalRunRequest = {}): Promise<PromptEvalRunSummary> {
+    const prepared = await this.prepareEvalRun(idOrKey, body);
+    if (prepared.mode === "llm_eval") {
+      throw new BadRequestException("llm_eval must be started as an AI job");
+    }
+
+    return this.executeEvalRun(prepared.run.id, prepared.definition.key, prepared.version, prepared.testCases, prepared.mode);
+  }
+
+  async runEvalJob(
+    idOrKey: string,
+    body: PromptEvalRunRequest = {},
+    runId: string,
+    hooks: PromptEvalExecutionHooks = {}
+  ): Promise<PromptEvalRunSummary> {
+    const prepared = await this.prepareEvalRun(idOrKey, body, runId);
+    await hooks.progress?.(5, "准备 Prompt Eval", `已加载 ${prepared.testCases.length} 条测试用例`);
+    return this.executeEvalRun(
+      prepared.run.id,
+      prepared.definition.key,
+      prepared.version,
+      prepared.testCases,
+      prepared.mode,
+      hooks
+    );
+  }
+
+  private async prepareEvalRun(idOrKey: string, body: PromptEvalRunRequest = {}, runId?: string) {
     const definition = await this.getDefinition(idOrKey);
     const version = body.versionId
       ? await this.prisma.promptVersion.findFirst({ where: { id: body.versionId, definitionId: definition.id } })
       : definition.activeVersion ?? (await this.latestVersion(definition.id));
     if (!version) throw new NotFoundException("prompt version not found");
-    const mode = body.mode === "llm_eval" ? "llm_eval" : "dry_run";
 
+    const mode: PromptEvalMode = body.mode === "llm_eval" ? "llm_eval" : "dry_run";
+    const selectedIds = this.selectedTestCaseIds(body.testCaseIds);
     const allTestCases = await this.prisma.promptTestCase.findMany({
-      where: { definitionId: definition.id, enabled: body.includeDisabled ? undefined : true },
+      where: {
+        definitionId: definition.id,
+        enabled: body.includeDisabled ? undefined : true,
+        id: selectedIds.length ? { in: selectedIds } : undefined,
+      },
       orderBy: { updatedAt: "desc" },
     });
-    const testCases = this.limitEvalCases(allTestCases, mode, body.caseLimit);
-    const run = await this.prisma.promptEvalRun.create({
-      data: {
-        definitionId: definition.id,
-        versionId: version.id,
-        mode,
-        status: "running",
-        total: testCases.length,
-      },
-      include: { results: true },
+    const testCases = selectedIds.length
+      ? this.selectedEvalCases(allTestCases, selectedIds)
+      : this.limitEvalCases(allTestCases, mode, body.caseLimit);
+    if (!testCases.length) {
+      throw new BadRequestException("prompt eval requires at least one test case");
+    }
+    const run = await this.createOrResumeEvalRun({
+      runId,
+      definitionId: definition.id,
+      versionId: version.id,
+      mode,
+      total: testCases.length,
     });
 
-    if (mode === "llm_eval") {
-      this.startEvalRunInBackground(run.id, definition.key, version, testCases, mode);
-      return this.toEvalRunSummary(run);
-    }
-
-    return this.executeEvalRun(run.id, definition.key, version, testCases, mode);
+    return { definition, version, mode, testCases, run };
   }
 
-  private startEvalRunInBackground(
-    runId: string,
-    promptKey: string,
-    version: VersionRecord,
-    testCases: TestCaseRecord[],
-    mode: PromptEvalMode
-  ) {
-    void this.executeEvalRun(runId, promptKey, version, testCases, mode).catch((error) => {
-      const message = error instanceof Error ? error.message : "unknown prompt eval error";
-      this.logger.error(`Prompt eval background run failed: ${message}`);
+  private async createOrResumeEvalRun(input: {
+    runId?: string;
+    definitionId: string;
+    versionId: string;
+    mode: PromptEvalMode;
+    total: number;
+  }): Promise<EvalRunWithResults> {
+    if (!input.runId) {
+      return this.prisma.promptEvalRun.create({
+        data: {
+          definitionId: input.definitionId,
+          versionId: input.versionId,
+          mode: input.mode,
+          status: "running",
+          total: input.total,
+        },
+        include: { results: true },
+      });
+    }
+
+    const existing = await this.prisma.promptEvalRun.findUnique({
+      where: { id: input.runId },
+      include: { results: true },
+    });
+    if (existing) {
+      return this.prisma.promptEvalRun.update({
+        where: { id: input.runId },
+        data: {
+          definitionId: input.definitionId,
+          versionId: input.versionId,
+          mode: input.mode,
+          status: "running",
+          total: input.total,
+          completedAt: null,
+        },
+        include: { results: true },
+      });
+    }
+
+    return this.prisma.promptEvalRun.create({
+      data: {
+        id: input.runId,
+        definitionId: input.definitionId,
+        versionId: input.versionId,
+        mode: input.mode,
+        status: "running",
+        total: input.total,
+      },
+      include: { results: true },
     });
   }
 
@@ -411,14 +500,45 @@ export class PromptsService {
     promptKey: string,
     version: VersionRecord,
     testCases: TestCaseRecord[],
-    mode: PromptEvalMode
+    mode: PromptEvalMode,
+    hooks: PromptEvalExecutionHooks = {}
   ): Promise<PromptEvalRunSummary> {
-    let passed = 0;
-    let failed = 0;
-    let processed = 0;
-
     try {
+      const existingResults = await this.prisma.promptEvalResult.findMany({
+        where: { runId },
+        orderBy: { createdAt: "asc" },
+      });
+      const completedCaseIds = new Set(
+        existingResults.map((item) => item.testCaseId).filter((item): item is string => Boolean(item))
+      );
+      let passed = existingResults.filter((item) => item.status === "passed").length;
+      let failed = existingResults.filter((item) => item.status === "failed").length;
+      let processed = completedCaseIds.size;
+
+      await this.prisma.promptEvalRun
+        .update({
+          where: { id: runId },
+          data: {
+            status: "running",
+            passed,
+            failed,
+            total: testCases.length,
+            completedAt: null,
+          },
+        })
+        .catch(() => undefined);
+
       for (const testCase of testCases) {
+        await hooks.assertNotCancelled?.();
+        if (completedCaseIds.has(testCase.id)) {
+          await hooks.progress?.(
+            this.evalProgress(processed, testCases.length),
+            "跳过已完成用例",
+            `已恢复 ${processed}/${testCases.length} 条测试结果`
+          );
+          continue;
+        }
+
         const startedAt = Date.now();
         const input = this.jsonObject(testCase.input) ?? {};
         const renderedPrompt = this.interpolate(version.template, input);
@@ -443,6 +563,7 @@ export class PromptsService {
         if (hasError) failed += 1;
         else passed += 1;
         processed += 1;
+        completedCaseIds.add(testCase.id);
 
         await this.prisma.promptEvalResult.create({
           data: {
@@ -457,12 +578,18 @@ export class PromptsService {
           },
         });
 
-        await this.prisma.promptEvalRun
-          .update({
-            where: { id: runId },
-            data: { passed, failed },
-          })
-          .catch(() => undefined);
+        const updatedRun = await this.prisma.promptEvalRun.update({
+          where: { id: runId },
+          data: { passed, failed },
+          include: { results: true },
+        });
+        const summary = this.toEvalRunSummary(updatedRun);
+        await hooks.partial?.("promptEvalRun", summary);
+        await hooks.progress?.(
+          this.evalProgress(processed, testCases.length),
+          `测试回放 ${processed}/${testCases.length}`,
+          `${testCase.name}：${hasError ? "失败" : "通过"}`
+        );
       }
 
       const updated = await this.prisma.promptEvalRun.update({
@@ -476,11 +603,19 @@ export class PromptsService {
         include: { results: true },
       });
 
+      await hooks.partial?.("promptEvalRun", this.toEvalRunSummary(updated));
       return this.toEvalRunSummary(updated);
     } catch (error) {
+      if (error instanceof Error && error.message === JOB_CANCELLED_MESSAGE) {
+        throw error;
+      }
       const message = error instanceof Error ? error.message : "unknown prompt eval error";
       this.logger.error(`Prompt eval run ${runId} failed: ${message}`);
-      const remainingFailures = Math.max(testCases.length - processed, 0);
+      const existingResults = await this.prisma.promptEvalResult.findMany({ where: { runId } }).catch(() => []);
+      const passed = existingResults.filter((item) => item.status === "passed").length;
+      const failed = existingResults.filter((item) => item.status === "failed").length;
+      const completedCaseIds = new Set(existingResults.map((item) => item.testCaseId).filter(Boolean));
+      const remainingFailures = Math.max(testCases.length - completedCaseIds.size, 0);
       const updated = await this.prisma.promptEvalRun.update({
         where: { id: runId },
         data: {
@@ -650,7 +785,12 @@ export class PromptsService {
     };
   }
 
-  private toTestCaseSummary(item: TestCaseRecord, userId?: string, definitionCreatorId?: string | null): PromptTestCaseSummary {
+  private toTestCaseSummary(
+    item: TestCaseRecord,
+    userId?: string,
+    definitionCreatorId?: string | null,
+    definitionKey?: string
+  ): PromptTestCaseSummary {
     return {
       id: item.id,
       definitionId: item.definitionId,
@@ -659,14 +799,15 @@ export class PromptsService {
       expectedOutput: item.expectedOutput,
       assertions: this.jsonObject(item.assertions),
       enabled: item.enabled,
-      canDelete: this.canDeleteTestCase(item, userId, definitionCreatorId),
+      canDelete: this.canDeleteTestCase(item, userId, definitionCreatorId, definitionKey),
       createdAt: item.createdAt.toISOString(),
       updatedAt: item.updatedAt.toISOString(),
     };
   }
 
-  private canDeleteTestCase(item: TestCaseRecord, userId?: string, definitionCreatorId?: string | null) {
+  private canDeleteTestCase(item: TestCaseRecord, userId?: string, definitionCreatorId?: string | null, definitionKey?: string) {
     if (!userId) return false;
+    if (definitionKey === AI_PROMPT_NAMES.safetyReview) return true;
     if (item.createdById) return item.createdById === userId;
     return definitionCreatorId === userId;
   }
@@ -918,9 +1059,52 @@ export class PromptsService {
     return Number((numerator / denominator).toFixed(4));
   }
 
+  private evalProgress(processed: number, total: number) {
+    if (!total) return 95;
+    return Math.min(95, Math.max(10, 10 + Math.round((processed / total) * 85)));
+  }
+
+  private testCaseListLimit(requestedLimit: unknown, defaultToSafetySample: boolean) {
+    const parsedLimit =
+      typeof requestedLimit === "number" ? requestedLimit : Number.parseInt(String(requestedLimit ?? ""), 10);
+    if (Number.isFinite(parsedLimit) && parsedLimit > 0) {
+      return Math.min(Math.floor(parsedLimit), MAX_EVAL_CASE_LIMIT);
+    }
+    return defaultToSafetySample ? SAFETY_REVIEW_SAMPLE_LIMIT : undefined;
+  }
+
+  private shouldRandomSample(sample: unknown, defaultToSafetySample: boolean) {
+    if (sample === "random") return true;
+    if (sample === "all" || sample === "latest") return false;
+    return defaultToSafetySample;
+  }
+
+  private shuffle<T>(items: T[]) {
+    const output = [...items];
+    for (let index = output.length - 1; index > 0; index -= 1) {
+      const swapIndex = Math.floor(Math.random() * (index + 1));
+      [output[index], output[swapIndex]] = [output[swapIndex], output[index]];
+    }
+    return output;
+  }
+
   private limitEvalCases(items: TestCaseRecord[], mode: PromptEvalMode, requestedLimit?: number) {
     const limit = this.evalCaseLimit(mode, requestedLimit);
     return limit ? items.slice(0, limit) : items;
+  }
+
+  private selectedTestCaseIds(value: unknown) {
+    if (!Array.isArray(value)) return [];
+    return Array.from(new Set(value.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))));
+  }
+
+  private selectedEvalCases(items: TestCaseRecord[], selectedIds: string[]) {
+    const byId = new Map(items.map((item) => [item.id, item]));
+    const selected = selectedIds.map((id) => byId.get(id)).filter((item): item is TestCaseRecord => Boolean(item));
+    if (selected.length !== selectedIds.length) {
+      throw new BadRequestException("selected prompt eval test cases are unavailable");
+    }
+    return selected;
   }
 
   private evalCaseLimit(mode: PromptEvalMode, requestedLimit?: unknown) {

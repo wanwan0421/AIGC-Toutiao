@@ -29,16 +29,23 @@ const AUDIT_RISK_TYPES: AuditRiskType[] = [
 const AUDIT_CATEGORY_TYPES = AUDIT_RISK_TYPES.filter((type) => type !== "none") as Exclude<AuditRiskType, "none">[];
 const AUDIT_SEVERITIES: AuditRiskSeverity[] = ["low", "medium", "high"];
 
-const SAFETY_REVIEW_FALLBACK_PROMPT = `你是中文内容安全审核专家，只负责判断内容是否合规，不做质量评分，也不做改写。
-请重点识别涉黄、涉赌、涉毒、敏感信息、低俗表达、隐私泄露、违法交易、诈骗黑产、未成年人风险、夸大绝对化等风险。
+const SAFETY_REVIEW_FALLBACK_PROMPT = `你是严格的中文内容安全审核专家。请判断当前图文是否可以发布。你只做内容安全审核，不做质量评分，也不改写正文。
 
 标题：{{title}}
 正文：{{body}}
 
-规则引擎预检命中的候选风险片段如下，可能有误杀，请你复核，也要补充规则未命中的语义风险：
+规则引擎候选风险如下。它们可能有误杀，但你必须复核，并补充规则未命中的语义风险：
 {{ruleRiskItemsJson}}
 
-请只返回可解析 JSON，不要输出 Markdown 或额外解释。所有危险片段都放入 riskItems。confidence 为 0-1。
+重点识别以下发布合规风险：
+- 涉黄、涉赌、涉毒
+- 敏感信息、站外引流、隐私泄露
+- 低俗表达、违法交易、诈骗黑产
+- 未成年人风险
+- 夸大绝对化表达
+- 其他会影响内容发布的安全风险
+
+只返回可解析 JSON，不要输出 Markdown 或额外解释。必须返回如下结构：
 {
   "passed": false,
   "riskLevel": "high",
@@ -60,65 +67,30 @@ const SAFETY_REVIEW_FALLBACK_PROMPT = `你是中文内容安全审核专家，�
       "type": "gambling",
       "severity": "high",
       "confidence": 0.92,
-      "evidence": "加我微信带你玩私彩",
-      "reason": "包含赌博引流和收益诱导",
+      "evidence": "从标题或正文中原样复制的风险片段",
+      "reason": "为什么该片段不合规",
       "source": "llm",
       "field": "body",
-      "suggestion": "删除赌博玩法、联系方式和收益承诺"
+      "suggestion": "删除或改写该风险表达"
     }
   ],
-  "reasons": ["存在赌博引流风险"],
-  "rewriteAvailable": true
-}`;
-
-const SAFETY_REVIEW_STRICT_FALLBACK_PROMPT = `You are a strict Chinese content safety reviewer. Judge whether the draft can be published. Do not score quality and do not rewrite the content.
-
-Title:
-{{title}}
-
-Body:
-{{body}}
-
-Rule-engine candidate risks. These may include false positives, but you must verify them and add semantic risks the rules missed:
-{{ruleRiskItemsJson}}
-
-Focus on pornography, gambling, drug, sensitive/contact diversion, vulgar content, privacy leakage, illegal trade, fraud, minor-safety risk, exaggerated absolute claims, and other publication compliance risks.
-
-Return only parseable JSON. Do not output Markdown. Required shape:
-{
-  "passed": false,
-  "riskLevel": "high",
-  "riskTypes": ["gambling"],
-  "categoryScores": {
-    "pornography": 0,
-    "gambling": 0.92,
-    "drug": 0,
-    "sensitive": 0.2,
-    "vulgar": 0,
-    "privacy": 0,
-    "illegal": 0,
-    "fraud": 0,
-    "minor": 0
-  },
-  "riskItems": [
-    {
-      "id": "llm_1",
-      "type": "gambling",
-      "severity": "high",
-      "confidence": 0.92,
-      "evidence": "the exact risky text copied from title or body",
-      "reason": "why this text is unsafe",
-      "source": "llm",
-      "field": "body",
-      "suggestion": "how to remove or rewrite the unsafe expression"
-    }
-  ],
-  "reasons": ["summary of blocking risks"],
+  "reasons": ["阻断原因摘要"],
   "rewriteAvailable": true
 }
 
-If the content is unsafe, passed must be false, riskLevel must be medium or high, riskTypes must not contain only "none", and every concrete risky phrase must appear in riskItems with exact evidence copied from the title or body.
-If no obvious safety risk is found, return passed true, riskLevel "low", riskTypes ["none"], riskItems [], category scores near 0, and rewriteAvailable false.`;
+如果内容不安全：
+- passed 必须为 false。
+- riskLevel 必须为 medium 或 high。
+- riskTypes 不能只包含 "none"。
+- 每个明确风险片段都必须放入 riskItems，evidence 必须从标题或正文中原样复制。
+
+如果没有明显合规风险：
+- passed 返回 true。
+- riskLevel 返回 "low"。
+- riskTypes 返回 ["none"]。
+- riskItems 返回 []。
+- categoryScores 尽量接近 0。
+- rewriteAvailable 返回 false。`;
 
 @Injectable()
 export class SafetyReviewAgent {
@@ -137,9 +109,9 @@ export class SafetyReviewAgent {
       ...input,
       ruleRiskItemsJson: JSON.stringify(input.ruleRiskItems ?? [], null, 2),
     };
-    const rendered = await this.prompts.render(AI_PROMPT_NAMES.safetyReview, variables, SAFETY_REVIEW_STRICT_FALLBACK_PROMPT);
+    const rendered = await this.prompts.render(AI_PROMPT_NAMES.safetyReview, variables, SAFETY_REVIEW_FALLBACK_PROMPT);
     const prompt = this.shouldUseFallback(rendered.prompt)
-      ? this.interpolate(SAFETY_REVIEW_STRICT_FALLBACK_PROMPT, variables)
+      ? this.interpolate(SAFETY_REVIEW_FALLBACK_PROMPT, variables)
       : rendered.prompt;
 
     try {

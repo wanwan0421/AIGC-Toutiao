@@ -67,6 +67,7 @@ export class CreativeAssistantCapability {
       },
     };
 
+    // 路由智能体根据用户输入、对话历史和当前内容状态判断下一步行动：继续对话、局部改写还是执行完整技能
     const routerDecision = await this.skillRouter.decide({
       message: request.message,
       currentTitle: context.currentTitle,

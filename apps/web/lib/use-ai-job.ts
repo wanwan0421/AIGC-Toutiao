@@ -21,6 +21,8 @@ export function useAiJob() {
 
   const runJob = useCallback(
     async (start: () => Promise<AiJobSnapshot>, handlers: AiJobRunHandlers = {}) => {
+      // 如果已有任务在运行，先取消它
+      // 这里直接中止事件流，不会自动取消后端已经创建的AI job
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;

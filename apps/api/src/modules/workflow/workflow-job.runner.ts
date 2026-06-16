@@ -1,10 +1,11 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
-import { AiJobStatus, AiJobType, type DirectGenerateRequest } from "@aicp/shared";
+import { AiJobStatus, AiJobType, type DirectGenerateRequest, type PromptEvalRunRequest } from "@aicp/shared";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { ConversationArchiveService } from "../ai/conversation-archive.service";
 import { CreativeProductionCapability } from "../ai/capabilities/creative-production.capability";
 import { SkillExecutorService } from "../ai/skills-runtime/skill-executor.service";
+import { PromptsService } from "../prompts/prompts.service";
 import { ContentWorkflowEngine } from "./content-workflow.engine";
 import { WorkflowJobEventsService } from "./workflow-job-events.service";
 import { toAiJobSnapshot, type AiJobRecord } from "./workflow-job.mapper";
@@ -30,7 +31,8 @@ export class WorkflowJobRunner {
     private readonly workflow: ContentWorkflowEngine,
     private readonly productionCapability: CreativeProductionCapability,
     private readonly skillExecutor: SkillExecutorService,
-    private readonly conversations: ConversationArchiveService
+    private readonly conversations: ConversationArchiveService,
+    private readonly prompts: PromptsService
   ) {}
 
   async run(jobId: string) {
@@ -74,6 +76,8 @@ export class WorkflowJobRunner {
         return this.runModerationContentAudit(jobId, contentId);
       case AiJobType.ComplianceRewrite:
         return this.runComplianceRewrite(jobId, payload);
+      case AiJobType.PromptEvalRun:
+        return this.runPromptEvalRun(jobId, payload);
       default:
         throw new Error(`Unsupported AI job type: ${type}`);
     }
@@ -161,6 +165,34 @@ export class WorkflowJobRunner {
     const rewrite = await this.workflow.rewriteText({ title, body, reasons });
     await this.partial(jobId, "rewrite", rewrite);
     return rewrite;
+  }
+
+  private async runPromptEvalRun(jobId: string, payload: Record<string, unknown>) {
+    const promptKey = typeof payload.promptKey === "string" ? payload.promptKey : "";
+    if (!promptKey.trim()) {
+      throw new Error("promptKey is required");
+    }
+
+    const parsedCaseLimit =
+      typeof payload.caseLimit === "number" ? payload.caseLimit : Number.parseInt(String(payload.caseLimit ?? ""), 10);
+    const body: PromptEvalRunRequest = {
+      mode: payload.mode === "llm_eval" ? "llm_eval" : "dry_run",
+      versionId: typeof payload.versionId === "string" ? payload.versionId : undefined,
+      includeDisabled: Boolean(payload.includeDisabled),
+      caseLimit: Number.isFinite(parsedCaseLimit) && parsedCaseLimit > 0 ? Math.floor(parsedCaseLimit) : undefined,
+      testCaseIds: Array.isArray(payload.testCaseIds)
+        ? payload.testCaseIds.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
+        : undefined,
+    };
+
+    await this.progress(jobId, 5, "Prompt Eval", "正在准备 Prompt 测试回放");
+    const result = await this.prompts.runEvalJob(promptKey, body, jobId, {
+      progress: (progress, currentStep, message) => this.progress(jobId, progress, currentStep, message),
+      partial: (kind, value) => this.partial(jobId, kind, value),
+      assertNotCancelled: () => this.assertNotCancelled(jobId),
+    });
+    await this.partial(jobId, "promptEvalRun", result);
+    return result;
   }
 
   private async markRunning(jobId: string) {

@@ -444,4 +444,5 @@ enum AiJobType {
   content_approve
   moderation_content_run
   compliance_rewrite
+  prompt_eval_run
 }

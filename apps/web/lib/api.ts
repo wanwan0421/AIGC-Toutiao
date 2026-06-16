@@ -1,8 +1,8 @@
+import { AiJobType } from "@aicp/shared";
 import type {
   AiJobEvent,
   AiJobSnapshot,
   AiJobStartRequest,
-  AiJobType,
   CommentListResponse,
   ContentVisibility,
   ContentCommentSummary,
@@ -880,8 +880,12 @@ export async function renderPromptPreview(
   );
 }
 
-export async function getPromptTestCases(key: string) {
-  return apiRequest<PromptTestCaseSummary[]>(`/prompts/${encodeURIComponent(key)}/test-cases`, {}, true);
+export async function getPromptTestCases(key: string, params: { limit?: number; sample?: "random" | "latest" | "all" } = {}) {
+  const query = new URLSearchParams();
+  if (params.limit !== undefined) query.set("limit", String(params.limit));
+  if (params.sample) query.set("sample", params.sample);
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return apiRequest<PromptTestCaseSummary[]>(`/prompts/${encodeURIComponent(key)}/test-cases${suffix}`, {}, true);
 }
 
 export async function createPromptTestCase(
@@ -945,6 +949,16 @@ export async function runPromptEval(
     },
     true
   );
+}
+
+export async function startPromptEvalJob(key: string, body: PromptEvalRunRequest = {}) {
+  return startAiJob({
+    type: AiJobType.PromptEvalRun,
+    payload: {
+      ...body,
+      promptKey: key,
+    },
+  });
 }
 
 export async function comparePromptEvalRuns(key: string, baselineRunId: string, candidateRunId: string) {

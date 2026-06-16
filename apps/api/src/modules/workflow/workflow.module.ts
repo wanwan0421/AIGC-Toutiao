@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { AiCoreModule } from "../ai/ai-core.module";
+import { PromptsModule } from "../prompts/prompts.module";
 import { ContentWorkflowEngine } from "./content-workflow.engine";
 import { ScheduledPublishService } from "./scheduled-publish.service";
 import { WorkflowJobEventsService } from "./workflow-job-events.service";
@@ -7,7 +8,7 @@ import { WorkflowJobRunner } from "./workflow-job.runner";
 import { WorkflowJobService } from "./workflow-job.service";
 
 @Module({
-  imports: [AiCoreModule],
+  imports: [AiCoreModule, PromptsModule],
   providers: [ContentWorkflowEngine, ScheduledPublishService, WorkflowJobEventsService, WorkflowJobRunner, WorkflowJobService],
   exports: [ContentWorkflowEngine, WorkflowJobService],
 })

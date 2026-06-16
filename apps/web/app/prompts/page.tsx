@@ -33,13 +33,14 @@ import {
   createPromptVersion,
   deletePromptTestCase,
   getPromptDefinitions,
-  getPromptEvalRun,
   getPromptTestCases,
   getPromptVersions,
   renderPromptPreview,
   runPromptEval,
+  startPromptEvalJob,
   updatePrompt,
 } from "../../lib/api";
+import { useAiJob } from "../../lib/use-ai-job";
 
 const sceneOrder: PromptScene[] = [PromptScene.Generate, PromptScene.Audit, PromptScene.Score, PromptScene.Rewrite];
 
@@ -107,10 +108,10 @@ const defaultTemplate = `你是 AI 内容创作平台的中文 Prompt 工程助�
 
 type BusyState = null | "activate" | "preview" | "test" | "eval";
 const LLM_EVAL_CASE_LIMIT = 5;
-const EVAL_POLL_INTERVAL_MS = 1500;
-const EVAL_POLL_ATTEMPTS = 80;
+const SAFETY_REVIEW_PROMPT_KEY = "safety_review";
 
 export default function PromptManagePage() {
+  const { runJob } = useAiJob();
   const [definitions, setDefinitions] = useState<PromptDefinitionSummary[]>([]);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [versions, setVersions] = useState<PromptVersionSummary[]>([]);
@@ -222,7 +223,7 @@ export default function PromptManagePage() {
 
   async function loadPromptArtifacts(key: string) {
     try {
-      const [versionItems, caseItems] = await Promise.all([getPromptVersions(key), getPromptTestCases(key)]);
+      const [versionItems, caseItems] = await Promise.all([getPromptVersions(key), getPromptTestCases(key, testCaseQuery(key))]);
       setVersions(versionItems);
       setTestCases(caseItems);
       setEvalVersionId((current) =>
@@ -374,31 +375,60 @@ export default function PromptManagePage() {
   async function handleEvalRun(mode: PromptEvalMode = "dry_run") {
     if (!selected) return;
     const promptKey = selected.key;
+    const visibleTestCaseIds = testCases.map((item) => item.id);
+    if (!visibleTestCaseIds.length) {
+      setMessage("当前没有可回放的测试用例");
+      return;
+    }
     setBusy("eval");
     try {
-      const caseLimit = mode === "llm_eval" ? LLM_EVAL_CASE_LIMIT : undefined;
-      const run = await runPromptEval(promptKey, {
+      const request = {
         mode,
         versionId: evalVersionId || undefined,
-        caseLimit,
-      });
+        caseLimit: visibleTestCaseIds.length,
+        testCaseIds: visibleTestCaseIds,
+      };
       setPreviousEvalRun(evalRun);
-      setEvalRun(run);
       setComparison(null);
-      if (run.status === "running") {
-        setMessage(`${mode} eval started: running ${run.total} sampled cases`);
-        for (let attempt = 0; attempt < EVAL_POLL_ATTEMPTS; attempt += 1) {
-          await delay(EVAL_POLL_INTERVAL_MS);
-          const next = await getPromptEvalRun(promptKey, run.id);
-          setEvalRun(next);
-          if (next.status !== "running") {
-            setMessage(evalRunMessage(mode, next));
-            return;
+
+      if (mode === "llm_eval") {
+        let finalRun: PromptEvalRunSummary | null = null;
+        setMessage(`${mode} eval job started`);
+        const job = await runJob(
+          () => startPromptEvalJob(promptKey, request),
+          {
+            onProgress: (data) => {
+              if (typeof data.message === "string") setMessage(data.message);
+            },
+            onPartial: (data) => {
+              if (data.kind !== "promptEvalRun") return;
+              const partialRun = promptEvalRunSummary(data.value);
+              if (!partialRun) return;
+              finalRun = partialRun;
+              setEvalRun(partialRun);
+            },
+            onDone: (_job, result) => {
+              const doneRun = promptEvalRunSummary(result);
+              if (!doneRun) return;
+              finalRun = doneRun;
+              setEvalRun(doneRun);
+              setMessage(evalRunMessage(mode, doneRun));
+            },
+            onError: (message) => setMessage(message),
           }
+        );
+        const restoredRun = finalRun ?? promptEvalRunSummary(job.result);
+        if (restoredRun) {
+          setEvalRun(restoredRun);
+          setMessage(evalRunMessage(mode, restoredRun));
+        } else if (job.status !== "succeeded") {
+          setMessage(job.errorMessage ?? "LLM eval job failed");
         }
-        setMessage(`${mode} eval is still running in the background`);
         return;
       }
+
+      const run = await runPromptEval(promptKey, request);
+      setEvalRun(run);
       setMessage(evalRunMessage(mode, run));
     } catch (error) {
       setMessage(errorMessage(error, "测试回放失败"));
@@ -413,7 +443,7 @@ export default function PromptManagePage() {
     try {
       const result = await comparePromptEvalRuns(selected.key, previousEvalRun.id, evalRun.id);
       setComparison(result);
-      setMessage("Eval comparison generated");
+      setMessage("回放结果比较已生成");
     } catch (error) {
       setMessage(errorMessage(error, "Eval comparison failed"));
     } finally {
@@ -992,41 +1022,40 @@ export default function PromptManagePage() {
                 比较回放结果
               </button>
 
-              {/* 回放结果 */}
-              {evalRun ? (
-                <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-100 bg-slate-50 p-3 text-sm">
-                  <p className="font-bold text-slate-900">
-                    最近回放：{statusLabels[evalRun.status] ?? evalRun.status}
-                  </p>
-                  <p className="mt-1 text-slate-500">
-                    通过 {evalRun.passed} / {evalRun.total}，失败{" "}
-                    {evalRun.failed}
-                  </p>
-                  <EvalMetrics metrics={evalRun.metrics} />
-                  <div className="prompt-local-scroll mt-2 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-                    {evalRun.results?.map((item) => (
-                      <div
-                        key={item.id}
-                        className="rounded-xl bg-white px-2 py-1.5 text-xs text-slate-500"
-                      >
-                        {item.status} · {item.errorMessage ?? "passed"}
+              {(evalRun || comparison) ? (
+                <div className="prompt-local-scroll min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+                  {evalRun ? (
+                    <div className="rounded-2xl border border-slate-100 bg-slate-50 p-3 text-sm">
+                      <p className="font-bold text-slate-900">
+                        最近回放：{statusLabels[evalRun.status] ?? evalRun.status}
+                      </p>
+                      <p className="mt-1 text-slate-500">
+                        通过 {evalRun.passed} / {evalRun.total}，失败 {evalRun.failed}
+                      </p>
+                      <EvalMetrics metrics={evalRun.metrics} />
+                      <div className="mt-3 space-y-2">
+                        {evalRun.results?.map((item) => (
+                          <div
+                            key={item.id}
+                            className="rounded-xl bg-white px-2 py-1.5 text-xs text-slate-500"
+                          >
+                            {item.status} · {item.errorMessage ?? "passed"}
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
+                    </div>
+                  ) : null}
 
-              {/* 比较结果 */}
-              {comparison ? (
-                <div className="flex max-h-40 shrink-0 flex-col overflow-hidden rounded-2xl border border-slate-100 bg-white p-3 text-sm">
-                  <p className="font-bold text-slate-900">Comparison delta</p>
-                  <div className="prompt-local-scroll min-h-0 overflow-y-auto pr-1">
-                    <EvalMetrics metrics={comparison.delta} signed />
-                    <p className="mt-2 text-xs text-slate-500">
-                      fixed {comparison.fixedCaseIds.length} / regressed{" "}
-                      {comparison.regressedCaseIds.length}
-                    </p>
-                  </div>
+                  {comparison ? (
+                    <div className="rounded-2xl border border-slate-100 bg-white p-3 text-sm">
+                      <p className="font-bold text-slate-900">回放比较</p>
+                      <EvalMetrics metrics={comparison.delta} signed />
+                      <p className="mt-2 text-xs text-slate-500">
+                        修复 {comparison.fixedCaseIds.length} / 回退 {comparison.regressedCaseIds.length} / 新失败{" "}
+                        {comparison.newlyFailedCaseIds.length}
+                      </p>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -1173,6 +1202,10 @@ function displayName(item: PromptDefinitionSummary) {
   return promptTitles[item.key] ?? item.displayName;
 }
 
+function testCaseQuery(key: string) {
+  return key === SAFETY_REVIEW_PROMPT_KEY ? { limit: LLM_EVAL_CASE_LIMIT, sample: "random" as const } : {};
+}
+
 function inputClass() {
   return "h-11 w-full min-w-0 rounded-2xl border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-900 outline-none placeholder:text-slate-400 focus:border-[#ff2442]/40 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400";
 }
@@ -1317,8 +1350,20 @@ function evalRunMessage(mode: PromptEvalMode, run: PromptEvalRunSummary) {
   return `${mode} eval done: passed ${run.passed}/${run.total}${suffix}`;
 }
 
-function delay(ms: number) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
+function promptEvalRunSummary(value: unknown): PromptEvalRunSummary | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Partial<PromptEvalRunSummary>;
+  if (
+    typeof record.id === "string" &&
+    typeof record.definitionId === "string" &&
+    typeof record.status === "string" &&
+    typeof record.total === "number" &&
+    typeof record.passed === "number" &&
+    typeof record.failed === "number"
+  ) {
+    return record as PromptEvalRunSummary;
+  }
+  return null;
 }
 
 function errorMessage(error: unknown, fallback: string) {

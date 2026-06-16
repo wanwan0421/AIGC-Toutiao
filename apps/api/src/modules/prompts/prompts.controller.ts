@@ -108,8 +108,16 @@ export class PromptsController {
   }
 
   @Get(":key/test-cases")
-  listTestCases(@CurrentUser() user: UserProfileSummary, @Param("key") key: string) {
-    return this.promptsService.listTestCases(key, user.id);
+  listTestCases(
+    @CurrentUser() user: UserProfileSummary,
+    @Param("key") key: string,
+    @Query("limit") limit?: string,
+    @Query("sample") sample?: string
+  ) {
+    return this.promptsService.listTestCases(key, user.id, {
+      limit: limit ? Number.parseInt(limit, 10) : undefined,
+      sample,
+    });
   }
 
   @Post(":key/test-cases")

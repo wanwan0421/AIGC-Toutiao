@@ -88,6 +88,7 @@ export interface PromptEvalRunRequest {
   includeDisabled?: boolean;
   mode?: PromptEvalMode;
   caseLimit?: number;
+  testCaseIds?: string[];
 }
 
 export interface PromptEvalMetrics {
@@ -165,7 +166,8 @@ export enum AiJobType {
   ContentSubmitReview = "content_submit_review",
   ContentApprove = "content_approve",
   ModerationContentRun = "moderation_content_run",
-  ComplianceRewrite = "compliance_rewrite"
+  ComplianceRewrite = "compliance_rewrite",
+  PromptEvalRun = "prompt_eval_run"
 }
 
 export enum AuditRiskLevel {

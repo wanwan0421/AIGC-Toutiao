@@ -145,7 +145,9 @@ export class SafetyRuleEngine {
   constructor(private readonly loader: SafetyRuleLoader) {}
 
   scan(input: SafetyReviewInput): SafetyRuleScanResult {
+    // 加载规则词库
     const lexicons = this.loader.loadLexicons();
+    // 扫描文本，生成风险项列表，包含敏感词、正则表达式规则和组合规则的命中结果
     const items = this.dedupe([
       ...this.scanLexicons("title", input.title, lexicons),
       ...this.scanLexicons("body", input.body, lexicons),
@@ -159,6 +161,7 @@ export class SafetyRuleEngine {
     return this.summarize(riskItems);
   }
 
+  // 扫描文本中的敏感词，生成风险项列表
   private scanLexicons(field: AuditRiskField, text: string, lexicons: SafetyLexiconEntry[]) {
     const lowerText = text.toLowerCase();
     const items: AuditRiskItem[] = [];
@@ -187,6 +190,7 @@ export class SafetyRuleEngine {
     return items;
   }
 
+  // 扫描文本中的正则表达式规则，生成风险项列表
   private scanRegex(field: AuditRiskField, text: string) {
     const items: AuditRiskItem[] = [];
     for (const rule of REGEX_RULES) {
