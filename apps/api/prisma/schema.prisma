@@ -309,6 +309,7 @@ model ContentAsset {
 model AuditRecord {
   id          String         @id @default(cuid())
   contentId   String
+  contentHash String?
   passed      Boolean
   riskLevel   AuditRiskLevel
   riskTypes   String[]       @default([])
@@ -316,6 +317,8 @@ model AuditRecord {
   rawResponse Json?
   createdAt   DateTime       @default(now())
   content     Content        @relation(fields: [contentId], references: [id])
+
+  @@index([contentId, createdAt])
 }
 
 model QualityScore {

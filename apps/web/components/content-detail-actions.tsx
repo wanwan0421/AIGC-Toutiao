@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type React from "react";
 import type { ContentReactionToggleResult, ContentViewerState } from "@aicp/shared";
 import { Bookmark, Eye, Flame, Heart } from "lucide-react";
@@ -14,8 +14,6 @@ type InteractionMetrics = {
 };
 
 type ActionVariant = "inline" | "rail";
-const VIEW_STORAGE_PREFIX = "aicp:viewed-content:";
-const VIEW_DEDUPE_MS = 30 * 60 * 1000;
 
 export function ContentDetailActions({
   contentId,
@@ -38,6 +36,7 @@ export function ContentDetailActions({
   const [liked, setLiked] = useState(Boolean(viewerState?.liked));
   const [collected, setCollected] = useState(Boolean(viewerState?.collected));
   const [busy, setBusy] = useState<"like" | "collect" | null>(null);
+  const recordedViewRef = useRef<string | null>(null);
 
   useEffect(() => {
     setLiked(Boolean(viewerState?.liked));
@@ -48,14 +47,12 @@ export function ContentDetailActions({
     let cancelled = false;
 
     async function recordView() {
-      const storageKey = `${VIEW_STORAGE_PREFIX}${contentId}`;
-      const now = Date.now();
-      const lastViewedAt = Number(window.sessionStorage.getItem(storageKey) ?? 0);
-      if (Number.isFinite(lastViewedAt) && now - lastViewedAt < VIEW_DEDUPE_MS) {
-        setStatus("内容已打开");
+      if (viewerState?.isAuthor) {
+        setStatus("作者本人浏览不计入阅读");
         return;
       }
-      window.sessionStorage.setItem(storageKey, String(now));
+      if (recordedViewRef.current === contentId) return;
+      recordedViewRef.current = contentId;
 
       try {
         const response = await trackAnalytics({ contentId, eventType: "view", metadata: { title } });
@@ -64,7 +61,7 @@ export function ContentDetailActions({
           onMetricsChange?.(response.counters);
         }
       } catch {
-        window.sessionStorage.removeItem(storageKey);
+        recordedViewRef.current = null;
         if (!cancelled) setStatus("内容已打开");
       }
     }
@@ -74,9 +71,9 @@ export function ContentDetailActions({
     return () => {
       cancelled = true;
     };
-    // View tracking should run once per content/title pair; the callback only mirrors counters into parent state.
+    // View tracking should run once per mounted content; repeated visits create new mounts and new view events.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contentId, title]);
+  }, [contentId, title, viewerState?.isAuthor]);
 
   async function handleEvent(eventType: "like" | "collect") {
     if (busy) return;

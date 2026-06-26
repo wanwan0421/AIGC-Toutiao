@@ -18,6 +18,8 @@ import {
 } from "@prisma/client";
 import { toContentCommentSummary, toContentDetail, toContentSummary, toDbContentStatus } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
+import { ContentHeatScoreService } from "../content-metrics/content-heat-score.service";
+import { ContentReviewPolicyService } from "../workflow/content-review-policy.service";
 import { ContentAccessPolicyService } from "./content-access-policy.service";
 
 const contentInclude = {
@@ -77,7 +79,9 @@ function toDateOrNull(value: string | null | undefined) {
 export class ContentsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly accessPolicy: ContentAccessPolicyService
+    private readonly accessPolicy: ContentAccessPolicyService,
+    private readonly reviewPolicy: ContentReviewPolicyService,
+    private readonly heatScores: ContentHeatScoreService
   ) {}
 
   async list(userId: string, status?: ApiContentStatus) {
@@ -100,7 +104,7 @@ export class ContentsService {
       orderBy: { createdAt: "desc" },
     });
 
-    return items.map(toContentSummary);
+    return (await this.heatScores.normalizeContents(items)).map(toContentSummary);
   }
 
   async create(userId: string, body: ContentWriteBody) {
@@ -130,7 +134,7 @@ export class ContentsService {
       include: contentInclude,
     });
 
-    return toContentDetail(content);
+    return this.toNormalizedContentDetail(content);
   }
 
   async detail(userId: string, id: string) {
@@ -148,7 +152,7 @@ export class ContentsService {
     }
 
     return {
-      ...toContentDetail(content),
+      ...(await this.toNormalizedContentDetail(content)),
       viewerState: await this.viewerState(userId, content.authorId, content.id),
     };
   }
@@ -172,7 +176,7 @@ export class ContentsService {
 
   async workflowState(userId: string, id: string): Promise<ContentWorkflowState> {
     const content = await this.getContent(userId, id);
-    const summary = toContentSummary(content);
+    const summary = await this.toNormalizedContentSummary(content);
     const [auditRecord, qualityRecord] = await Promise.all([
       this.prisma.auditRecord.findFirst({
         where: { contentId: id },
@@ -183,7 +187,7 @@ export class ContentsService {
         orderBy: { createdAt: "desc" },
       }),
     ]);
-    const canPublish = this.canPublishStatus(content.status);
+    const publishState = this.reviewPolicy.evaluatePublishState(content, auditRecord);
 
     return {
       content: summary,
@@ -196,8 +200,8 @@ export class ContentsService {
           }
         : undefined,
       latestQuality: qualityRecord ? this.qualityResultFromRecord(qualityRecord) : undefined,
-      canPublish,
-      publishBlockReason: canPublish ? undefined : this.publishBlockReason(content.status),
+      canPublish: publishState.canPublish,
+      publishBlockReason: publishState.canPublish ? undefined : publishState.reason,
     };
   }
 
@@ -237,6 +241,7 @@ export class ContentsService {
     return toContentCommentSummary(comment);
   }
 
+  // 获取内容的当前用户状态
   async toggleReaction(userId: string, id: string, type: "like" | "collect") {
     await this.assertContentVisible(userId, id);
 
@@ -259,7 +264,7 @@ export class ContentsService {
         } else {
           await tx.content.updateMany({ where: { id, collectCount: { gt: 0 } }, data: { collectCount: { decrement: 1 } } });
         }
-        await tx.content.updateMany({ where: { id, heatScore: { gt: 1 } }, data: { heatScore: { decrement: 2 } } });
+        await tx.content.updateMany({ where: { id, heatScore: { gt: 0 } }, data: { heatScore: { decrement: 1 } } });
       } else {
         await tx.contentReaction.create({
           data: {
@@ -272,8 +277,8 @@ export class ContentsService {
           where: { id },
           data:
             type === "like"
-              ? { likeCount: { increment: 1 }, heatScore: { increment: 2 } }
-              : { collectCount: { increment: 1 }, heatScore: { increment: 2 } },
+              ? { likeCount: { increment: 1 }, heatScore: { increment: 1 } }
+              : { collectCount: { increment: 1 }, heatScore: { increment: 1 } },
         });
       }
 
@@ -295,7 +300,7 @@ export class ContentsService {
       active: result.active,
       likeCount: result.updated.likeCount,
       collectCount: result.updated.collectCount,
-      heatScore: result.updated.heatScore,
+      heatScore: (await this.heatScores.normalizeContent(result.updated)).heatScore,
     };
   }
 
@@ -311,21 +316,31 @@ export class ContentsService {
     const current = await this.getContent(userId, id);
     await this.createVersion(current.id, current.title, current.body, current.bodyHtml, current.bodyJson);
 
+    const nextTitle = body.title !== undefined ? body.title.trim() || current.title : current.title;
     const nextBody = body.body ?? current.body;
+    const nextAssetIds = body.assetIds !== undefined ? ((await this.ownedAssetIds(userId, body.assetIds)) ?? []) : undefined;
+    const safetySensitiveEdit =
+      (body.title !== undefined && nextTitle !== current.title) ||
+      (body.body !== undefined && body.body !== current.body) ||
+      (body.bodyHtml !== undefined && body.bodyHtml !== current.bodyHtml) ||
+      (body.bodyJson !== undefined && !this.sameJson(body.bodyJson ?? null, current.bodyJson ?? null)) ||
+      (body.tags !== undefined && !this.sameStringArray(body.tags, current.tags)) ||
+      (nextAssetIds !== undefined && !this.sameStringArray(nextAssetIds, current.assets.map((item) => item.assetId)));
+    const reviewStatusData = safetySensitiveEdit ? this.reviewPolicy.statusDataForSafetySensitiveEdit(current.status) : {};
     const data: Prisma.ContentUpdateInput = {
-      title: body.title !== undefined ? body.title.trim() || current.title : undefined,
+      title: body.title !== undefined ? nextTitle : undefined,
       body: body.body,
       bodyHtml: body.bodyHtml === undefined ? undefined : body.bodyHtml,
       bodyJson: toJsonInput(body.bodyJson),
       excerpt: body.body !== undefined ? nextBody.slice(0, 72) : undefined,
       tags: body.tags,
       visibility: toDbContentVisibility(body.visibility),
-      scheduledAt: toDateOrNull(body.scheduledAt),
-      status: current.status === DbContentStatus.published ? DbContentStatus.updated : undefined,
+      scheduledAt: safetySensitiveEdit ? null : toDateOrNull(body.scheduledAt),
+      ...reviewStatusData,
     };
 
     if (body.assetIds !== undefined) {
-      const assetIds = (await this.ownedAssetIds(userId, body.assetIds)) ?? [];
+      const assetIds = nextAssetIds ?? [];
       await this.prisma.contentAsset.deleteMany({ where: { contentId: id } });
       if (assetIds.length > 0) {
         await this.prisma.contentAsset.createMany({
@@ -341,7 +356,7 @@ export class ContentsService {
       include: contentInclude,
     });
 
-    return toContentDetail(updated);
+    return this.toNormalizedContentDetail(updated);
   }
 
   private async ownedAssetIds(userId: string, assetIds: string[] | undefined) {
@@ -371,7 +386,7 @@ export class ContentsService {
       include: contentInclude,
     });
 
-    return toContentSummary(updated);
+    return this.toNormalizedContentSummary(updated);
   }
 
   async delete(userId: string, id: string) {
@@ -418,12 +433,28 @@ export class ContentsService {
             : null
         ),
         excerpt: target.body.slice(0, 72),
-        status: current.status === DbContentStatus.published ? DbContentStatus.updated : current.status,
+        ...this.reviewPolicy.statusDataForSafetySensitiveEdit(current.status),
       },
       include: contentInclude,
     });
 
-    return toContentDetail(updated);
+    return this.toNormalizedContentDetail(updated);
+  }
+
+  private async toNormalizedContentSummary<T extends Parameters<ContentHeatScoreService["normalizeContent"]>[0]>(
+    content: T
+  ) {
+    return toContentSummary(
+      (await this.heatScores.normalizeContent(content)) as unknown as Parameters<typeof toContentSummary>[0]
+    );
+  }
+
+  private async toNormalizedContentDetail<T extends Parameters<ContentHeatScoreService["normalizeContent"]>[0]>(
+    content: T
+  ) {
+    return toContentDetail(
+      (await this.heatScores.normalizeContent(content)) as unknown as Parameters<typeof toContentDetail>[0]
+    );
   }
 
   private async getContent(userId: string, id: string) {
@@ -454,6 +485,28 @@ export class ContentsService {
     if (!content || !(await this.accessPolicy.canView(userId, content))) {
       throw new NotFoundException("content not found");
     }
+  }
+
+  private sameStringArray(left: string[], right: string[]) {
+    return left.length === right.length && left.every((item, index) => item === right[index]);
+  }
+
+  private sameJson(left: unknown, right: unknown) {
+    return JSON.stringify(this.normalizeJsonForCompare(left)) === JSON.stringify(this.normalizeJsonForCompare(right));
+  }
+
+  private normalizeJsonForCompare(value: unknown): unknown {
+    if (Array.isArray(value)) {
+      return value.map((item) => this.normalizeJsonForCompare(item));
+    }
+    if (value && typeof value === "object" && !(value instanceof Date)) {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+          .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+          .map(([key, item]) => [key, this.normalizeJsonForCompare(item)])
+      );
+    }
+    return value;
   }
 
   private parseLimit(raw: string | number | undefined, fallback: number) {

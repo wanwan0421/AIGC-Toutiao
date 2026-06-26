@@ -1704,6 +1704,7 @@ export default function EditorPage() {
     };
   }
 
+  // 完成生成的草稿内容的收尾工作，包括设置标题、话题、封面图，注册生成的图片素材，写入编辑器内容，以及提示用户后续需要确认的生成图片
   function finishGeneratedDraft(generated: DirectGenerateResult, generatedAssetIds: string[]) {
     setTitle(generated.title);
     setSelectedTopics(normalizeTopicList(generated.tags));
@@ -2168,6 +2169,7 @@ export default function EditorPage() {
     }
   }
 
+  // 用户发送对话消息的入口，负责把用户消息添加到对话列表里，并调用 streamCreativeChat 进行流式对话，处理好各种回调来更新对话状态和内容
   async function sendCreativeChatMessage() {
     const message = chatInput.trim();
     if (!message || isChatStreaming || streamLockRef.current) return;

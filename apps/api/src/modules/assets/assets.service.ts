@@ -4,6 +4,7 @@ import { toAssetSummary } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { SafetyRuleEngine } from "../ai/safety/safety-rule-engine.service";
 import { StorageService } from "../storage/storage.service";
+import { ContentReviewPolicyService } from "../workflow/content-review-policy.service";
 
 type UploadFile = {
   originalname: string;
@@ -25,6 +26,7 @@ export class AssetsService {
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
     private readonly safetyRuleEngine: SafetyRuleEngine,
+    private readonly reviewPolicy: ContentReviewPolicyService
   ) {}
 
   async list(userId: string, contentId?: string) {
@@ -215,11 +217,17 @@ export class AssetsService {
       throw new NotFoundException("content not found");
     }
 
-    await this.prisma.contentAsset.upsert({
-      where: { contentId_assetId: { contentId, assetId: id } },
-      create: { contentId, assetId: id },
-      update: {},
-    });
+    const relationWhere = { contentId_assetId: { contentId, assetId: id } };
+    const existingRelation = await this.prisma.contentAsset.findUnique({ where: relationWhere });
+    if (!existingRelation) {
+      await this.prisma.contentAsset.create({
+        data: { contentId, assetId: id },
+      });
+      await this.prisma.content.update({
+        where: { id: contentId },
+        data: this.reviewPolicy.statusDataForSafetySensitiveEdit(content.status),
+      });
+    }
 
     return {
       ok: true,
@@ -244,8 +252,21 @@ export class AssetsService {
       this.logger.warn(`Asset file deletion skipped: ${(error as Error).message}`);
     }
 
-    await this.prisma.contentAsset.deleteMany({ where: { assetId: id } }).catch(() => {});
-    await this.prisma.asset.delete({ where: { id } });
+    const linkedContents = await this.prisma.contentAsset.findMany({
+      where: { assetId: id, content: { authorId: userId } },
+      select: { content: { select: { id: true, status: true } } },
+    });
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.contentAsset.deleteMany({ where: { assetId: id } });
+      for (const item of linkedContents) {
+        await tx.content.update({
+          where: { id: item.content.id },
+          data: this.reviewPolicy.statusDataForSafetySensitiveEdit(item.content.status),
+        });
+      }
+      await tx.asset.delete({ where: { id } });
+    });
     return { ok: true, id };
   }
 

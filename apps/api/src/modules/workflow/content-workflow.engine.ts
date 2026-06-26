@@ -20,6 +20,8 @@ import { ContentQualityCapability } from "../ai/capabilities/content-quality.cap
 import { CreativeAssistantCapability } from "../ai/capabilities/creative-assistant.capability";
 import { CreativeProductionCapability } from "../ai/capabilities/creative-production.capability";
 import { SafetyReviewCapability } from "../ai/capabilities/safety-review.capability";
+import { ContentHeatScoreService } from "../content-metrics/content-heat-score.service";
+import { ContentReviewPolicyService } from "./content-review-policy.service";
 
 const contentInclude = {
   author: true,
@@ -39,7 +41,9 @@ export class ContentWorkflowEngine {
     private readonly conversations: ConversationArchiveService,
     private readonly skillExecutor: SkillExecutorService,
     private readonly safetyReviewSkill: SafetyReviewCapability,
-    private readonly contentQualitySkill: ContentQualityCapability
+    private readonly contentQualitySkill: ContentQualityCapability,
+    private readonly reviewPolicy: ContentReviewPolicyService,
+    private readonly heatScores: ContentHeatScoreService
   ) {}
 
   rewriteText(body: { title: string; body: string; reasons?: string[] }) {
@@ -100,6 +104,7 @@ export class ContentWorkflowEngine {
       contentId: id,
       title: content.title,
       body: content.body,
+      contentHash: this.reviewPolicy.computeContentReviewHash(content),
       updateStatus: true,
     });
 
@@ -112,7 +117,7 @@ export class ContentWorkflowEngine {
   }
 
   async runContentAudit(contentId: string) {
-    const content = await this.prisma.content.findUnique({ where: { id: contentId } });
+    const content = await this.prisma.content.findUnique({ where: { id: contentId }, include: contentInclude });
     if (!content) {
       throw new NotFoundException("content not found");
     }
@@ -121,6 +126,7 @@ export class ContentWorkflowEngine {
       contentId,
       title: content.title,
       body: content.body,
+      contentHash: this.reviewPolicy.computeContentReviewHash(content),
       updateStatus: false,
     });
 
@@ -153,21 +159,20 @@ export class ContentWorkflowEngine {
       DbContentStatus.approved,
       DbContentStatus.updated,
       DbContentStatus.published,
-      DbContentStatus.pending_review,
+      DbContentStatus.scheduled,
     ]);
     if (!allowed.has(content.status)) {
       throw new BadRequestException("content must pass safety review before quality scoring");
     }
+    await this.reviewPolicy.assertCurrentContentAuditPassed(content);
 
     const quality = await this.contentQualitySkill.score({ title: content.title, body: content.body });
 
-    const nextStatus = content.status === DbContentStatus.pending_review ? DbContentStatus.approved : content.status;
     const [, updated] = await this.prisma.$transaction([
       this.createQualityScoreRecord(id, quality),
       this.prisma.content.update({
         where: { id },
         data: {
-          status: nextStatus,
           qualityScore: quality.total,
         },
         include: contentInclude,
@@ -175,21 +180,14 @@ export class ContentWorkflowEngine {
     ]);
 
     return {
-      content: toContentSummary(updated),
+      content: await this.toNormalizedContentSummary(updated),
       quality,
     };
   }
 
   async publish(userId: string, id: string, options: { scheduledAt?: string | null; visibility?: ContentVisibility } = {}) {
     const content = await this.getOwnedContent(userId, id);
-    if (
-      content.status !== DbContentStatus.approved &&
-      content.status !== DbContentStatus.updated &&
-      content.status !== DbContentStatus.pending_review &&
-      content.status !== DbContentStatus.scheduled
-    ) {
-      throw new BadRequestException("content must be approved before publish");
-    }
+    await this.reviewPolicy.assertPublishableForCurrentContent(content);
 
     const scheduledAt = this.parseScheduledAt(options.scheduledAt);
     const visibility = this.parseVisibility(options.visibility);
@@ -207,13 +205,19 @@ export class ContentWorkflowEngine {
       include: contentInclude,
     });
 
-    return toContentSummary(updated);
+    return this.toNormalizedContentSummary(updated);
   }
 
-  private createAuditRecord(contentId: string, audit: AuditResult, rewrite: ComplianceRewriteResult | null) {
+  private createAuditRecord(
+    contentId: string,
+    contentHash: string,
+    audit: AuditResult,
+    rewrite: ComplianceRewriteResult | null
+  ) {
     return this.prisma.auditRecord.create({
       data: {
         contentId,
+        contentHash,
         passed: audit.passed,
         riskLevel: toDbAuditRiskLevel(audit.riskLevel),
         riskTypes: audit.riskTypes,
@@ -243,7 +247,7 @@ export class ContentWorkflowEngine {
       include: contentInclude,
     });
 
-    return toContentSummary(updated);
+    return this.toNormalizedContentSummary(updated);
   }
 
   // Workflow 负责业务状态和持久化；安全审核能力本身由 SafetyReviewCapability 提供。
@@ -251,13 +255,14 @@ export class ContentWorkflowEngine {
     contentId: string;
     title: string;
     body: string;
+    contentHash: string;
     updateStatus: boolean;
   }) {
     const { audit, rewrite } = await this.skillExecutor.runContentSafetyReviewer({
       title: input.title,
       body: input.body,
     });
-    const createAuditRecord = () => this.createAuditRecord(input.contentId, audit, rewrite);
+    const createAuditRecord = () => this.createAuditRecord(input.contentId, input.contentHash, audit, rewrite);
 
     const contentUpdateData = !audit.passed
       ? input.updateStatus
@@ -278,7 +283,7 @@ export class ContentWorkflowEngine {
       ]);
 
       return {
-        content: toContentSummary(updated),
+        content: await this.toNormalizedContentSummary(updated),
         audit,
         quality: null,
         rewrite: audit.passed ? null : rewrite,
@@ -299,7 +304,7 @@ export class ContentWorkflowEngine {
     }
 
     return {
-      content: toContentSummary(content),
+      content: await this.toNormalizedContentSummary(content),
       audit,
       quality: null,
       rewrite: audit.passed ? null : rewrite,
@@ -319,6 +324,14 @@ export class ContentWorkflowEngine {
     }
 
     return content;
+  }
+
+  private async toNormalizedContentSummary<T extends Parameters<ContentHeatScoreService["normalizeContent"]>[0]>(
+    content: T
+  ) {
+    return toContentSummary(
+      (await this.heatScores.normalizeContent(content)) as unknown as Parameters<typeof toContentSummary>[0]
+    );
   }
 
   private async assertOwnedContent(userId: string, id: string) {

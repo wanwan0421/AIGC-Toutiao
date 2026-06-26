@@ -4,6 +4,8 @@ import type { DashboardAnalyticsResponse, DashboardMetric } from "@aicp/shared";
 import { toContentSummary } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { RedisService } from "../../infra/redis/redis.service";
+import { ContentHeatScoreService } from "../content-metrics/content-heat-score.service";
+import { recentContentActionWeight } from "../content-metrics/content-signals";
 import { ContentAccessPolicyService } from "../contents/content-access-policy.service";
 
 const dashboardMetricLabels: Record<DashboardMetric, string> = {
@@ -22,16 +24,38 @@ export class AnalyticsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redisService: RedisService,
-    private readonly accessPolicy: ContentAccessPolicyService
+    private readonly accessPolicy: ContentAccessPolicyService,
+    private readonly heatScores: ContentHeatScoreService
   ) {}
 
   async track(body: { contentId: string; eventType: string; userId?: string; metadata?: Record<string, unknown> }) {
     const content = await this.prisma.content.findUnique({
       where: { id: body.contentId },
-      select: { id: true, authorId: true, status: true, visibility: true },
+      select: {
+        id: true,
+        authorId: true,
+        status: true,
+        visibility: true,
+        viewCount: true,
+        likeCount: true,
+        collectCount: true,
+        clickCount: true,
+        heatScore: true,
+        publishedAt: true,
+        updatedAt: true,
+      },
     });
     if (!content || !(await this.accessPolicy.canView(body.userId, content))) {
       throw new NotFoundException("content not found");
+    }
+
+    if (this.isOwnViewEvent(body.eventType, body.userId, content.authorId)) {
+      return {
+        ok: true,
+        sink: "ignored-own-view",
+        event: null,
+        counters: await this.pickCounters(content)
+      };
     }
 
     const event = await this.prisma.userActionEvent.create({
@@ -54,7 +78,7 @@ export class AnalyticsService {
       ok: true,
       sink: "postgres-event-and-redis-counter",
       event,
-      counters: this.pickCounters(updated)
+      counters: await this.pickCounters(updated)
     };
   }
 
@@ -71,6 +95,8 @@ export class AnalyticsService {
         collectCount: true,
         clickCount: true,
         heatScore: true,
+        publishedAt: true,
+        updatedAt: true,
       },
     });
     if (!content || !(await this.accessPolicy.canView(userId, content))) {
@@ -84,7 +110,7 @@ export class AnalyticsService {
 
     return {
       contentId,
-      counters: this.pickCounters(content),
+      counters: await this.pickCounters(content),
       redisCounters
     };
   }
@@ -92,7 +118,7 @@ export class AnalyticsService {
   async getDashboard(userId: string, rawRange?: string | number, rawMetric?: string): Promise<DashboardAnalyticsResponse> {
     const range = Number(rawRange) === 30 ? 30 : 7;
     const metric = dashboardMetrics.includes(rawMetric as DashboardMetric) ? (rawMetric as DashboardMetric) : "view";
-    const cacheKey = `dashboard:v3:${userId}:${range}:${metric}`;
+    const cacheKey = `dashboard:v4:${userId}:${range}:${metric}`;
     const cached = await this.redisService.getClient().get(cacheKey).catch(() => null);
     if (cached) {
       return JSON.parse(cached) as DashboardAnalyticsResponse;
@@ -163,7 +189,7 @@ export class AnalyticsService {
         start: periodStart.toISOString(),
         end: now.toISOString(),
       },
-      latestWork: latestContentAgg ? toContentSummary(latestContentAgg) : undefined,
+      latestWork: latestContentAgg ? toContentSummary(await this.heatScores.normalizeContent(latestContentAgg)) : undefined,
       metrics: Object.fromEntries(
         dashboardMetrics.map((item) => [
           item,
@@ -198,7 +224,7 @@ export class AnalyticsService {
         where: { id: contentId },
         data: {
           likeCount: { increment: 1 },
-          heatScore: { increment: 2 }
+          heatScore: { increment: 1 }
         }
       });
     }
@@ -208,7 +234,7 @@ export class AnalyticsService {
         where: { id: contentId },
         data: {
           collectCount: { increment: 1 },
-          heatScore: { increment: 2 }
+          heatScore: { increment: 1 }
         }
       });
     }
@@ -226,19 +252,23 @@ export class AnalyticsService {
     return this.prisma.content.findUniqueOrThrow({ where: { id: contentId } });
   }
 
-  private pickCounters(content: {
+  private async pickCounters(content: {
+    id: string;
     viewCount: number;
     likeCount: number;
     collectCount: number;
     clickCount: number;
     heatScore: number;
+    publishedAt?: Date | string | null;
+    updatedAt?: Date | string | null;
   }) {
+    const normalized = await this.heatScores.normalizeContent(content);
     return {
       viewCount: content.viewCount,
       likeCount: content.likeCount,
       collectCount: content.collectCount,
       clickCount: content.clickCount,
-      heatScore: content.heatScore
+      heatScore: normalized.heatScore
     };
   }
 
@@ -280,8 +310,11 @@ export class AnalyticsService {
   }
 
   private heatWeight(eventType: string) {
-    if (eventType === "like" || eventType === "collect") return 2;
-    return eventType === "view" || eventType === "read" || eventType === "click" || eventType === "comment" ? 1 : 0;
+    return Math.max(0, recentContentActionWeight(eventType));
+  }
+
+  private isOwnViewEvent(eventType: string, userId: string | undefined, authorId: string) {
+    return (eventType === "view" || eventType === "read") && Boolean(userId) && userId === authorId;
   }
 
   private startOfLocalDay(date: Date) {

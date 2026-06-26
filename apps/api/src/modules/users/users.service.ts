@@ -4,6 +4,7 @@ import { toContentSummary } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { RedisService } from "../../infra/redis/redis.service";
 import { AuthService } from "../auth/auth.service";
+import { ContentHeatScoreService } from "../content-metrics/content-heat-score.service";
 
 const publicContentInclude = {
   author: true,
@@ -32,7 +33,8 @@ export class UsersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redisService: RedisService,
-    private readonly authService: AuthService
+    private readonly authService: AuthService,
+    private readonly heatScores: ContentHeatScoreService
   ) {}
 
   async getProfile(authorization?: string, cookieHeader?: string) {
@@ -237,10 +239,10 @@ export class UsersService {
       throw new NotFoundException("user not found");
     }
 
-    const cacheKey = `users:v2:public-contents:${targetUserId}`;
+    const cacheKey = `users:v3:public-contents:${targetUserId}`;
     const cached = await this.redisService.getClient().get(cacheKey).catch(() => null);
     if (cached) {
-      return JSON.parse(cached);
+      return this.filterCachedPublicContents(JSON.parse(cached));
     }
 
     const items = await this.prisma.content.findMany({
@@ -250,7 +252,7 @@ export class UsersService {
       take: 48,
     });
 
-    const result = { items: items.map(toContentSummary) };
+    const result = { items: (await this.heatScores.normalizeContents(items)).map(toContentSummary) };
     await this.redisService.getClient().setex(cacheKey, 300, JSON.stringify(result)).catch(() => undefined);
     return result;
   }
@@ -321,6 +323,28 @@ export class UsersService {
 
     return user;
   }
+
+  private async filterCachedPublicContents<T extends { items: Array<{ id: string }> }>(response: T): Promise<T> {
+    const ids = response.items.map((item) => item.id);
+    if (!ids.length) return response;
+
+    const current = await this.prisma.content.findMany({
+      where: {
+        id: { in: ids },
+        status: DbContentStatus.published,
+        visibility: DbContentVisibility.public,
+      },
+      include: publicContentInclude,
+    });
+    const summaries = new Map(
+      (await this.heatScores.normalizeContents(current)).map((item) => [item.id, toContentSummary(item)])
+    );
+    return {
+      ...response,
+      items: ids.map((id) => summaries.get(id)).filter((item): item is NonNullable<typeof item> => Boolean(item)),
+    };
+  }
+
   private toProfile(user: Awaited<ReturnType<UsersService["resolveCurrentUser"]>>) {
     return {
       id: user.id,

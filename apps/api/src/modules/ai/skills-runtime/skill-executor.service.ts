@@ -25,6 +25,7 @@ export class SkillExecutorService {
     private readonly registry: SkillRegistryService
   ) {}
 
+  // 技能执行器提供的接口，供工作流引擎调用以执行具体技能逻辑
   async runContentProductionLine(
     input: ContentProductionLineInput,
     context: SkillExecutionContext,

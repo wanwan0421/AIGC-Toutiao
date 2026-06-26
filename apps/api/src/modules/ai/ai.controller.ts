@@ -152,6 +152,9 @@ export class AiController {
     return this.workflow.attachCreativeConversation(id, { ...body, userId: user.id });
   }
 
+  // 处理 Skill 事件，尝试从事件数据中提取 AiJob 创建请求
+  // 如果存在有效的请求，则创建 AiJob 并发送相应的 SSE 事件通知前端
+  // 如果请求无效，则直接发送原始事件数据
   private async writeSkillEvent(response: Response, userId: string, data: Record<string, unknown>) {
     const { jobRequest, ...publicData } = data;
     const request = jobRequest as

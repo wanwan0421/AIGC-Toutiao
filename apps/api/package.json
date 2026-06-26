@@ -10,7 +10,7 @@
     "eval:high-risk": "node scripts/evaluate-high-risk-accuracy.cjs",
     "migrate:ai-images": "ts-node -r tsconfig-paths/register src/scripts/migrate-ai-image-assets.ts",
     "seed:prompts": "ts-node -r tsconfig-paths/register src/scripts/seed-production-prompts.ts",
-    "seed:prompt-eval:safety": "ts-node -r tsconfig-paths/register src/scripts/seed-safety-review-eval-cases.ts",
+    "seed:prompt-eval:safety": "node scripts/seed-safety-review-eval-cases.cjs",
     "typecheck": "tsc --noEmit",
     "prisma": "prisma"
   },

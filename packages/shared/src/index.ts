@@ -683,7 +683,7 @@ export interface AiJobEvent {
 }
 
 export interface RankingQuery {
-  type: "hot" | "viral" | "recommended";
+  type?: "hot" | "viral" | "recommended";
   cursor?: string;
   limit?: number | string;
 }

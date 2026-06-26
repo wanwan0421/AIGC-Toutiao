@@ -8,7 +8,7 @@ import { RichTextRenderer } from "../../editor/rich-text-editor";
 import { ContentDetailActions } from "../../../components/content-detail-actions";
 import { StatusBadge } from "../../../components/status-badge";
 import { useAuth } from "../../../components/auth-provider";
-import { createContentComment, getContentComments, getContentDetail, toggleUserFollow } from "../../../lib/api";
+import { createContentComment, getContentComments, getContentDetail, getContentStats, toggleUserFollow } from "../../../lib/api";
 
 function formatDate(value?: string) {
   if (!value) return "暂未发布";
@@ -152,8 +152,15 @@ export default function ContentDetailPage({ params }: { params: { id: string } }
       const created = await createContentComment(params.id, { body });
       setComments((items) => [created, ...items.filter((item) => item.id !== created.id)]);
       setCommentInput("");
+      const stats = await getContentStats(params.id).catch(() => null);
       setDetail((current) =>
-        current ? { ...current, heatScore: current.heatScore + 1, commentCount: (current.commentCount ?? 0) + 1 } : current
+        current
+          ? {
+              ...current,
+              ...(stats?.counters ?? {}),
+              commentCount: (current.commentCount ?? 0) + 1,
+            }
+          : current
       );
       setCommentMessage("评论已发布");
     } catch (submitError) {

@@ -221,7 +221,7 @@ export async function getContents(): Promise<ContentSummary[]> {
 
 export async function getRankings(params: { type?: RankingQuery["type"]; cursor?: string; limit?: number } = {}): Promise<RankingListResponse> {
   const query = new URLSearchParams({
-    type: params.type ?? "hot",
+    type: params.type ?? "viral",
     limit: String(params.limit ?? 20),
   });
   if (params.cursor) query.set("cursor", params.cursor);
