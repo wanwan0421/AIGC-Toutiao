@@ -13,7 +13,7 @@ export default function GrowthGuideDetailPage({ params }: { params: { slug: stri
 
   return (
     <article className="mx-auto w-full max-w-350 px-4 py-5 sm:px-6 lg:px-8">
-      <Link href="/growth" className="mb-5 inline-flex items-center gap-2 text-sm font-bold text-slate-500 transition hover:text-rose-600">
+      <Link href="/studio/growth" className="mb-5 inline-flex items-center gap-2 text-sm font-bold text-slate-500 transition hover:text-rose-600">
         <ArrowLeft className="h-4 w-4" />
         返回成长指南
       </Link>
@@ -52,7 +52,7 @@ export default function GrowthGuideDetailPage({ params }: { params: { slug: stri
           </section>
 
           <Link
-            href="/editor"
+            href="/studio/editor"
             className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-[#ff2442] px-5 text-sm font-bold text-white shadow-sm transition hover:bg-[#e6352b]"
           >
             <PenLine className="h-4 w-4" />

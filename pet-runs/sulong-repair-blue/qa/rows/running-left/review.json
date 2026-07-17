@@ -1,0 +1,142 @@
+{
+  "ok": true,
+  "frames_root": "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong-repair-blue\\qa\\rows\\running-left\\frames",
+  "states": [
+    "running-left"
+  ],
+  "errors": [],
+  "warnings": [],
+  "rows": [
+    {
+      "state": "running-left",
+      "expected_frames": 8,
+      "actual_frames": 8,
+      "extraction_method": "components",
+      "ok": true,
+      "errors": [],
+      "warnings": [],
+      "frames": [
+        {
+          "index": 0,
+          "file": "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong-repair-blue\\qa\\rows\\running-left\\frames\\running-left\\00.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 24353,
+          "bbox": [
+            7,
+            5,
+            184,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 373
+        },
+        {
+          "index": 1,
+          "file": "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong-repair-blue\\qa\\rows\\running-left\\frames\\running-left\\01.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 24676,
+          "bbox": [
+            5,
+            5,
+            186,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 374
+        },
+        {
+          "index": 2,
+          "file": "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong-repair-blue\\qa\\rows\\running-left\\frames\\running-left\\02.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 23230,
+          "bbox": [
+            9,
+            5,
+            183,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 334
+        },
+        {
+          "index": 3,
+          "file": "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong-repair-blue\\qa\\rows\\running-left\\frames\\running-left\\03.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 25098,
+          "bbox": [
+            5,
+            5,
+            186,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 309
+        },
+        {
+          "index": 4,
+          "file": "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong-repair-blue\\qa\\rows\\running-left\\frames\\running-left\\04.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 24478,
+          "bbox": [
+            8,
+            5,
+            184,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 409
+        },
+        {
+          "index": 5,
+          "file": "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong-repair-blue\\qa\\rows\\running-left\\frames\\running-left\\05.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 23467,
+          "bbox": [
+            14,
+            5,
+            178,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 348
+        },
+        {
+          "index": 6,
+          "file": "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong-repair-blue\\qa\\rows\\running-left\\frames\\running-left\\06.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 25205,
+          "bbox": [
+            14,
+            5,
+            178,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 313
+        },
+        {
+          "index": 7,
+          "file": "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong-repair-blue\\qa\\rows\\running-left\\frames\\running-left\\07.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 23935,
+          "bbox": [
+            12,
+            5,
+            180,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 356
+        }
+      ]
+    }
+  ]
+}

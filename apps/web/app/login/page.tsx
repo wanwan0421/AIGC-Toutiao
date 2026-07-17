@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight, CheckCircle2, Eye, EyeOff, KeyRound, Loader2, Mail, Phone, UserRound } from "lucide-react";
 import { login, logout, register, sendVerificationCode } from "../../lib/api";
@@ -12,6 +12,7 @@ type RegisterMethod = "phone" | "email";
 export default function LoginPage() {
   const router = useRouter();
   const { setSession, clearSession } = useAuth();
+  const [returnTo, setReturnTo] = useState<string | null>(null);
   const [mode, setMode] = useState<AuthMode>("login");
   const [registerMethod, setRegisterMethod] = useState<RegisterMethod>("phone");
   const [loginAccount, setLoginAccount] = useState("");
@@ -30,6 +31,10 @@ export default function LoginPage() {
   const registerPlaceholder = registerMethod === "phone" ? "请输入手机号" : "请输入邮箱";
   const registerIcon = registerMethod === "phone" ? <Phone className="h-4 w-4" /> : <Mail className="h-4 w-4" />;
   const passwordMismatch = mode === "register" && Boolean(confirmPassword) && password !== confirmPassword;
+
+  useEffect(() => {
+    setReturnTo(new URLSearchParams(window.location.search).get("returnTo"));
+  }, []);
 
   const canSubmit = useMemo(() => {
     if (!password) return false;
@@ -110,7 +115,7 @@ export default function LoginPage() {
       } else {
         const response = await login({ account: loginAccount.trim(), password });
         setSession(response.user);
-        router.replace("/dashboard");
+        router.replace(safeReturnTo(returnTo));
         return;
       }
     } catch (submitError) {
@@ -298,6 +303,13 @@ export default function LoginPage() {
       </div>
     </section>
   );
+}
+
+function safeReturnTo(value: string | null) {
+  if (value?.startsWith("/") && !value.startsWith("//")) {
+    return value;
+  }
+  return "/studio/dashboard";
 }
 
 function AuthField({

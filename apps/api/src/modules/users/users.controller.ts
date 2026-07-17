@@ -1,5 +1,4 @@
-import { Body, Controller, Get, Headers, Param, Patch, Post, Req } from "@nestjs/common";
-import type { Request } from "express";
+import { Body, Controller, Get, Headers, Param, Patch, Post } from "@nestjs/common";
 import { UsersService } from "./users.service";
 
 @Controller("users")
@@ -7,23 +6,21 @@ export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
   @Get("profile")
-  getProfile(@Req() request: Request, @Headers("authorization") authorization?: string) {
-    return this.usersService.getProfile(authorization, request.headers.cookie);
+  getProfile(@Headers("authorization") authorization?: string) {
+    return this.usersService.getProfile(authorization);
   }
 
   @Post("contact-verification-code")
   requestContactVerificationCode(
-    @Req() request: Request,
     @Headers("authorization") authorization: string | undefined,
     @Body() body: { account: string }
   ) {
-    return this.usersService.requestContactVerificationCode(authorization, request.headers.cookie, body);
+    return this.usersService.requestContactVerificationCode(authorization, body);
   }
 
   @Patch("profile")
   updateProfile(
     @Headers("authorization") authorization: string | undefined,
-    @Req() request: Request,
     @Body()
     body: Partial<{
       nickname: string;
@@ -38,13 +35,12 @@ export class UsersController {
       blockedWords: string[];
     }>
   ) {
-    return this.usersService.updateProfile(authorization, request.headers.cookie, body);
+    return this.usersService.updateProfile(authorization, body);
   }
 
   @Patch("preferences")
   updatePreferences(
     @Headers("authorization") authorization: string | undefined,
-    @Req() request: Request,
     @Body()
     body: Partial<{
       defaultPlatform: string;
@@ -53,33 +49,29 @@ export class UsersController {
       blockedWords: string[];
     }>
   ) {
-    return this.usersService.updatePreferences(authorization, request.headers.cookie, body);
+    return this.usersService.updatePreferences(authorization, body);
   }
 
   @Get(":id/public-profile")
   getPublicProfile(
     @Headers("authorization") authorization: string | undefined,
-    @Req() request: Request,
     @Param("id") id: string
   ) {
-    return this.usersService.getPublicProfile(authorization, request.headers.cookie, id);
+    return this.usersService.getPublicProfile(authorization, id);
   }
 
   @Get(":id/contents")
   listPublicContents(
-    @Headers("authorization") authorization: string | undefined,
-    @Req() request: Request,
     @Param("id") id: string
   ) {
-    return this.usersService.listPublicContents(authorization, request.headers.cookie, id);
+    return this.usersService.listPublicContents(id);
   }
 
   @Post(":id/follow/toggle")
   toggleFollow(
     @Headers("authorization") authorization: string | undefined,
-    @Req() request: Request,
     @Param("id") id: string
   ) {
-    return this.usersService.toggleFollow(authorization, request.headers.cookie, id);
+    return this.usersService.toggleFollow(authorization, id);
   }
 }

@@ -3,6 +3,7 @@ import * as bcrypt from "bcrypt";
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   HttpException,
   Injectable,
   Logger,
@@ -19,7 +20,6 @@ const VERIFICATION_CODE_TTL_SECONDS = 60 * 10;
 const AUTH_RATE_LIMIT_WINDOW_SECONDS = 60 * 10;
 const AUTH_RATE_LIMIT_MAX_ATTEMPTS = 5;
 const VERIFICATION_CODE_MAX_SENDS = 3;
-const ACCESS_COOKIE_NAME = "aicp.accessToken";
 const REFRESH_COOKIE_NAME = "aicp.refreshToken";
 const REGISTER_CODE_PURPOSE = "register";
 const CONTACT_UPDATE_CODE_PURPOSE = "contact_update";
@@ -27,7 +27,6 @@ const CONTACT_UPDATE_CODE_PURPOSE = "contact_update";
 type RequestContext = {
   ip?: string;
   userAgent?: string;
-  cookieHeader?: string;
 };
 
 type NormalizedAccount = {
@@ -63,6 +62,7 @@ type AuthResult = {
   expiresIn: number;
   refreshToken: string;
   refreshExpiresIn: number;
+  csrfToken: string;
   user: ReturnType<AuthService["safeUser"]>;
 };
 
@@ -169,7 +169,18 @@ export class AuthService {
     });
   }
 
-  async refresh(refreshToken: string | undefined, context: RequestContext = {}): Promise<AuthResult> {
+  async getCsrfToken(refreshToken: string | undefined) {
+    if (!refreshToken?.trim()) {
+      throw new UnauthorizedException("refresh token required");
+    }
+    const session = await this.getRefreshSession(refreshToken);
+    if (!session?.userId) {
+      throw new UnauthorizedException("session expired");
+    }
+    return { csrfToken: this.createCsrfToken(refreshToken) };
+  }
+
+  async refresh(refreshToken: string | undefined, csrfToken: string | undefined, context: RequestContext = {}): Promise<AuthResult> {
     return this.executeAuthAction("refresh", undefined, context, async () => {
       if (!refreshToken?.trim()) {
         throw new UnauthorizedException("refresh token required");
@@ -179,6 +190,7 @@ export class AuthService {
       if (!session?.userId) {
         throw new UnauthorizedException("session expired");
       }
+      this.assertCsrfToken(refreshToken, csrfToken);
 
       const user = await this.prisma.user.findUnique({
         where: { id: session.userId },
@@ -191,15 +203,31 @@ export class AuthService {
         throw new UnauthorizedException("session expired");
       }
 
-      await this.deleteRefreshSession(refreshToken);
-      return this.issueAuthResult(user.id, context, user);
+      const nextRefreshToken = this.createRefreshToken();
+      const rotated = await this.rotateRefreshSession(refreshToken, nextRefreshToken, user.id, context);
+      if (!rotated) {
+        throw new UnauthorizedException("session expired");
+      }
+      return this.buildAuthResult(user, nextRefreshToken);
     });
   }
 
-  async logout(authorization?: string, cookieHeader?: string, context: RequestContext = {}) {
+  async logout(
+    authorization?: string,
+    refreshToken?: string,
+    csrfToken?: string,
+    context: RequestContext = {}
+  ) {
     return this.executeAuthAction("logout", undefined, context, async () => {
-      const accessToken = this.extractAccessToken(authorization, cookieHeader);
-      const refreshToken = this.extractRefreshToken(cookieHeader);
+      if (!refreshToken?.trim()) {
+        throw new UnauthorizedException("refresh token required");
+      }
+      const session = await this.getRefreshSession(refreshToken);
+      if (!session?.userId) {
+        throw new UnauthorizedException("session expired");
+      }
+      this.assertCsrfToken(refreshToken, csrfToken);
+      const accessToken = this.extractAccessToken(authorization);
 
       if (accessToken) {
         await this.revokeAccessToken(accessToken);
@@ -212,8 +240,8 @@ export class AuthService {
     });
   }
 
-  async me(authorization?: string, cookieHeader?: string) {
-    const token = this.extractAccessToken(authorization, cookieHeader);
+  async me(authorization?: string) {
+    const token = this.extractAccessToken(authorization);
     const parsed = token ? this.verifyAccessToken(token) : undefined;
     if (!parsed) {
       throw new UnauthorizedException("login required");
@@ -245,8 +273,8 @@ export class AuthService {
     return this.extractCookie(cookieHeader, REFRESH_COOKIE_NAME);
   }
 
-  extractAccessToken(authorization?: string, cookieHeader?: string) {
-    return this.extractBearerToken(authorization) ?? this.extractCookie(cookieHeader, ACCESS_COOKIE_NAME);
+  extractAccessToken(authorization?: string) {
+    return this.extractBearerToken(authorization);
   }
 
   private async requestCode(
@@ -442,16 +470,19 @@ export class AuthService {
       throw new UnauthorizedException("session expired");
     }
 
-    const accessToken = this.createAccessToken(user.id);
     const refreshToken = this.createRefreshToken();
     await this.storeRefreshSession(refreshToken, user.id, context);
+    return this.buildAuthResult(user, refreshToken);
+  }
 
+  private buildAuthResult(user: LoadedUser, refreshToken: string): AuthResult {
     return {
-      accessToken,
+      accessToken: this.createAccessToken(user.id),
       tokenType: "Bearer",
       expiresIn: ACCESS_TOKEN_TTL_SECONDS,
       refreshToken,
       refreshExpiresIn: REFRESH_TOKEN_TTL_SECONDS,
+      csrfToken: this.createCsrfToken(refreshToken),
       user: this.safeUser(user)
     };
   }
@@ -503,6 +534,16 @@ export class AuthService {
     return randomUUID().replace(/-/g, "");
   }
 
+  private createCsrfToken(refreshToken: string) {
+    return this.signValue(`csrf:${refreshToken}`);
+  }
+
+  private assertCsrfToken(refreshToken: string, csrfToken?: string) {
+    if (!csrfToken?.trim() || !this.safeEqual(csrfToken, this.createCsrfToken(refreshToken))) {
+      throw new ForbiddenException("invalid csrf token");
+    }
+  }
+
   private async storeRefreshSession(refreshToken: string, userId: string, context: RequestContext) {
     await this.redisService.getClient().set(
       this.buildRefreshSessionKey(refreshToken),
@@ -526,6 +567,36 @@ export class AuthService {
     } catch {
       return undefined;
     }
+  }
+
+  private async rotateRefreshSession(
+    refreshToken: string,
+    nextRefreshToken: string,
+    userId: string,
+    context: RequestContext
+  ) {
+    const sessionJson = JSON.stringify({
+      userId,
+      createdAt: new Date().toISOString(),
+      ip: context.ip,
+      userAgent: context.userAgent
+    });
+    const result = await this.redisService.getClient().eval(
+      `
+        if redis.call("GET", KEYS[1]) == false then
+          return 0
+        end
+        redis.call("DEL", KEYS[1])
+        redis.call("SET", KEYS[2], ARGV[1], "EX", ARGV[2])
+        return 1
+      `,
+      2,
+      this.buildRefreshSessionKey(refreshToken),
+      this.buildRefreshSessionKey(nextRefreshToken),
+      sessionJson,
+      String(REFRESH_TOKEN_TTL_SECONDS)
+    ).catch(() => 0);
+    return Number(result) === 1;
   }
 
   private async deleteRefreshSession(refreshToken: string) {

@@ -4,6 +4,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { usePathname } from "next/navigation";
 import type { UserProfileSummary } from "@aicp/shared";
 import { getCurrentUser } from "../lib/api";
+import { clearAuthMemory } from "../lib/auth-token-store";
 
 type AuthStatus = "loading" | "authenticated" | "anonymous";
 
@@ -20,21 +21,17 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [profile, setProfile] = useState<UserProfileSummary | null>(null);
-  const [status, setStatus] = useState<AuthStatus>(pathname.startsWith("/login") ? "anonymous" : "loading");
+  const [status, setStatus] = useState<AuthStatus>("loading");
 
   useEffect(() => {
     let cancelled = false;
 
     async function syncSession() {
       if (pathname.startsWith("/login")) {
-        if (!cancelled && status !== "authenticated") {
+        if (!cancelled) {
           setProfile(null);
           setStatus("anonymous");
         }
-        return;
-      }
-
-      if (status === "authenticated" && profile) {
         return;
       }
 
@@ -50,6 +47,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       } catch {
         if (!cancelled) {
+          clearAuthMemory(false);
           setProfile(null);
           setStatus("anonymous");
         }
@@ -61,7 +59,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [pathname, profile, status]);
+  }, [pathname]);
 
   const value = useMemo<AuthContextValue>(
     () => ({
@@ -72,6 +70,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setStatus("authenticated");
       },
       clearSession: () => {
+        clearAuthMemory();
         setProfile(null);
         setStatus("anonymous");
       },
@@ -82,11 +81,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setStatus("authenticated");
           return currentUser;
         } catch {
+          clearAuthMemory(false);
           setProfile(null);
           setStatus("anonymous");
           return null;
         }
-      }
+      },
     }),
     [profile, status]
   );

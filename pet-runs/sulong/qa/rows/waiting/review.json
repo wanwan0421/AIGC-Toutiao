@@ -1,0 +1,112 @@
+{
+  "ok": true,
+  "frames_root": "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong\\qa\\rows\\waiting\\frames",
+  "states": [
+    "waiting"
+  ],
+  "errors": [],
+  "warnings": [],
+  "rows": [
+    {
+      "state": "waiting",
+      "expected_frames": 6,
+      "actual_frames": 6,
+      "extraction_method": "components",
+      "ok": true,
+      "errors": [],
+      "warnings": [],
+      "frames": [
+        {
+          "index": 0,
+          "file": "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong\\qa\\rows\\waiting\\frames\\waiting\\00.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 27190,
+          "bbox": [
+            12,
+            5,
+            180,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 595
+        },
+        {
+          "index": 1,
+          "file": "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong\\qa\\rows\\waiting\\frames\\waiting\\01.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 26681,
+          "bbox": [
+            14,
+            5,
+            178,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 599
+        },
+        {
+          "index": 2,
+          "file": "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong\\qa\\rows\\waiting\\frames\\waiting\\02.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 25665,
+          "bbox": [
+            15,
+            5,
+            176,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 558
+        },
+        {
+          "index": 3,
+          "file": "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong\\qa\\rows\\waiting\\frames\\waiting\\03.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 26293,
+          "bbox": [
+            14,
+            5,
+            177,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 547
+        },
+        {
+          "index": 4,
+          "file": "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong\\qa\\rows\\waiting\\frames\\waiting\\04.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 26332,
+          "bbox": [
+            13,
+            5,
+            178,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 591
+        },
+        {
+          "index": 5,
+          "file": "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong\\qa\\rows\\waiting\\frames\\waiting\\05.png",
+          "width": 192,
+          "height": 208,
+          "nontransparent_pixels": 26793,
+          "bbox": [
+            14,
+            5,
+            177,
+            203
+          ],
+          "edge_pixels": 0,
+          "chroma_adjacent_pixels": 608
+        }
+      ]
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Headers, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
 import {
   AiJobType,
   ContentStatus,
@@ -7,6 +7,7 @@ import {
   type UserProfileSummary,
 } from "@aicp/shared";
 import { AuthGuard } from "../auth/auth.guard";
+import { AuthService } from "../auth/auth.service";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { ContentWorkflowEngine } from "../workflow/content-workflow.engine";
 import { WorkflowJobService } from "../workflow/workflow-job.service";
@@ -28,20 +29,22 @@ type PublishBody = {
   visibility?: ContentVisibility;
 };
 
-@UseGuards(AuthGuard)
 @Controller("contents")
 export class ContentsController {
   constructor(
     private readonly contentsService: ContentsService,
     private readonly workflow: ContentWorkflowEngine,
-    private readonly jobs: WorkflowJobService
+    private readonly jobs: WorkflowJobService,
+    private readonly authService: AuthService
   ) {}
 
+  @UseGuards(AuthGuard)
   @Get()
   list(@CurrentUser() user: UserProfileSummary, @Query("status") status?: ContentStatus) {
     return this.contentsService.list(user.id, status);
   }
 
+  @UseGuards(AuthGuard)
   @Post()
   create(
     @CurrentUser() user: UserProfileSummary,
@@ -51,25 +54,32 @@ export class ContentsController {
   }
 
   @Get(":id")
-  detail(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
-    return this.contentsService.detail(user.id, id);
+  async detail(
+    @Headers("authorization") authorization: string | undefined,
+    @Param("id") id: string
+  ) {
+    const user = await this.optionalUser(authorization);
+    return this.contentsService.detail(user?.id, id);
   }
 
+  @UseGuards(AuthGuard)
   @Get(":id/workflow-state")
   workflowState(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
     return this.contentsService.workflowState(user.id, id);
   }
 
   @Get(":id/comments")
-  comments(
-    @CurrentUser() user: UserProfileSummary,
+  async comments(
+    @Headers("authorization") authorization: string | undefined,
     @Param("id") id: string,
     @Query("limit") limit?: string,
     @Query("cursor") cursor?: string
   ) {
-    return this.contentsService.listComments(user.id, id, limit, cursor);
+    const user = await this.optionalUser(authorization);
+    return this.contentsService.listComments(user?.id, id, limit, cursor);
   }
 
+  @UseGuards(AuthGuard)
   @Post(":id/comments")
   createComment(
     @CurrentUser() user: UserProfileSummary,
@@ -79,11 +89,13 @@ export class ContentsController {
     return this.contentsService.createComment(user.id, id, body);
   }
 
+  @UseGuards(AuthGuard)
   @Get(":id/versions")
   versions(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
     return this.contentsService.versions(user.id, id);
   }
 
+  @UseGuards(AuthGuard)
   @Post(":id/versions/:version/rollback")
   rollback(
     @CurrentUser() user: UserProfileSummary,
@@ -93,6 +105,7 @@ export class ContentsController {
     return this.contentsService.rollback(user.id, id, Number(version));
   }
 
+  @UseGuards(AuthGuard)
   @Patch(":id")
   update(
     @CurrentUser() user: UserProfileSummary,
@@ -102,6 +115,7 @@ export class ContentsController {
     return this.contentsService.update(user.id, id, body);
   }
 
+  @UseGuards(AuthGuard)
   @Patch(":id/visibility")
   updateVisibility(
     @CurrentUser() user: UserProfileSummary,
@@ -111,16 +125,19 @@ export class ContentsController {
     return this.contentsService.updateVisibility(user.id, id, body.visibility);
   }
 
+  @UseGuards(AuthGuard)
   @Delete(":id")
   delete(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
     return this.contentsService.delete(user.id, id);
   }
 
+  @UseGuards(AuthGuard)
   @Post(":id/submit-review")
   submitReview(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
     return this.workflow.submitReview(user.id, id);
   }
 
+  @UseGuards(AuthGuard)
   @Post(":id/submit-review/jobs")
   submitReviewJob(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
     return this.jobs.create({
@@ -131,49 +148,60 @@ export class ContentsController {
     });
   }
 
+  @UseGuards(AuthGuard)
   @Post(":id/approve")
   approve(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
     return this.workflow.scoreQuality(user.id, id);
   }
 
+  @UseGuards(AuthGuard)
   @Post(":id/approve/jobs")
   approveJob(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
     return this.qualityScoreJob(user, id);
   }
 
+  @UseGuards(AuthGuard)
   @Post(":id/quality-score")
   qualityScore(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
     return this.workflow.scoreQuality(user.id, id);
   }
 
+  @UseGuards(AuthGuard)
   @Post(":id/quality-score/jobs")
   qualityScoreJob(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
     return this.jobs.create({
       userId: user.id,
-      // 兼容已有 AiJobType 枚举；业务语义已调整为“质量评估”。
       type: AiJobType.ContentApprove,
       payload: { contentId: id },
       contentId: id,
     });
   }
 
+  @UseGuards(AuthGuard)
   @Post(":id/publish")
   publish(@CurrentUser() user: UserProfileSummary, @Param("id") id: string, @Body() body: PublishBody = {}) {
     return this.workflow.publish(user.id, id, body);
   }
 
+  @UseGuards(AuthGuard)
   @Post(":id/reactions/like/toggle")
   toggleLike(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
     return this.contentsService.toggleReaction(user.id, id, "like");
   }
 
+  @UseGuards(AuthGuard)
   @Post(":id/reactions/collect/toggle")
   toggleCollect(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
     return this.contentsService.toggleReaction(user.id, id, "collect");
   }
 
+  @UseGuards(AuthGuard)
   @Post(":id/offline")
   offline(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
     return this.workflow.offline(user.id, id);
+  }
+
+  private optionalUser(authorization?: string) {
+    return this.authService.me(authorization).catch(() => null);
   }
 }

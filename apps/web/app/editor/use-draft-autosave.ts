@@ -58,6 +58,7 @@ function isQuotaExceededError(error: unknown) {
   );
 }
 
+// 草稿自动保存Hook抽离
 export function useDraftAutosave(options: UseDraftAutosaveOptions) {
   const optionsRef = useRef(options);
   const saveLockRef = useRef(false);
@@ -70,6 +71,7 @@ export function useDraftAutosave(options: UseDraftAutosaveOptions) {
     optionsRef.current = options;
   }, [options]);
 
+  // 读取本地草稿，返回 null 表示没有本地草稿或解析失败
   const readLocalDraft = useCallback((scopeId: string | null) => {
     if (typeof window === "undefined") return null;
     const raw = window.localStorage.getItem(optionsRef.current.draftStorageKey(scopeId));
@@ -107,6 +109,7 @@ export function useDraftAutosave(options: UseDraftAutosaveOptions) {
     }
   }, []);
 
+  // 判断本地草稿是否比云端更新。返回 true 表示本地有更新，false 表示本地没有更新或无法判断。
   const hasLocalChangesAfter = useCallback((savedAt: string, savedContentId: string) => {
     const savedTime = new Date(savedAt).getTime();
     if (Number.isNaN(savedTime)) return false;
@@ -119,6 +122,7 @@ export function useDraftAutosave(options: UseDraftAutosaveOptions) {
     });
   }, [readLocalDraft]);
 
+  // 将当前编辑内容保存到云端草稿。这里会先保存到本地，再尝试保存到云端，避免网络不稳定导致数据丢失。
   const autoSaveDraft = useCallback(async (force = false) => {
     const current = optionsRef.current;
     if (!current.editorReadyRef.current) return;
@@ -175,22 +179,24 @@ export function useDraftAutosave(options: UseDraftAutosaveOptions) {
     }
   }, [hasLocalChangesAfter, removeLocalDraft, saveLocalDraftNow]);
 
+  // 在用户输入时，防抖保存本地草稿，避免频繁写入 localStorage。
   const scheduleLocalDraftSave = useCallback(() => {
     if (typeof window === "undefined") return;
     if (localTimerRef.current) window.clearTimeout(localTimerRef.current);
 
-    // 防抖写本地：用户连续输入时只在停顿后写一次 localStorage，降低主线程和容量压力。
+    // 800ms 防抖写本地草稿，避免频繁写入 localStorage。
     localTimerRef.current = window.setTimeout(() => {
       saveLocalDraftNow();
       localTimerRef.current = null;
     }, 800);
   }, [saveLocalDraftNow]);
 
+  // 在用户输入时，防抖保存云端草稿，避免频繁调用云端接口。
   const scheduleCloudAutosave = useCallback(() => {
     if (typeof window === "undefined") return;
     if (cloudTimerRef.current) window.clearTimeout(cloudTimerRef.current);
 
-    // 防抖写云端：固定轮询仍保留，这里负责用户停顿后的快速同步。
+    // 3s 防抖写云端草稿，避免频繁调用云端接口。
     cloudTimerRef.current = window.setTimeout(() => {
       void autoSaveDraft();
       cloudTimerRef.current = null;
@@ -210,6 +216,7 @@ export function useDraftAutosave(options: UseDraftAutosaveOptions) {
   useEffect(() => {
     if (typeof window === "undefined") return;
 
+    // 监听网络状态变化，恢复网络时尝试同步本地草稿到云端。
     const onOnline = () => {
       setIsOnline(true);
       optionsRef.current.onStatus("网络已恢复，正在同步本地草稿...");

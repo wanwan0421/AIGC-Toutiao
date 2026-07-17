@@ -37,18 +37,18 @@ export class UsersService {
     private readonly heatScores: ContentHeatScoreService
   ) {}
 
-  async getProfile(authorization?: string, cookieHeader?: string) {
-    const user = await this.resolveCurrentUser(authorization, cookieHeader);
+  async getProfile(authorization?: string) {
+    const user = await this.resolveCurrentUser(authorization);
     return this.toProfile(user);
   }
 
-  async requestContactVerificationCode(authorization: string | undefined, cookieHeader: string | undefined, body: { account: string }) {
-    await this.resolveCurrentUser(authorization, cookieHeader);
+  async requestContactVerificationCode(authorization: string | undefined, body: { account: string }) {
+    await this.resolveCurrentUser(authorization);
     return this.authService.requestContactVerificationCode(body);
   }
 
-  async updateProfile(authorization: string | undefined, cookieHeader: string | undefined, body: UserProfileUpdate) {
-    const user = await this.resolveCurrentUser(authorization, cookieHeader);
+  async updateProfile(authorization: string | undefined, body: UserProfileUpdate) {
+    const user = await this.resolveCurrentUser(authorization);
 
     const nextPhone = body.phone?.trim();
     const nextEmail = body.email?.trim();
@@ -118,12 +118,11 @@ export class UsersService {
       });
     }
 
-    return this.getProfile(authorization, cookieHeader);
+    return this.getProfile(authorization);
   }
 
   async updatePreferences(
     authorization: string | undefined,
-    cookieHeader: string | undefined,
     body: Partial<{
       defaultPlatform: string;
       writingStyles: string[];
@@ -131,7 +130,7 @@ export class UsersService {
       blockedWords: string[];
     }>
   ) {
-    const user = await this.resolveCurrentUser(authorization, cookieHeader);
+    const user = await this.resolveCurrentUser(authorization);
 
     const preferences = await this.prisma.userPreference.upsert({
       where: { userId: user.id },
@@ -151,15 +150,15 @@ export class UsersService {
     };
   }
 
-  async getPublicProfile(authorization: string | undefined, cookieHeader: string | undefined, targetUserId: string) {
-    const viewer = await this.resolveCurrentUser(authorization, cookieHeader);
+  async getPublicProfile(authorization: string | undefined, targetUserId: string) {
+    const viewer = await this.resolveOptionalUser(authorization);
     const cacheKey = `users:v2:public-profile:${targetUserId}`;
     
     const cached = await this.redisService.getClient().get(cacheKey).catch(() => null);
     if (cached) {
       const parsed = JSON.parse(cached);
       const following =
-        viewer.id === targetUserId
+        !viewer || viewer.id === targetUserId
           ? null
           : await this.prisma.userFollow.findUnique({
               where: {
@@ -173,7 +172,7 @@ export class UsersService {
         ...parsed,
         viewerState: {
           following: Boolean(following),
-          isSelf: viewer.id === targetUserId,
+          isSelf: viewer?.id === targetUserId,
         },
       };
     }
@@ -212,7 +211,7 @@ export class UsersService {
     await this.redisService.getClient().setex(cacheKey, 300, JSON.stringify(publicProfile)).catch(() => undefined);
     
     const following =
-      viewer.id === targetUserId
+      !viewer || viewer.id === targetUserId
         ? null
         : await this.prisma.userFollow.findUnique({
             where: {
@@ -227,13 +226,12 @@ export class UsersService {
       ...publicProfile,
       viewerState: {
         following: Boolean(following),
-        isSelf: viewer.id === targetUserId,
+        isSelf: viewer?.id === targetUserId,
       },
     };
   }
 
-  async listPublicContents(authorization: string | undefined, cookieHeader: string | undefined, targetUserId: string) {
-    await this.resolveCurrentUser(authorization, cookieHeader);
+  async listPublicContents(targetUserId: string) {
     const target = await this.prisma.user.findUnique({ where: { id: targetUserId }, select: { id: true } });
     if (!target) {
       throw new NotFoundException("user not found");
@@ -257,8 +255,8 @@ export class UsersService {
     return result;
   }
 
-  async toggleFollow(authorization: string | undefined, cookieHeader: string | undefined, targetUserId: string) {
-    const user = await this.resolveCurrentUser(authorization, cookieHeader);
+  async toggleFollow(authorization: string | undefined, targetUserId: string) {
+    const user = await this.resolveCurrentUser(authorization);
     if (user.id === targetUserId) {
       throw new BadRequestException("cannot follow yourself");
     }
@@ -302,8 +300,8 @@ export class UsersService {
     });
   }
 
-  private async resolveCurrentUser(authorization?: string, cookieHeader?: string) {
-    const currentUser = await this.authService.me(authorization, cookieHeader).catch((error) => {
+  private async resolveCurrentUser(authorization?: string) {
+    const currentUser = await this.authService.me(authorization).catch((error) => {
       if (error instanceof UnauthorizedException) {
         throw error;
       }
@@ -322,6 +320,13 @@ export class UsersService {
     }
 
     return user;
+  }
+
+  private async resolveOptionalUser(authorization?: string) {
+    return this.resolveCurrentUser(authorization).catch((error) => {
+      if (error instanceof UnauthorizedException) return null;
+      throw error;
+    });
   }
 
   private async filterCachedPublicContents<T extends { items: Array<{ id: string }> }>(response: T): Promise<T> {

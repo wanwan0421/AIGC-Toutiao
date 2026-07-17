@@ -1232,7 +1232,7 @@ export default function EditorPage() {
   async function openDraftCard(draftId: string) {
     editorReadyRef.current = false;
     setIsLoadingInitial(true);
-    router.push(`/editor?contentId=${draftId}`, { scroll: false });
+    router.push(`/studio/editor?contentId=${draftId}`, { scroll: false });
     try {
       const detail = await getContentDetail(draftId);
       setEditingStatus(detail.status);
@@ -1444,7 +1444,7 @@ export default function EditorPage() {
       removeLocalDraft(draft.id);
       setDrafts((items) => items.filter((item) => item.id !== draft.id));
       if (contentId === draft.id) {
-        router.push("/editor", { scroll: false });
+        router.push("/studio/editor", { scroll: false });
         resetEditorForNewContent();
       }
       setStatusMessage("作品已删除");
@@ -1595,7 +1595,7 @@ export default function EditorPage() {
 
     // 静默修改URL，避免页面跳转导致编辑中断，同时也让用户可以通过 URL 直接访问这个草稿
     skipNextEditorInitRef.current = created.id;
-    window.history.replaceState(null, "", `/editor?contentId=${created.id}`);
+    window.history.replaceState(null, "", `/studio/editor?contentId=${created.id}`);
 
     // 如果之前已经有 conversationId，说明用户在编辑过程中进行了聊天交互，此时需要把这个 conversation 关联到新创建的内容上
     if (conversationIdRef.current) {
@@ -2584,7 +2584,7 @@ export default function EditorPage() {
       setStatusMessage(published.status === ContentStatus.Scheduled ? "定时发布已设置，正在跳转作品管理" : "内容已发布，正在跳转作品管理");
       setPublishSuccess(true);
       publishRedirectTimerRef.current = window.setTimeout(() => {
-        router.push(published.status === ContentStatus.Scheduled ? "/content?status=drafts" : "/content?status=published");
+        router.push(published.status === ContentStatus.Scheduled ? "/studio/content?status=drafts" : "/studio/content?status=published");
       }, 1100);
     } catch (error) {
       setStatusMessage(

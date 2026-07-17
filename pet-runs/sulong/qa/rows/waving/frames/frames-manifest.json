@@ -1,0 +1,24 @@
+{
+  "ok": true,
+  "chroma_key": {
+    "hex": "#00FF00",
+    "rgb": [
+      0,
+      255,
+      0
+    ],
+    "threshold": 96.0
+  },
+  "rows": [
+    {
+      "state": "waving",
+      "frames": [
+        "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong\\qa\\rows\\waving\\frames\\waving\\00.png",
+        "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong\\qa\\rows\\waving\\frames\\waving\\01.png",
+        "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong\\qa\\rows\\waving\\frames\\waving\\02.png",
+        "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong\\qa\\rows\\waving\\frames\\waving\\03.png"
+      ],
+      "method": "components"
+    }
+  ]
+}

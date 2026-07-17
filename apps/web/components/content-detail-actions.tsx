@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import type React from "react";
 import type { ContentReactionToggleResult, ContentViewerState } from "@aicp/shared";
 import { Bookmark, Eye, Flame, Heart } from "lucide-react";
+import { usePathname, useRouter } from "next/navigation";
+import { useAuth } from "./auth-provider";
 import { toggleContentReaction, trackAnalytics } from "../lib/api";
 
 type InteractionMetrics = {
@@ -32,6 +34,9 @@ export function ContentDetailActions({
   onMetricsChange?: (metrics: InteractionMetrics) => void;
   onReactionChange?: (result: ContentReactionToggleResult) => void;
 }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const { status: authStatus } = useAuth();
   const [status, setStatus] = useState("内容已打开");
   const [liked, setLiked] = useState(Boolean(viewerState?.liked));
   const [collected, setCollected] = useState(Boolean(viewerState?.collected));
@@ -47,10 +52,6 @@ export function ContentDetailActions({
     let cancelled = false;
 
     async function recordView() {
-      if (viewerState?.isAuthor) {
-        setStatus("作者本人浏览不计入阅读");
-        return;
-      }
       if (recordedViewRef.current === contentId) return;
       recordedViewRef.current = contentId;
 
@@ -73,10 +74,14 @@ export function ContentDetailActions({
     };
     // View tracking should run once per mounted content; repeated visits create new mounts and new view events.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contentId, title, viewerState?.isAuthor]);
+  }, [contentId, title]);
 
   async function handleEvent(eventType: "like" | "collect") {
     if (busy) return;
+    if (authStatus !== "authenticated") {
+      router.push(loginHref(pathname));
+      return;
+    }
     setBusy(eventType);
     setStatus("正在处理...");
 
@@ -223,6 +228,10 @@ function RailMetric({ icon, label, value }: { icon: React.ReactNode; label: stri
       <span className="text-[11px] text-slate-400">{compact(value)}</span>
     </div>
   );
+}
+
+function loginHref(pathname: string) {
+  return `/login?returnTo=${encodeURIComponent(pathname)}`;
 }
 
 function compact(value: number) {

@@ -1,10 +1,9 @@
-import { Body, Controller, Get, Headers, Post, Req, Res } from "@nestjs/common";
+import { Body, Controller, ForbiddenException, Get, Headers, Post, Req, Res } from "@nestjs/common";
 import type { Request, Response } from "express";
 import { AuthService } from "./auth.service";
 
 const ACCESS_COOKIE_NAME = "aicp.accessToken";
 const REFRESH_COOKIE_NAME = "aicp.refreshToken";
-const ACCESS_TOKEN_MAX_AGE_MS = 1000 * 60 * 15;
 const REFRESH_TOKEN_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 7;
 
 @Controller("auth")
@@ -17,9 +16,12 @@ export class AuthController {
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response
   ) {
+    this.assertTrustedMutation(request);
     const result = await this.authService.register(body, this.buildContext(request));
-    this.setSessionCookies(response, result.accessToken, result.refreshToken);
-    return this.stripTokens(result);
+    this.setRefreshCookie(response, result.refreshToken);
+    this.clearLegacyAccessCookie(response);
+    this.disableAuthCaching(response);
+    return this.stripRefreshToken(result);
   }
 
   @Post("login")
@@ -28,57 +30,72 @@ export class AuthController {
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response
   ) {
+    this.assertTrustedMutation(request);
     const result = await this.authService.login(body, this.buildContext(request));
-    this.setSessionCookies(response, result.accessToken, result.refreshToken);
-    return this.stripTokens(result);
+    this.setRefreshCookie(response, result.refreshToken);
+    this.clearLegacyAccessCookie(response);
+    this.disableAuthCaching(response);
+    return this.stripRefreshToken(result);
   }
 
   @Post("verification-code")
   verificationCode(@Body() body: { account: string }, @Req() request: Request) {
+    this.assertTrustedMutation(request);
     return this.authService.requestVerificationCode(body, this.buildContext(request));
   }
 
-  @Post("refresh")
-  async refresh(@Req() request: Request, @Res({ passthrough: true }) response: Response) {
+  @Get("csrf")
+  async csrf(@Req() request: Request, @Res({ passthrough: true }) response: Response) {
+    this.assertTrustedRead(request);
     const refreshToken = this.authService.extractRefreshToken(request.headers.cookie);
-    const result = await this.authService.refresh(refreshToken, this.buildContext(request));
-    this.setSessionCookies(response, result.accessToken, result.refreshToken);
-    return this.stripTokens(result);
+    const result = await this.authService.getCsrfToken(refreshToken);
+    this.disableAuthCaching(response);
+    return result;
+  }
+
+  @Post("refresh")
+  async refresh(
+    @Req() request: Request,
+    @Res({ passthrough: true }) response: Response,
+    @Headers("x-csrf-token") csrfToken?: string
+  ) {
+    this.assertTrustedMutation(request);
+    const refreshToken = this.authService.extractRefreshToken(request.headers.cookie);
+    const result = await this.authService.refresh(refreshToken, csrfToken, this.buildContext(request));
+    this.setRefreshCookie(response, result.refreshToken);
+    this.clearLegacyAccessCookie(response);
+    this.disableAuthCaching(response);
+    return this.stripRefreshToken(result);
   }
 
   @Post("logout")
   async logout(
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
-    @Headers("authorization") authorization?: string
+    @Headers("authorization") authorization?: string,
+    @Headers("x-csrf-token") csrfToken?: string
   ) {
-    const result = await this.authService.logout(authorization, request.headers.cookie, this.buildContext(request));
+    this.assertTrustedMutation(request);
+    const refreshToken = this.authService.extractRefreshToken(request.headers.cookie);
     this.clearSessionCookies(response);
+    this.disableAuthCaching(response);
+    const result = await this.authService.logout(authorization, refreshToken, csrfToken, this.buildContext(request));
     return result;
   }
 
   @Get("me")
-  me(@Req() request: Request, @Headers("authorization") authorization?: string) {
-    return this.authService.me(authorization, request.headers.cookie);
+  me(@Headers("authorization") authorization?: string) {
+    return this.authService.me(authorization);
   }
 
   private buildContext(request: Request) {
     return {
       ip: request.ip,
-      userAgent: request.headers["user-agent"] as string | undefined,
-      cookieHeader: request.headers.cookie
+      userAgent: request.headers["user-agent"] as string | undefined
     };
   }
 
-  private setSessionCookies(response: Response, accessToken: string, refreshToken: string) {
-    response.cookie(ACCESS_COOKIE_NAME, accessToken, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: this.cookieSecure(),
-      path: "/api",
-      maxAge: ACCESS_TOKEN_MAX_AGE_MS
-    });
-
+  private setRefreshCookie(response: Response, refreshToken: string) {
     response.cookie(REFRESH_COOKIE_NAME, refreshToken, {
       httpOnly: true,
       sameSite: "lax",
@@ -89,19 +106,56 @@ export class AuthController {
   }
 
   private clearSessionCookies(response: Response) {
-    response.clearCookie(ACCESS_COOKIE_NAME, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: this.cookieSecure(),
-      path: "/api"
-    });
-
+    this.clearLegacyAccessCookie(response);
     response.clearCookie(REFRESH_COOKIE_NAME, {
       httpOnly: true,
       sameSite: "lax",
       secure: this.cookieSecure(),
       path: "/api/auth"
     });
+  }
+
+  private clearLegacyAccessCookie(response: Response) {
+    response.clearCookie(ACCESS_COOKIE_NAME, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: this.cookieSecure(),
+      path: "/api"
+    });
+  }
+
+  private disableAuthCaching(response: Response) {
+    response.setHeader("Cache-Control", "no-store");
+    response.setHeader("Pragma", "no-cache");
+  }
+
+  private assertTrustedMutation(request: Request) {
+    const origin = request.headers.origin;
+    if (!origin || !this.allowedOrigins().has(origin)) {
+      throw new ForbiddenException("untrusted request origin");
+    }
+    if (request.headers["sec-fetch-site"] === "cross-site") {
+      throw new ForbiddenException("cross-site request rejected");
+    }
+  }
+
+  private assertTrustedRead(request: Request) {
+    if (request.headers["sec-fetch-site"] === "cross-site") {
+      throw new ForbiddenException("cross-site request rejected");
+    }
+    const origin = request.headers.origin;
+    if (origin && !this.allowedOrigins().has(origin)) {
+      throw new ForbiddenException("untrusted request origin");
+    }
+  }
+
+  private allowedOrigins() {
+    return new Set(
+      (process.env.WEB_ORIGIN ?? "http://localhost:3000")
+        .split(",")
+        .map((origin) => origin.trim().replace(/\/$/, ""))
+        .filter(Boolean)
+    );
   }
 
   private cookieSecure() {
@@ -112,8 +166,8 @@ export class AuthController {
     return process.env.NODE_ENV === "production";
   }
 
-  private stripTokens<T extends { accessToken: string; refreshToken: string; refreshExpiresIn: number }>(result: T) {
-    const { accessToken, refreshToken, refreshExpiresIn, ...rest } = result;
+  private stripRefreshToken<T extends { refreshToken: string; refreshExpiresIn: number }>(result: T) {
+    const { refreshToken, refreshExpiresIn, ...rest } = result;
     return rest;
   }
 }

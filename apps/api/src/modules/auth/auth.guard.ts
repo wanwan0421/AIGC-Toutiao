@@ -9,7 +9,7 @@ export class AuthGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext) {
     const request = context.switchToHttp().getRequest<Request & { user?: UserProfileSummary }>();
-    const user = await this.authService.me(request.headers.authorization, request.headers.cookie);
+    const user = await this.authService.me(request.headers.authorization);
     if (!user) {
       throw new UnauthorizedException("login required");
     }

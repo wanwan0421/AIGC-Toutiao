@@ -8,7 +8,7 @@ export default function GrowthGuidePage() {
       <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
         <h1 className="m-0 text-2xl font-semibold tracking-normal text-slate-950">成长指南</h1>
         <Link
-          href="/editor"
+          href="/studio/editor"
           className="flex items-center gap-2 rounded-full bg-[#ff2442] px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#e6352b]"
         >
           <Sparkles className="h-4 w-4" />
@@ -20,7 +20,7 @@ export default function GrowthGuidePage() {
         {growthGuides.map((guide) => (
           <Link
             key={guide.slug}
-            href={`/growth/${guide.slug}`}
+            href={`/studio/growth/${guide.slug}`}
             className="group flex min-h-72 flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-rose-100 hover:shadow-md"
           >
             <div className="mb-4 flex items-center justify-between gap-3">

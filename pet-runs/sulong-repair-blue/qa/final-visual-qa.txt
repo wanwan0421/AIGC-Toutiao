@@ -1,0 +1,6 @@
+visual_qa=pass
+qa_note=All eleven rows preserve one cohesive pink dinosaur identity with clean transparent cells, complete poses, correct state actions, and no visible forbidden effects, cropping, overlap, or motion defects.
+direction_semantics=000 pass high upright face reads up;022.5 pass high face and rightward muzzle read up-right;045 pass upper-right profile is clear;067.5 pass near-right profile retains an up cue;090 pass muzzle and leaf unmistakably point screen-right;112.5 warning rightward profile is clear while the down cue is subtle but the clockwise loop remains coherent;135 pass low rightward profile reads down-right;157.5 pass low rightward pose flows into down;180 pass lowered back-facing pose unmistakably reads down;202.5 pass low profile transitions toward screen-left;225 pass low left-facing profile reads down-left;247.5 pass low left profile continues to left;270 pass muzzle and leaf unmistakably point screen-left;292.5 pass elevated left profile reads up-left;315 pass elevated left profile remains clear;337.5 pass raised left profile closes continuously into 000 up
+review_warnings=accepted 112.5 down-right blind vertical ambiguity; accepted continuity metric outliers with no visible snap, reversal, or size pop
+repair_rows=none
+repair_notes=none

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 import { Loader2, UserPlus } from "lucide-react";
 import type { ContentSummary, UserPublicProfileResponse } from "@aicp/shared";
 import { useAuth } from "../../../components/auth-provider";
@@ -15,7 +16,9 @@ function formatDate(value?: string) {
 }
 
 export default function UserProfilePage({ params }: { params: { id: string } }) {
-  const { refreshSession } = useAuth();
+  const { refreshSession, status } = useAuth();
+  const router = useRouter();
+  const pathname = usePathname();
   const [profileResponse, setProfileResponse] = useState<UserPublicProfileResponse | null>(null);
   const [contents, setContents] = useState<ContentSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -47,6 +50,10 @@ export default function UserProfilePage({ params }: { params: { id: string } }) 
 
   async function handleFollow() {
     if (!profileResponse || profileResponse.viewerState.isSelf || followBusy) return;
+    if (status !== "authenticated") {
+      router.push(loginHref(pathname));
+      return;
+    }
     setFollowBusy(true);
     try {
       const result = await toggleUserFollow(profileResponse.profile.id);
@@ -110,7 +117,7 @@ export default function UserProfilePage({ params }: { params: { id: string } }) 
           </div>
           {viewerState.isSelf ? (
             <Link
-              href="/dashboard"
+              href="/studio/dashboard"
               className="inline-flex h-10 items-center justify-center rounded-full bg-slate-950 px-5 text-sm font-bold text-white transition hover:bg-slate-800"
             >
               进入首页
@@ -173,6 +180,10 @@ export default function UserProfilePage({ params }: { params: { id: string } }) 
       </section>
     </div>
   );
+}
+
+function loginHref(pathname: string) {
+  return `/login?returnTo=${encodeURIComponent(pathname)}`;
 }
 
 function ProfileMetric({ label, value }: { label: string; value: number }) {

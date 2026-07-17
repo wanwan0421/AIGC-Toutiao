@@ -43,6 +43,15 @@ import type {
   UserPublicProfileResponse,
   UserProfileSummary
 } from "@aicp/shared";
+import {
+  clearAccessTokenMemory,
+  clearAuthMemory,
+  getAccessToken,
+  getCsrfToken,
+  hasUsableAccessToken,
+  setAuthSessionMemory,
+  setCsrfTokenMemory
+} from "./auth-token-store";
 
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
 
@@ -76,19 +85,37 @@ export type PromptTemplateSummary = {
 };
 
 type AuthSessionResponse = {
+  accessToken: string;
   tokenType: string;
   expiresIn: number;
+  csrfToken: string;
   user: UserProfileSummary;
 };
 
-let refreshAccessTokenPromise: Promise<AuthSessionResponse> | null = null;
+let refreshAccessTokenPromise: Promise<void> | null = null;
+let csrfTokenPromise: Promise<string> | null = null;
+const AUTH_REFRESH_LOCK_NAME = "aicp:refresh-access-token";
+const COOKIE_AUTH_PATHS = new Set(["/auth/login", "/auth/register", "/auth/csrf", "/auth/refresh", "/auth/logout"]);
+const BEARER_EXCLUDED_PATHS = new Set(["/auth/login", "/auth/register", "/auth/verification-code", "/auth/csrf", "/auth/refresh"]);
 
 function buildHeaders(initHeaders?: HeadersInit, body?: BodyInit | null) {
   const headers = new Headers(initHeaders);
-  if (!(body instanceof FormData) && !headers.has("Content-Type")) {
+  if (body != null && !(body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
   return headers;
+}
+
+function normalizedApiPath(path: string) {
+  return path.split("?", 1)[0];
+}
+
+function requestCredentials(path: string): RequestCredentials {
+  return COOKIE_AUTH_PATHS.has(normalizedApiPath(path)) ? "include" : "omit";
+}
+
+function canAttachBearer(path: string) {
+  return !BEARER_EXCLUDED_PATHS.has(normalizedApiPath(path));
 }
 
 function resolveApiUrl(path: string) {
@@ -105,16 +132,29 @@ function resolveApiUrl(path: string) {
 }
 
 export async function apiRequest<T>(path: string, init: RequestInit = {}, needsAuth = false, allowRefresh = true, cacheMode: RequestCache = "default"): Promise<T> {
+  if (needsAuth && allowRefresh && !hasUsableAccessToken()) {
+    await refreshAccessTokenOnce();
+  }
+
+  const headers = buildHeaders(init.headers, init.body);
+  const requestAccessToken = getAccessToken();
+  if (requestAccessToken && canAttachBearer(path) && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${requestAccessToken}`);
+  }
+
   const response = await fetch(resolveApiUrl(path), {
     ...init,
-    headers: buildHeaders(init.headers, init.body),
-    credentials: "include",
+    headers,
+    credentials: init.credentials ?? requestCredentials(path),
     cache: cacheMode
   });
 
   if (response.status === 401 && needsAuth && allowRefresh && path !== "/auth/refresh") {
     try {
-      await refreshAccessTokenOnce();
+      if (getAccessToken() === requestAccessToken) {
+        clearAccessTokenMemory();
+      }
+      await refreshAccessTokenOnce(requestAccessToken);
       return apiRequest<T>(path, init, needsAuth, false);
     } catch {
       // Surface the original 401 below.
@@ -141,30 +181,80 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}, needsA
 }
 
 async function refreshAccessToken() {
-  return apiRequest<AuthSessionResponse>("/auth/refresh", { method: "POST" }, false, false);
+  const csrfToken = await ensureCsrfToken();
+  const session = await apiRequest<AuthSessionResponse>(
+    "/auth/refresh",
+    {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrfToken }
+    },
+    false,
+    false
+  );
+  applyAuthSession(session);
 }
 
-async function refreshAccessTokenOnce() {
+async function refreshAccessTokenOnce(staleAccessToken: string | null = null) {
   if (!refreshAccessTokenPromise) {
-    refreshAccessTokenPromise = refreshAccessToken().finally(() => {
-      refreshAccessTokenPromise = null;
-    });
+    refreshAccessTokenPromise = withBrowserRefreshLock(async () => {
+      const currentToken = getAccessToken();
+      if (hasUsableAccessToken() && (!staleAccessToken || currentToken !== staleAccessToken)) return;
+      await refreshAccessToken();
+    })
+      .catch((error) => {
+        clearAuthMemory(false);
+        throw error;
+      })
+      .finally(() => {
+        refreshAccessTokenPromise = null;
+      });
   }
   return refreshAccessTokenPromise;
 }
 
+async function withBrowserRefreshLock<T>(callback: () => Promise<T>) {
+  if (typeof navigator !== "undefined" && navigator.locks) {
+    return navigator.locks.request(AUTH_REFRESH_LOCK_NAME, callback);
+  }
+  return callback();
+}
+
+async function ensureCsrfToken() {
+  const currentToken = getCsrfToken();
+  if (currentToken) return currentToken;
+  if (!csrfTokenPromise) {
+    csrfTokenPromise = apiRequest<{ csrfToken: string }>("/auth/csrf", {}, false, false, "no-store")
+      .then((result) => {
+        setCsrfTokenMemory(result.csrfToken);
+        return result.csrfToken;
+      })
+      .finally(() => {
+        csrfTokenPromise = null;
+      });
+  }
+  return csrfTokenPromise;
+}
+
+function applyAuthSession(session: AuthSessionResponse) {
+  setAuthSessionMemory(session.accessToken, session.expiresIn, session.csrfToken);
+}
+
 export async function login(body: { account: string; password: string }) {
-  return apiRequest<AuthSessionResponse>("/auth/login", {
+  const session = await apiRequest<AuthSessionResponse>("/auth/login", {
     method: "POST",
     body: JSON.stringify(body)
   });
+  applyAuthSession(session);
+  return session;
 }
 
 export async function register(body: { account: string; password: string; nickname?: string; verificationCode: string }) {
-  return apiRequest<AuthSessionResponse>("/auth/register", {
+  const session = await apiRequest<AuthSessionResponse>("/auth/register", {
     method: "POST",
     body: JSON.stringify(body)
   });
+  applyAuthSession(session);
+  return session;
 }
 
 export async function sendVerificationCode(body: { account: string }) {
@@ -189,7 +279,20 @@ export async function sendContactVerificationCode(body: { account: string }) {
 }
 
 export async function logout() {
-  return apiRequest<{ ok: boolean }>("/auth/logout", { method: "POST" });
+  try {
+    if (!hasUsableAccessToken()) {
+      await refreshAccessTokenOnce();
+    }
+    const csrfToken = await ensureCsrfToken();
+    return await apiRequest<{ ok: boolean }>(
+      "/auth/logout",
+      { method: "POST", headers: { "X-CSRF-Token": csrfToken } },
+      true,
+      false
+    );
+  } finally {
+    clearAuthMemory();
+  }
 }
 
 export async function me() {
@@ -243,7 +346,7 @@ export async function getTopicDetail(title: string, limit = 30, cursor?: string)
 
 // 内容详情接口会包含用户的草稿信息，用户点击后就可以把之前的草稿内容恢复到编辑器中，避免用户在编辑过程中丢失之前的修改内容
 export async function getContentDetail(id: string): Promise<ContentDetail> {
-  return apiRequest<ContentDetail>(`/contents/${id}`, {}, true);
+  return apiRequest<ContentDetail>(`/contents/${id}`);
 }
 
 export async function getContentWorkflowState(id: string): Promise<ContentWorkflowState> {
@@ -253,7 +356,7 @@ export async function getContentWorkflowState(id: string): Promise<ContentWorkfl
 export async function getContentComments(id: string, params: { cursor?: string; limit?: number } = {}) {
   const query = new URLSearchParams({ limit: String(params.limit ?? 20) });
   if (params.cursor) query.set("cursor", params.cursor);
-  return apiRequest<CommentListResponse>(`/contents/${id}/comments?${query.toString()}`, {}, true);
+  return apiRequest<CommentListResponse>(`/contents/${id}/comments?${query.toString()}`);
 }
 
 export async function createContentComment(id: string, body: CreateContentCommentRequest) {
@@ -280,11 +383,11 @@ export async function toggleUserFollow(id: string) {
 }
 
 export async function getUserPublicProfile(id: string) {
-  return apiRequest<UserPublicProfileResponse>(`/users/${encodeURIComponent(id)}/public-profile`, {}, true);
+  return apiRequest<UserPublicProfileResponse>(`/users/${encodeURIComponent(id)}/public-profile`);
 }
 
 export async function getUserContents(id: string) {
-  return apiRequest<UserContentListResponse>(`/users/${encodeURIComponent(id)}/contents`, {}, true);
+  return apiRequest<UserContentListResponse>(`/users/${encodeURIComponent(id)}/contents`);
 }
 
 type ContentWriteBody = {
@@ -618,15 +721,23 @@ async function streamAiJobEventsOnce(
   signal: AbortSignal | undefined,
   allowRefresh: boolean
 ) {
+  if (allowRefresh && !hasUsableAccessToken()) {
+    await refreshAccessTokenOnce();
+  }
+  const requestAccessToken = getAccessToken();
+  const headers = new Headers();
+  if (requestAccessToken) headers.set("Authorization", `Bearer ${requestAccessToken}`);
   const response = await fetch(resolveApiUrl(`/ai/jobs/${encodeURIComponent(jobId)}/events`), {
     method: "GET",
-    credentials: "include",
+    headers,
+    credentials: "omit",
     cache: "no-store",
     signal
   });
 
   if (response.status === 401 && allowRefresh) {
-    await refreshAccessTokenOnce();
+    if (getAccessToken() === requestAccessToken) clearAccessTokenMemory();
+    await refreshAccessTokenOnce(requestAccessToken);
     return streamAiJobEventsOnce(jobId, handlers, signal, false);
   }
 
@@ -681,15 +792,22 @@ async function streamCreativeChatOnce(
   },
   allowRefresh: boolean
 ) {
+  if (allowRefresh && !hasUsableAccessToken()) {
+    await refreshAccessTokenOnce();
+  }
+  const requestAccessToken = getAccessToken();
+  const headers = buildHeaders(undefined, JSON.stringify(body));
+  if (requestAccessToken) headers.set("Authorization", `Bearer ${requestAccessToken}`);
   const response = await fetch(resolveApiUrl("/ai/creative/chat/stream"), {
     method: "POST",
-    headers: buildHeaders(),
-    credentials: "include",
+    headers,
+    credentials: "omit",
     body: JSON.stringify(body)
   });
 
   if (response.status === 401 && allowRefresh) {
-    await refreshAccessTokenOnce();
+    if (getAccessToken() === requestAccessToken) clearAccessTokenMemory();
+    await refreshAccessTokenOnce(requestAccessToken);
     return streamCreativeChatOnce(body, handlers, false);
   }
 
@@ -777,14 +895,10 @@ export async function trackAnalytics(body: {
       clickCount: number;
       heatScore: number;
     };
-  }>(
-    "/analytics/events",
-    {
-      method: "POST",
-      body: JSON.stringify(body)
-    },
-    true
-  );
+  }>("/analytics/events", {
+    method: "POST",
+    body: JSON.stringify(body)
+  });
 }
 
 export async function getContentStats(contentId: string) {

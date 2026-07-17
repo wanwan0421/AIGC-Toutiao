@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 import { Loader2, MessageCircle, Send } from "lucide-react";
 import type { ContentCommentSummary, ContentDetail, ContentReactionToggleResult } from "@aicp/shared";
 import { RichTextRenderer } from "../../editor/rich-text-editor";
@@ -18,7 +19,9 @@ function formatDate(value?: string) {
 }
 
 export default function ContentDetailPage({ params }: { params: { id: string } }) {
-  const { refreshSession } = useAuth();
+  const { refreshSession, status } = useAuth();
+  const router = useRouter();
+  const pathname = usePathname();
   const [detail, setDetail] = useState<ContentDetail | null>(null);
   const [comments, setComments] = useState<ContentCommentSummary[]>([]);
   const [commentCursor, setCommentCursor] = useState<string | undefined>();
@@ -121,6 +124,10 @@ export default function ContentDetailPage({ params }: { params: { id: string } }
 
   async function handleFollowAuthor() {
     if (!detail || followBusy || detail.viewerState?.isAuthor) return;
+    if (status !== "authenticated") {
+      router.push(loginHref(pathname));
+      return;
+    }
     setFollowBusy(true);
     try {
       const result = await toggleUserFollow(detail.author.id);
@@ -146,6 +153,10 @@ export default function ContentDetailPage({ params }: { params: { id: string } }
   async function submitComment() {
     const body = commentInput.trim();
     if (!body || commentSubmitting) return;
+    if (status !== "authenticated") {
+      router.push(loginHref(pathname));
+      return;
+    }
     setCommentSubmitting(true);
     setCommentMessage("");
     try {
@@ -332,19 +343,16 @@ export default function ContentDetailPage({ params }: { params: { id: string } }
               >
                 {followBusy ? "处理中..." : detail.viewerState?.followingAuthor ? "已关注" : "关注作者"}
               </button>
-            ) : (
-              <Link
-                href="/dashboard"
-                className="mt-4 inline-flex h-10 w-full items-center justify-center rounded-full bg-slate-950 text-sm font-bold text-white transition hover:bg-slate-800"
-              >
-                进入首页
-              </Link>
-            )}
+            ) : null}
           </section>
         </aside>
       </div>
     </article>
   );
+}
+
+function loginHref(pathname: string) {
+  return `/login?returnTo=${encodeURIComponent(pathname)}`;
 }
 
 function mergeComments(current: ContentCommentSummary[], incoming: ContentCommentSummary[]) {

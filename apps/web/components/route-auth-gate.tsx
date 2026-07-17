@@ -5,22 +5,26 @@ import { useEffect } from "react";
 import { useAuth } from "./auth-provider";
 import { LoadingShell } from "./loading-shell";
 
-const publicRoutes = ["/login"];
+const legacyProtectedRoutes = ["/dashboard", "/editor", "/analytics", "/prompts", "/growth"];
 
 export function RouteAuthGate({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { status } = useAuth();
-  const isPublicRoute = publicRoutes.some((route) => pathname === route || pathname.startsWith(`${route}/`));
+  const isProtectedRoute =
+    pathname.startsWith("/studio") ||
+    pathname === "/content" ||
+    legacyProtectedRoutes.some((route) => pathname === route || pathname.startsWith(`${route}/`));
 
   useEffect(() => {
-    if (isPublicRoute) return;
+    if (!isProtectedRoute) return;
     if (status === "anonymous") {
-      router.replace("/login");
+      const returnTo = encodeURIComponent(`${pathname}${window.location.search}`);
+      router.replace(`/login?returnTo=${returnTo}`);
     }
-  }, [isPublicRoute, router, status]);
+  }, [isProtectedRoute, pathname, router, status]);
 
-  if (!isPublicRoute) {
+  if (isProtectedRoute) {
     if (status === "loading") {
       return <LoadingShell title="正在确认登录状态..." />;
     }

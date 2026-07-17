@@ -1,0 +1,28 @@
+{
+  "ok": true,
+  "chroma_key": {
+    "hex": "#0000FF",
+    "rgb": [
+      0,
+      0,
+      255
+    ],
+    "threshold": 96.0
+  },
+  "rows": [
+    {
+      "state": "running-right",
+      "frames": [
+        "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong-repair-blue\\qa\\rows\\running-right\\frames\\running-right\\00.png",
+        "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong-repair-blue\\qa\\rows\\running-right\\frames\\running-right\\01.png",
+        "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong-repair-blue\\qa\\rows\\running-right\\frames\\running-right\\02.png",
+        "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong-repair-blue\\qa\\rows\\running-right\\frames\\running-right\\03.png",
+        "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong-repair-blue\\qa\\rows\\running-right\\frames\\running-right\\04.png",
+        "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong-repair-blue\\qa\\rows\\running-right\\frames\\running-right\\05.png",
+        "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong-repair-blue\\qa\\rows\\running-right\\frames\\running-right\\06.png",
+        "G:\\LWH\\\u5b57\u8282\u8bad\u7ec3\u8425\\pet-runs\\sulong-repair-blue\\qa\\rows\\running-right\\frames\\running-right\\07.png"
+      ],
+      "method": "components"
+    }
+  ]
+}

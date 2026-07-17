@@ -214,7 +214,7 @@ function ContentRow({
         </div>
 
         <Link
-          href={`/editor?contentId=${content.id}`}
+          href={`/studio/editor?contentId=${content.id}`}
           className="inline-flex items-center gap-2 rounded-full bg-slate-50 px-4 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
         >
           <Icons.PenTool className="h-4 w-4" /> 编辑作品
@@ -321,10 +321,10 @@ export default function ContentPage() {
   }
 
   const tabs = [
-    { label: "全部作品", href: "/content", active: !statusFilterValue },
-    { label: "已发布", href: `/content?status=${ContentStatus.Published}`, active: statusFilter === ContentStatus.Published },
-    { label: "草稿箱", href: "/content?status=drafts", active: isDraftWorkbenchFilter },
-    { label: "未通过", href: `/content?status=${ContentStatus.Rejected}`, active: statusFilter === ContentStatus.Rejected },
+    { label: "全部作品", href: "/studio/content", active: !statusFilterValue },
+    { label: "已发布", href: `/studio/content?status=${ContentStatus.Published}`, active: statusFilter === ContentStatus.Published },
+    { label: "草稿箱", href: "/studio/content?status=drafts", active: isDraftWorkbenchFilter },
+    { label: "未通过", href: `/studio/content?status=${ContentStatus.Rejected}`, active: statusFilter === ContentStatus.Rejected },
   ];
 
   return (
@@ -332,7 +332,7 @@ export default function ContentPage() {
       <header className="mb-6 flex flex-wrap items-center justify-between gap-4">
         <h1 className="text-2xl font-semibold tracking-normal text-slate-950">作品管理</h1>
         <Link
-          href="/editor"
+          href="/studio/editor"
           className="flex items-center gap-2 rounded-full bg-[#ff2442] px-6 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#e91635]"
         >
           <Icons.Plus className="h-4 w-4" /> 发布新作品

@@ -334,7 +334,7 @@ export default function DashboardPage() {
                 </p>
               </div>
               <Link
-                href="/editor"
+                href="/studio/editor"
                 className="text-sm font-bold text-rose-600 hover:text-rose-700"
               >
                 进入创作中心 <ChevronRight className="inline h-4 w-4" />
@@ -342,21 +342,21 @@ export default function DashboardPage() {
             </div>
             <div className="grid gap-3 md:grid-cols-3">
               <CreationEntry
-                href="/editor"
+                href="/studio/editor"
                 icon={<PenLine className="h-5 w-5" />}
                 title="发布文章"
                 desc="长文、短图文、AI 辅助编辑"
                 tone="rose"
               />
               <CreationEntry
-                href="/editor?mode=image"
+                href="/studio/editor?mode=image"
                 icon={<ImagePlus className="h-5 w-5" />}
                 title="图文草稿"
                 desc="素材整理与图片资产生成"
                 tone="blue"
               />
               <CreationEntry
-                href="/editor?mode=ai"
+                href="/studio/editor?mode=ai"
                 icon={<Wand2 className="h-5 w-5" />}
                 title="AI 一键初稿"
                 desc="主题、人群、风格到完整草稿"
@@ -551,7 +551,7 @@ export default function DashboardPage() {
               />
             </div>
             <Link
-              href="/growth"
+              href="/studio/growth"
               className="mt-5 flex h-10 items-center justify-center gap-2 rounded-xl bg-rose-600 text-sm font-bold text-white transition hover:bg-rose-700"
             >
               查看成长指南 <ArrowRight className="h-4 w-4" />

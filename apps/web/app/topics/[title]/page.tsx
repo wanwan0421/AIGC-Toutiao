@@ -35,7 +35,7 @@ export default async function TopicDetailPage({ params }: { params: { title: str
               <span className="rounded-2xl bg-white/80 px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm">
                 {topic.contentCount} 篇相关内容
               </span>
-              <Link href={`/editor?topic=${encodeURIComponent(topic.title)}`} className="inline-flex items-center gap-2 rounded-2xl bg-[#ff2442] px-5 py-2 text-sm font-bold text-white shadow-sm hover:bg-[#e91635]">
+              <Link href={`/studio/editor?topic=${encodeURIComponent(topic.title)}`} className="inline-flex items-center gap-2 rounded-2xl bg-[#ff2442] px-5 py-2 text-sm font-bold text-white shadow-sm hover:bg-[#e91635]">
                 <PenTool size={16} />
                 参与创作
               </Link>
@@ -79,7 +79,7 @@ export default async function TopicDetailPage({ params }: { params: { title: str
           <div className="rounded-3xl bg-slate-50 p-10 text-center">
             <Hash className="mx-auto text-[#ff2442]" size={28} />
             <p className="mt-3 text-sm font-semibold text-slate-700">当前热点还没有相关作品</p>
-            <Link href={`/editor?topic=${encodeURIComponent(topic.title)}`} className="mt-5 inline-flex rounded-2xl bg-[#ff2442] px-5 py-2 text-sm font-bold text-white">
+            <Link href={`/studio/editor?topic=${encodeURIComponent(topic.title)}`} className="mt-5 inline-flex rounded-2xl bg-[#ff2442] px-5 py-2 text-sm font-bold text-white">
               发布第一篇
             </Link>
           </div>

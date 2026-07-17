@@ -92,7 +92,7 @@ export function useAiJob() {
       return latest;
     },
     []
-  );9
+  );
 
   const stopStreaming = useCallback(() => {
     abortRef.current?.abort();

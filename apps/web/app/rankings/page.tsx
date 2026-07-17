@@ -1,15 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Bookmark, Eye, Flame, Hash, Loader2, Sparkles, TrendingUp } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Flame, Hash, Loader2, PenTool, TrendingUp } from "lucide-react";
 import type { ContentSummary, OfficialTopicSummary, RankingQuery } from "@aicp/shared";
 import { getOfficialTopics, getRankings } from "../../lib/api";
 
-const rankingTabs: Array<{ type: RankingQuery["type"]; label: string; description: string }> = [
-  { type: "viral", label: "综合爆文", description: "热度、互动、阅读、质量综合排序" },
-  { type: "hot", label: "阅读热度", description: "优先展示近期阅读和热度高的作品" },
-  { type: "recommended", label: "质量优先", description: "优先展示质量分和内容完成度" },
+const rankingTabs: Array<{ type: RankingQuery["type"]; label: string }> = [
+  { type: "viral", label: "综合爆文" },
+  { type: "hot", label: "阅读热度" },
+  { type: "recommended", label: "质量优先" },
 ];
 
 function compactNumber(value: number) {
@@ -27,10 +27,7 @@ function ScoreMeter({ value }: { value: number }) {
   return (
     <div className="grid grid-cols-10 gap-1" aria-hidden="true">
       {Array.from({ length: 10 }).map((_, index) => (
-        <span
-          className={`h-2 rounded-full ${index < activeCount ? "bg-rose-500" : "bg-slate-100"}`}
-          key={index}
-        />
+        <span className={`h-2 rounded-full ${index < activeCount ? "bg-rose-500" : "bg-slate-100"}`} key={index} />
       ))}
     </div>
   );
@@ -124,9 +121,12 @@ export default function RankingsPage() {
   useEffect(() => {
     const target = contentSentinelRef.current;
     if (!target || contentDone) return;
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) void loadContents(false);
-    }, { rootMargin: "200px" });
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) void loadContents(false);
+      },
+      { rootMargin: "200px" }
+    );
     observer.observe(target);
     return () => observer.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -135,22 +135,31 @@ export default function RankingsPage() {
   useEffect(() => {
     const target = topicSentinelRef.current;
     if (!target || topicDone) return;
-    const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) void loadTopics(false);
-    }, { rootMargin: "200px" });
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) void loadTopics(false);
+      },
+      { rootMargin: "200px" }
+    );
     observer.observe(target);
     return () => observer.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topicCursor, topicDone, topicLoading]);
 
   const [topContent, ...restContents] = contents;
-  const activeTab = rankingTabs.find((tab) => tab.type === rankingType) ?? rankingTabs[0];
 
   return (
     <section className="mx-auto grid w-full max-w-350 gap-5 px-4 py-5 text-slate-950 sm:px-6 lg:px-8">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <h1 className="m-0 text-3xl font-black leading-tight tracking-tight text-slate-950">热点与爆文</h1>
-        <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-3">
+        <h1 className="m-0 text-3xl font-black leading-tight text-slate-950">热点与爆文</h1>
+        <Link
+          href="/studio/editor"
+          className="inline-flex h-10 items-center gap-2 rounded-full bg-rose-600 px-4 text-sm font-bold text-white shadow-sm transition hover:bg-rose-700"
+        >
+          <PenTool className="h-4 w-4" />
+          开始创作
+        </Link>
+        <div className="ml-auto flex flex-wrap gap-2">
           {rankingTabs.map((tab) => (
             <button
               className={`rounded-full px-4 py-2 text-sm font-semibold transition ${
@@ -170,7 +179,7 @@ export default function RankingsPage() {
 
       {message ? <div className="rounded-2xl bg-rose-50 px-4 py-3 text-sm font-semibold text-rose-600">{message}</div> : null}
 
-      <div className="grid items-start grid-cols-[minmax(0,1fr)_340px] gap-5 max-lg:grid-cols-1">
+      <div className="grid grid-cols-[minmax(0,1fr)_340px] items-start gap-5 max-lg:grid-cols-1">
         <main className="grid min-w-0 content-start gap-5">
           {topContent ? (
             <article className="grid items-start gap-5 overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-sm md:grid-cols-[240px_minmax(0,1fr)]">
@@ -307,15 +316,6 @@ function Metric({ label, value }: { label: string; value: number }) {
     <div className="grid gap-2 rounded-xl bg-slate-50 p-4">
       <span className="text-sm font-bold text-slate-500">{label}</span>
       <strong className="text-2xl font-black text-slate-950">{compactNumber(value)}</strong>
-    </div>
-  );
-}
-
-function Signal({ icon, label }: { icon: ReactNode; label: string }) {
-  return (
-    <div className="flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-2">
-      <span className="text-rose-600">{icon}</span>
-      <span>{label}</span>
     </div>
   );
 }

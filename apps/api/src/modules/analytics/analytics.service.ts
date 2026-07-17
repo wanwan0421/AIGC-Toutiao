@@ -49,15 +49,6 @@ export class AnalyticsService {
       throw new NotFoundException("content not found");
     }
 
-    if (this.isOwnViewEvent(body.eventType, body.userId, content.authorId)) {
-      return {
-        ok: true,
-        sink: "ignored-own-view",
-        event: null,
-        counters: await this.pickCounters(content)
-      };
-    }
-
     const event = await this.prisma.userActionEvent.create({
       data: {
         contentId: body.contentId,
@@ -311,10 +302,6 @@ export class AnalyticsService {
 
   private heatWeight(eventType: string) {
     return Math.max(0, recentContentActionWeight(eventType));
-  }
-
-  private isOwnViewEvent(eventType: string, userId: string | undefined, authorId: string) {
-    return (eventType === "view" || eventType === "read") && Boolean(userId) && userId === authorId;
   }
 
   private startOfLocalDay(date: Date) {

@@ -1,0 +1,16 @@
+{
+  "ok": true,
+  "spriteVersionNumber": 2,
+  "run_dir": "G:\\LWH\\字节训练营\\pet-runs\\sulong-repair-blue",
+  "spritesheet": "G:\\LWH\\字节训练营\\pet-runs\\sulong-repair-blue\\final\\spritesheet-extended.webp",
+  "validation": "G:\\LWH\\字节训练营\\pet-runs\\sulong-repair-blue\\final\\validation-extended.json",
+  "installed_validation": "G:\\LWH\\字节训练营\\pet-runs\\sulong-repair-blue\\final\\validation-installed.json",
+  "chroma_despill": "G:\\LWH\\字节训练营\\pet-runs\\sulong-repair-blue\\qa\\chroma-despill-extended.json",
+  "contact_sheet": "G:\\LWH\\字节训练营\\pet-runs\\sulong-repair-blue\\qa\\contact-sheet-extended.png",
+  "direction_sheet": "G:\\LWH\\字节训练营\\pet-runs\\sulong-repair-blue\\qa\\look-directions.png",
+  "direction_semantics": "G:\\LWH\\字节训练营\\pet-runs\\sulong-repair-blue\\qa\\direction-semantics.json",
+  "blind_direction_validation": "G:\\LWH\\字节训练营\\pet-runs\\sulong-repair-blue\\qa\\direction-blind-validation.json",
+  "continuity": "G:\\LWH\\字节训练营\\pet-runs\\sulong-repair-blue\\qa\\look-continuity.json",
+  "review": "G:\\LWH\\字节训练营\\pet-runs\\sulong-repair-blue\\qa\\review.json",
+  "package": "C:\\Users\\123\\.codex\\pets\\sulong"
+}

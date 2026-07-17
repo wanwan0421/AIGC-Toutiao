@@ -137,7 +137,7 @@ export class ContentsService {
     return this.toNormalizedContentDetail(content);
   }
 
-  async detail(userId: string, id: string) {
+  async detail(userId: string | undefined, id: string) {
     const content = await this.prisma.content.findUnique({
       where: { id },
       include: contentInclude,
@@ -153,11 +153,18 @@ export class ContentsService {
 
     return {
       ...(await this.toNormalizedContentDetail(content)),
-      viewerState: await this.viewerState(userId, content.authorId, content.id),
+      viewerState: userId
+        ? await this.viewerState(userId, content.authorId, content.id)
+        : {
+            liked: false,
+            collected: false,
+            followingAuthor: false,
+            isAuthor: false,
+          },
     };
   }
 
-  async listComments(userId: string, id: string, rawLimit?: string | number, cursor?: string) {
+  async listComments(userId: string | undefined, id: string, rawLimit?: string | number, cursor?: string) {
     await this.assertContentVisible(userId, id);
     const limit = this.parseLimit(rawLimit, 20);
     const comments = await this.prisma.contentComment.findMany({
@@ -477,7 +484,7 @@ export class ContentsService {
     }
   }
 
-  private async assertContentVisible(userId: string, id: string) {
+  private async assertContentVisible(userId: string | undefined, id: string) {
     const content = await this.prisma.content.findUnique({
       where: { id },
       select: { authorId: true, status: true, visibility: true },

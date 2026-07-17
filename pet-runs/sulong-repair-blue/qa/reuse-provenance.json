@@ -1,0 +1,7 @@
+{
+  "repair_scope": "running-right and derived running-left rows",
+  "reused_standard_rows": ["idle", "waving", "jumping", "failed", "waiting", "running", "review"],
+  "reused_look_rows": ["look-row-9", "look-row-10"],
+  "source_run": "G:\\LWH\\字节训练营\\pet-runs\\sulong",
+  "reason": "The source rows had passed frame and visual QA; only three chroma-contaminated directional gait cells required a full-row repair."
+}
