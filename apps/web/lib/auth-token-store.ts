@@ -1,3 +1,5 @@
+import { clearStoredAiJobs } from "./ai-job-session";
+
 type AuthMemoryMessage =
   | {
       type: "session";
@@ -31,6 +33,8 @@ function ensureAuthChannel() {
       accessToken = null;
       accessTokenExpiresAt = 0;
       csrfToken = null;
+      clearStoredAiJobs();
+      window.dispatchEvent(new Event("aicp:auth-cleared"));
     }
   };
   return authChannel;
@@ -87,6 +91,8 @@ export function clearAuthMemory(broadcast = true) {
   accessToken = null;
   accessTokenExpiresAt = 0;
   csrfToken = null;
+  clearStoredAiJobs();
+  window.dispatchEvent(new Event("aicp:auth-cleared"));
   if (broadcast) {
     ensureAuthChannel()?.postMessage({ type: "clear" } satisfies AuthMemoryMessage);
   }

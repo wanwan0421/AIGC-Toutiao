@@ -155,6 +155,7 @@ export interface PromptEvalComparisonSummary {
 export enum AiJobStatus {
   Queued = "queued",
   Running = "running",
+  AwaitingCommit = "awaiting_commit",
   Succeeded = "succeeded",
   Failed = "failed",
   Cancelled = "cancelled"
@@ -650,6 +651,7 @@ export type AiJobEventType =
   | "partial"
   | "warning"
   | "heartbeat"
+  | "result_ready"
   | "done"
   | "error";
 
@@ -663,9 +665,14 @@ export interface AiJobSnapshot {
   input?: Record<string, unknown>;
   result?: unknown;
   errorMessage?: string | null;
+  errorCode?: string | null;
+  errorRetryable: boolean;
   warnings: string[];
   attempts: number;
   startedAt?: string | null;
+  resultReadyAt?: string | null;
+  appliedAt?: string | null;
+  appliedEventId?: string | null;
   completedAt?: string | null;
   createdAt: string;
   updatedAt: string;
@@ -678,8 +685,38 @@ export interface AiJobStartRequest {
 }
 
 export interface AiJobEvent {
+  id?: string;
   type: AiJobEventType;
   data: Record<string, unknown>;
+}
+
+export interface AiJobResultCommitRequest {
+  resultEventId: string;
+  content: {
+    contentId?: string;
+    title: string;
+    body: string;
+    bodyHtml?: string | null;
+    bodyJson?: Record<string, unknown> | null;
+    tags: string[];
+    assetIds: string[];
+    payload: Record<string, unknown>;
+  };
+}
+
+export interface AiJobResultCommitResponse {
+  job: AiJobSnapshot;
+  content: ContentDetail;
+}
+
+export interface ApiErrorResponse {
+  statusCode: number;
+  code: string;
+  message: string;
+  retryable: boolean;
+  requestId: string;
+  retryAfterMs?: number;
+  details?: Record<string, unknown>;
 }
 
 export interface RankingQuery {

@@ -22,6 +22,7 @@ import { ModelClientService } from "../ai/model-client.service";
 import { promptTemperature } from "../ai/prompt-model-options";
 import { AI_PROMPT_NAMES } from "../ai/prompt-names";
 import { parseJsonObject } from "../ai/structured-output";
+import { AppError, throwIfAborted } from "../../common/app-error";
 
 type DefinitionWithActiveVersion = Prisma.PromptDefinitionGetPayload<{ include: { activeVersion: true } }>;
 type VersionRecord = Prisma.PromptVersionGetPayload<Record<string, never>>;
@@ -56,12 +57,12 @@ type PromptEvalExecutionHooks = {
   progress?: (progress: number, currentStep: string, message: string) => Promise<void>;
   partial?: (kind: string, value: unknown) => Promise<void>;
   assertNotCancelled?: () => Promise<void>;
+  signal?: AbortSignal;
 };
 
 const DEFAULT_LLM_EVAL_CASE_LIMIT = 5;
 const MAX_EVAL_CASE_LIMIT = 50;
 const SAFETY_REVIEW_SAMPLE_LIMIT = 5;
-const JOB_CANCELLED_MESSAGE = "AI job was cancelled";
 
 @Injectable()
 export class PromptsService {
@@ -551,7 +552,7 @@ export class PromptsService {
         let errorMessage = assertionError;
 
         if (mode === "llm_eval" && !issues.some((item) => item.severity === "error")) {
-          const llmResult = await this.runLlmEvalCase(promptKey, version, testCase, renderedPrompt, startedAt);
+          const llmResult = await this.runLlmEvalCase(promptKey, version, testCase, renderedPrompt, startedAt, hooks.signal);
           output = { ...output, ...llmResult.output };
           errorMessage = llmResult.errorMessage ?? assertionError;
         }
@@ -565,10 +566,19 @@ export class PromptsService {
         processed += 1;
         completedCaseIds.add(testCase.id);
 
-        await this.prisma.promptEvalResult.create({
-          data: {
+        await this.prisma.promptEvalResult.upsert({
+          where: { runId_testCaseId: { runId, testCaseId: testCase.id } },
+          create: {
             runId,
             testCaseId: testCase.id,
+            status: hasError ? "failed" : "passed",
+            input: this.toJsonInput(input),
+            output: this.toJsonInput(output),
+            renderedPrompt,
+            errorMessage,
+            latencyMs: Date.now() - startedAt,
+          },
+          update: {
             status: hasError ? "failed" : "passed",
             input: this.toJsonInput(input),
             output: this.toJsonInput(output),
@@ -606,9 +616,8 @@ export class PromptsService {
       await hooks.partial?.("promptEvalRun", this.toEvalRunSummary(updated));
       return this.toEvalRunSummary(updated);
     } catch (error) {
-      if (error instanceof Error && error.message === JOB_CANCELLED_MESSAGE) {
-        throw error;
-      }
+      throwIfAborted(hooks.signal);
+      if (error instanceof AppError && error.code === "JOB_CANCELLED") throw error;
       const message = error instanceof Error ? error.message : "unknown prompt eval error";
       this.logger.error(`Prompt eval run ${runId} failed: ${message}`);
       const existingResults = await this.prisma.promptEvalResult.findMany({ where: { runId } }).catch(() => []);
@@ -848,7 +857,8 @@ export class PromptsService {
     version: VersionRecord,
     testCase: TestCaseRecord,
     renderedPrompt: string,
-    startedAt: number
+    startedAt: number,
+    signal?: AbortSignal
   ): Promise<{ output: PromptEvalStoredOutput; errorMessage?: string }> {
     try {
       const rawText = await this.modelClient.complete({
@@ -862,6 +872,7 @@ export class PromptsService {
           },
           { role: "user", content: renderedPrompt },
         ],
+        signal,
       });
       const parsedOutput = parseJsonObject<Record<string, unknown>>(rawText);
       const judge = this.evaluateLlmJudge(parsedOutput, testCase);
@@ -888,6 +899,7 @@ export class PromptsService {
         errorMessage,
       };
     } catch (error) {
+      throwIfAborted(signal);
       const message = error instanceof Error ? error.message : "unknown llm eval error";
       const judge = this.evaluateLlmJudge(null, testCase);
       await this.logEvalCall({

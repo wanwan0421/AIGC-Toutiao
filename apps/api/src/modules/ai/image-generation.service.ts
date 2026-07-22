@@ -1,15 +1,10 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
-import { AssetAuditStatus, Prisma } from "@prisma/client";
+import { AssetAuditStatus, Prisma, type Asset } from "@prisma/client";
 import type { GeneratedImageAsset } from "@aicp/shared";
 import { randomUUID } from "node:crypto";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
-
-type ImagePrompt = {
-  position: string;
-  prompt: string;
-  slotId?: string;
-};
+import { AppError, throwIfAborted } from "../../common/app-error";
 
 type GeneratedImageOutput = {
   kind: "remoteUrl" | "dataUrl";
@@ -52,45 +47,14 @@ export class ImageGenerationService {
     };
   }
 
-  // 根据创作草稿中的提示词生成图片，并把稳定 URL 挂到素材库。
-  async generateForDraft(input: {
-    userId?: string;
-    contentId?: string;
-    coverSuggestion?: string;
-    imagePrompts: ImagePrompt[];
-  }) {
-    const userId = await this.resolveUserId(input.userId);
-    const coverAsset = input.coverSuggestion
-      ? await this.generateAndStore({
-          userId,
-          contentId: input.contentId,
-          position: "封面",
-          prompt: input.coverSuggestion,
-        })
-      : undefined;
-
-    const imageAssets: GeneratedImageAsset[] = [];
-    for (const item of input.imagePrompts) {
-      imageAssets.push(
-        await this.generateAndStore({
-          userId,
-          contentId: input.contentId,
-          position: item.position,
-          prompt: item.prompt,
-          slotId: item.slotId,
-        })
-      );
-    }
-
-    return { coverAsset, imageAssets };
-  }
-
   async generateSingleImage(input: {
     userId?: string;
     contentId?: string;
     position?: string;
     prompt: string;
     slotId?: string;
+    signal?: AbortSignal;
+    generationKey?: string;
   }) {
     const userId = await this.resolveUserId(input.userId);
     return this.generateAndStore({
@@ -99,6 +63,8 @@ export class ImageGenerationService {
       position: input.position ?? "正文配图",
       prompt: input.prompt,
       slotId: input.slotId,
+      signal: input.signal,
+      generationKey: input.generationKey,
     });
   }
 
@@ -109,8 +75,16 @@ export class ImageGenerationService {
     position: string;
     prompt: string;
     slotId?: string;
+    signal?: AbortSignal;
+    generationKey?: string;
   }): Promise<GeneratedImageAsset> {
-    const output = await this.generateImage(input.prompt);
+    throwIfAborted(input.signal);
+    if (input.generationKey) {
+      const existing = await this.prisma.asset.findUnique({ where: { generationKey: input.generationKey } });
+      if (existing) return this.toGeneratedAsset(existing, input);
+    }
+
+    const output = await this.generateImage(input.prompt, input.signal);
     const requestedFileName = `ai-${Date.now()}-${randomUUID().slice(0, 8)}.${output.extension}`;
     const stored =
       output.kind === "dataUrl"
@@ -123,7 +97,7 @@ export class ImageGenerationService {
             folder: "ai-images",
             fileName: requestedFileName,
             mimeType: output.mimeType,
-          });
+          }, input.signal);
 
     const metadata: Prisma.InputJsonObject = {
       prompt: input.prompt,
@@ -134,36 +108,43 @@ export class ImageGenerationService {
       storageKey: stored.storageKey,
       size: stored.size,
       ...(this.model ? { model: this.model } : {}),
+      ...(input.generationKey ? { generationKey: input.generationKey } : {}),
       ...(output.kind === "remoteUrl" ? { originalProviderHost: this.hostFromUrl(output.value) } : {}),
     };
 
-    const asset = await this.prisma.asset.create({
-      data: {
+    let asset;
+    try {
+      asset = await this.prisma.asset.create({
+        data: {
         uploaderId: input.userId,
         fileName: stored.fileName,
         mimeType: stored.mimeType,
         url: stored.url,
         source: "ai_generated",
+        generationKey: input.generationKey,
         auditStatus: AssetAuditStatus.approved,
         auditReason: "AI生成图片默认免检",
         riskLevel: "low",
         riskTypes: [],
         metadata,
-      },
-    });
-
-    if (input.contentId) {
-      await this.prisma.contentAsset
-        .upsert({
-          where: { contentId_assetId: { contentId: input.contentId, assetId: asset.id } },
-          create: { contentId: input.contentId, assetId: asset.id },
-          update: {},
-        })
-        .catch((error) => {
-          this.logger.warn(`Generated image was created but not linked: ${(error as Error).message}`);
-        });
+        },
+      });
+    } catch (error) {
+      if (input.generationKey && error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        await this.storage.deleteObject({ storageKey: stored.storageKey }).catch(() => undefined);
+        const existing = await this.prisma.asset.findUniqueOrThrow({ where: { generationKey: input.generationKey } });
+        return this.toGeneratedAsset(existing, input);
+      }
+      throw error;
     }
+    return this.toGeneratedAsset(asset, input);
+  }
 
+  private toGeneratedAsset(asset: Asset, input: {
+    position: string;
+    prompt: string;
+    slotId?: string;
+  }): GeneratedImageAsset {
     return {
       id: asset.id,
       fileName: asset.fileName,
@@ -179,32 +160,41 @@ export class ImageGenerationService {
   }
 
   // 调用LLM生成图片
-  private async generateImage(prompt: string): Promise<GeneratedImageOutput> {
+  private async generateImage(prompt: string, signal?: AbortSignal): Promise<GeneratedImageOutput> {
     this.assertConfigured();
+    throwIfAborted(signal);
 
-    const response = await fetch(this.apiUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: this.model,
-        prompt,
-        size: this.imageSize,
-        response_format: "url",
-      }),
-    });
+    let response: Response;
+    try {
+      response = await fetch(this.apiUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({ model: this.model, prompt, size: this.imageSize, response_format: "url" }),
+        signal,
+      });
+    } catch (error) {
+      throwIfAborted(signal);
+      throw new AppError({ code: "UPSTREAM_UNAVAILABLE", message: error instanceof Error ? error.message : "Image generation failed", statusCode: 503, retryable: true, cause: error });
+    }
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => "");
-      throw new Error(`Ark image generation failed: ${response.status} - ${errorText}`);
+      const retryable = response.status === 429 || response.status >= 500;
+      throw new AppError({
+        code: response.status === 429 ? "UPSTREAM_RATE_LIMITED" : retryable ? "UPSTREAM_UNAVAILABLE" : response.status === 401 || response.status === 403 ? "UPSTREAM_AUTH_FAILED" : "UPSTREAM_BAD_REQUEST",
+        message: `Ark image generation failed: ${response.status} - ${errorText}`,
+        statusCode: 502,
+        retryable,
+      });
     }
 
     const payload = (await response.json()) as Record<string, unknown>;
     const image = this.extractImage(payload);
     if (!image) {
-      throw new Error("Ark image generation response did not contain an image URL or base64 payload");
+      throw new AppError({ code: "UPSTREAM_INVALID_RESPONSE", message: "Ark image generation response did not contain an image URL or base64 payload", statusCode: 502, retryable: true });
     }
 
     return image;

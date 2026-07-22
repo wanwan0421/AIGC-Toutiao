@@ -53,4 +53,7 @@ export type SkillProgressHooks = {
   partial?: (kind: string, value: unknown) => Promise<void>;
   warning?: (message: string) => Promise<void>;
   assertNotCancelled?: () => Promise<void>;
+  signal?: AbortSignal;
+  loadCheckpoint?: (stepKey: string) => Promise<unknown | undefined>;
+  saveCheckpoint?: (stepKey: string, data: unknown) => Promise<boolean>;
 };

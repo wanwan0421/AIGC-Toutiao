@@ -1,8 +1,9 @@
-import { Body, Controller, Get, Param, Patch, Post, Query, Res, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Headers, Param, Patch, Post, Query, Res, UseGuards } from "@nestjs/common";
 import type { Response } from "express";
 import {
   AiJobType,
   type AiJobEvent,
+  type AiJobResultCommitRequest,
   type CreativeChatRequest,
   type DirectGenerateRequest,
   type SelectionRewriteRequest,
@@ -13,13 +14,15 @@ import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { ContentWorkflowEngine } from "../workflow/content-workflow.engine";
 import { WorkflowJobService } from "../workflow/workflow-job.service";
+import { WorkflowJobResultCommitService } from "../workflow/workflow-job-result-commit.service";
 
 @UseGuards(AuthGuard)
 @Controller("ai")
 export class AiController {
   constructor(
     private readonly workflow: ContentWorkflowEngine,
-    private readonly jobs: WorkflowJobService
+    private readonly jobs: WorkflowJobService,
+    private readonly jobResultCommit: WorkflowJobResultCommitService
   ) {}
 
   @Get("logs")
@@ -41,20 +44,35 @@ export class AiController {
   }
 
   @Get("jobs/:id/events")
-  async streamJobEvents(@CurrentUser() user: UserProfileSummary, @Param("id") id: string, @Res() response: Response) {
+  async streamJobEvents(
+    @CurrentUser() user: UserProfileSummary,
+    @Param("id") id: string,
+    @Headers("last-event-id") lastEventIdHeader: string | undefined,
+    @Query("after") after: string | undefined,
+    @Res() response: Response
+  ) {
+    // Validate ownership before committing the response to SSE headers so that
+    // authentication/not-found failures keep the shared structured HTTP shape.
+    await this.jobs.get(user.id, id);
     response.setHeader("Content-Type", "text/event-stream; charset=utf-8");
     response.setHeader("Cache-Control", "no-cache, no-transform");
     response.setHeader("Connection", "keep-alive");
     response.flushHeaders?.();
+    const streamAbort = new AbortController();
+    const handleClose = () => streamAbort.abort();
+    response.once("close", handleClose);
 
     try {
-      for await (const event of this.jobs.stream(user.id, id)) {
+      for await (const event of this.jobs.stream(user.id, id, lastEventIdHeader ?? after, streamAbort.signal)) {
         this.writeSse(response, event);
       }
     } catch (error) {
-      this.writeSse(response, { type: "error", data: { message: (error as Error).message } });
+      if (!streamAbort.signal.aborted) {
+        this.writeSse(response, { type: "error", data: { message: (error as Error).message } });
+      }
     } finally {
-      response.end();
+      response.removeListener("close", handleClose);
+      if (!response.writableEnded) response.end();
     }
   }
 
@@ -66,6 +84,15 @@ export class AiController {
   @Post("jobs/:id/cancel")
   cancelJob(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
     return this.jobs.cancel(user.id, id);
+  }
+
+  @Post("jobs/:id/commit-result")
+  commitJobResult(
+    @CurrentUser() user: UserProfileSummary,
+    @Param("id") id: string,
+    @Body() body: AiJobResultCommitRequest
+  ) {
+    return this.jobResultCommit.commit(user.id, id, body);
   }
 
   @Post("creative/chat/stream")
@@ -92,11 +119,6 @@ export class AiController {
     } finally {
       response.end();
     }
-  }
-
-  @Post("creative/direct-generate")
-  directGenerate(@CurrentUser() user: UserProfileSummary, @Body() body: DirectGenerateRequest) {
-    return this.workflow.directGenerate({ ...body, userId: user.id });
   }
 
   @Post("creative/direct-generate/jobs")
@@ -198,6 +220,8 @@ export class AiController {
   }
 
   private writeSse(response: Response, event: AiJobEvent | { type: string; data: unknown }) {
+    if (response.writableEnded || response.destroyed) return;
+    if ("id" in event && event.id) response.write(`id: ${event.id}\n`);
     response.write(`event: ${event.type}\n`);
     response.write(`data: ${JSON.stringify(event.data)}\n\n`);
   }

@@ -65,6 +65,7 @@ npm run db:seed:prompts
 
 ```bash
 npm run dev:api
+npm run dev:worker
 npm run dev:web
 ```
 
@@ -73,6 +74,7 @@ npm run dev:web
 ```text
 Web: http://localhost:3000
 API: http://localhost:3001/api/health
+Worker readiness: http://localhost:3002/ready
 ```
 
 ## 常用脚本

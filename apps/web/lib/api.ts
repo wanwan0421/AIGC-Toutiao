@@ -1,6 +1,9 @@
 import { AiJobType } from "@aicp/shared";
 import type {
+  ApiErrorResponse,
   AiJobEvent,
+  AiJobResultCommitRequest,
+  AiJobResultCommitResponse,
   AiJobSnapshot,
   AiJobStartRequest,
   CommentListResponse,
@@ -52,6 +55,7 @@ import {
   setAuthSessionMemory,
   setCsrfTokenMemory
 } from "./auth-token-store";
+import { clearStoredAiJobs } from "./ai-job-session";
 
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
 
@@ -98,6 +102,26 @@ const AUTH_REFRESH_LOCK_NAME = "aicp:refresh-access-token";
 const COOKIE_AUTH_PATHS = new Set(["/auth/login", "/auth/register", "/auth/csrf", "/auth/refresh", "/auth/logout"]);
 const BEARER_EXCLUDED_PATHS = new Set(["/auth/login", "/auth/register", "/auth/verification-code", "/auth/csrf", "/auth/refresh"]);
 
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly retryable: boolean;
+  readonly requestId: string;
+  readonly retryAfterMs?: number;
+  readonly details?: Record<string, unknown>;
+
+  constructor(payload: ApiErrorResponse) {
+    super(payload.message);
+    this.name = "ApiError";
+    this.status = payload.statusCode;
+    this.code = payload.code;
+    this.retryable = payload.retryable;
+    this.requestId = payload.requestId;
+    this.retryAfterMs = payload.retryAfterMs;
+    this.details = payload.details;
+  }
+}
+
 function buildHeaders(initHeaders?: HeadersInit, body?: BodyInit | null) {
   const headers = new Headers(initHeaders);
   if (body != null && !(body instanceof FormData) && !headers.has("Content-Type")) {
@@ -142,12 +166,18 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}, needsA
     headers.set("Authorization", `Bearer ${requestAccessToken}`);
   }
 
-  const response = await fetch(resolveApiUrl(path), {
-    ...init,
-    headers,
-    credentials: init.credentials ?? requestCredentials(path),
-    cache: cacheMode
-  });
+  let response: Response;
+  try {
+    response = await fetch(resolveApiUrl(path), {
+      ...init,
+      headers,
+      credentials: init.credentials ?? requestCredentials(path),
+      cache: cacheMode
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") throw error;
+    throw networkApiError(error);
+  }
 
   if (response.status === 401 && needsAuth && allowRefresh && path !== "/auth/refresh") {
     try {
@@ -162,15 +192,7 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}, needsA
   }
 
   if (!response.ok) {
-    let message = `Request failed: ${response.status}`;
-    try {
-      const payload = (await response.json()) as { message?: string | string[] };
-      message = Array.isArray(payload.message) ? payload.message.join("; ") : payload.message ?? message;
-    } catch {
-      const text = await response.text().catch(() => "");
-      if (text) message = text;
-    }
-    throw new Error(message);
+    throw await parseApiErrorResponse(response);
   }
 
   if (response.status === 204) {
@@ -178,6 +200,47 @@ export async function apiRequest<T>(path: string, init: RequestInit = {}, needsA
   }
 
   return response.json() as Promise<T>;
+}
+
+async function parseApiErrorResponse(response: Response) {
+  const requestId = response.headers.get("x-request-id") ?? "unknown";
+  const fallbackBody = response.clone();
+  let raw: Partial<ApiErrorResponse> & { message?: string | string[] } = {};
+  try {
+    raw = await response.json() as Partial<ApiErrorResponse> & { message?: string | string[] };
+  } catch {
+    const text = await fallbackBody.text().catch(() => "");
+    if (text) raw.message = text;
+  }
+  const message = Array.isArray(raw.message) ? raw.message.join("; ") : raw.message ?? `Request failed: ${response.status}`;
+  const retryAfterMs = raw.retryAfterMs ?? retryAfterHeaderMs(response.headers.get("retry-after"));
+  return new ApiError({
+    statusCode: raw.statusCode ?? response.status,
+    code: raw.code ?? `HTTP_${response.status}`,
+    message,
+    retryable: raw.retryable ?? (response.status === 429 || response.status === 502 || response.status === 503 || response.status === 504),
+    requestId: raw.requestId ?? requestId,
+    retryAfterMs,
+    details: raw.details,
+  });
+}
+
+function networkApiError(error: unknown) {
+  return new ApiError({
+    statusCode: 0,
+    code: "NETWORK_ERROR",
+    message: error instanceof Error ? error.message : "Network request failed",
+    retryable: true,
+    requestId: "unavailable",
+  });
+}
+
+function retryAfterHeaderMs(value: string | null) {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.min(Math.max(0, seconds * 1_000), 300_000);
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? Math.min(Math.max(0, timestamp - Date.now()), 300_000) : undefined;
 }
 
 async function refreshAccessToken() {
@@ -291,6 +354,7 @@ export async function logout() {
       false
     );
   } finally {
+    clearStoredAiJobs();
     clearAuthMemory();
   }
 }
@@ -322,20 +386,26 @@ export async function getContents(): Promise<ContentSummary[]> {
   return apiRequest<ContentSummary[]>("/contents", {}, true);
 }
 
-export async function getRankings(params: { type?: RankingQuery["type"]; cursor?: string; limit?: number } = {}): Promise<RankingListResponse> {
+export async function getRankings(
+  params: { type?: RankingQuery["type"]; cursor?: string; limit?: number } = {},
+  cacheMode: RequestCache = "default"
+): Promise<RankingListResponse> {
   const query = new URLSearchParams({
     type: params.type ?? "viral",
     limit: String(params.limit ?? 20),
   });
   if (params.cursor) query.set("cursor", params.cursor);
-  return apiRequest<RankingListResponse>(`/rankings?${query.toString()}`);
+  return apiRequest<RankingListResponse>(`/rankings?${query.toString()}`, {}, false, true, cacheMode);
 }
 
-export async function getOfficialTopics(params: number | { limit?: number; cursor?: string } = 8): Promise<OfficialTopicListResponse> {
+export async function getOfficialTopics(
+  params: number | { limit?: number; cursor?: string } = 8,
+  cacheMode: RequestCache = "default"
+): Promise<OfficialTopicListResponse> {
   const options = typeof params === "number" ? { limit: params } : params;
   const query = new URLSearchParams({ limit: String(options.limit ?? 8) });
   if (options.cursor) query.set("cursor", options.cursor);
-  return apiRequest<OfficialTopicListResponse>(`/rankings/topics?${query.toString()}`);
+  return apiRequest<OfficialTopicListResponse>(`/rankings/topics?${query.toString()}`, {}, false, true, cacheMode);
 }
 
 export async function getTopicDetail(title: string, limit = 30, cursor?: string): Promise<TopicDetail> {
@@ -599,6 +669,14 @@ export async function cancelAiJob(id: string) {
   return apiRequest<AiJobSnapshot>(`/ai/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" }, true);
 }
 
+export async function commitAiJobResult(id: string, body: AiJobResultCommitRequest) {
+  return apiRequest<AiJobResultCommitResponse>(
+    `/ai/jobs/${encodeURIComponent(id)}/commit-result`,
+    { method: "POST", body: JSON.stringify(body) },
+    true
+  );
+}
+
 export async function startCreativeDraftJob(body: DirectGenerateRequest) {
   return apiRequest<AiJobSnapshot>(
     "/ai/creative/direct-generate/jobs",
@@ -691,34 +769,33 @@ export async function streamCreativeChat(
   return streamCreativeChatOnce(body, handlers, true);
 }
 
+export type AiJobStreamHandlers = {
+  shouldHandleEvent?: (event: AiJobEvent) => boolean;
+  onEvent?: (event: AiJobEvent) => void | Promise<void>;
+  onEventProcessed?: (event: AiJobEvent) => void | Promise<void>;
+  onSnapshot?: (job: AiJobSnapshot) => void | Promise<void>;
+  onProgress?: (data: Record<string, unknown>) => void | Promise<void>;
+  onPartial?: (data: Record<string, unknown>) => void | Promise<void>;
+  onWarning?: (message: string, data: Record<string, unknown>) => void | Promise<void>;
+  onResultReady?: (job: AiJobSnapshot, result: unknown, event: AiJobEvent) => void | Promise<void>;
+  onDone?: (job: AiJobSnapshot, result: unknown) => void | Promise<void>;
+  onError?: (message: string, job?: AiJobSnapshot) => void | Promise<void>;
+};
+
 export async function streamAiJobEvents(
   jobId: string,
-  handlers: {
-    onEvent?: (event: AiJobEvent) => void;
-    onSnapshot?: (job: AiJobSnapshot) => void;
-    onProgress?: (data: Record<string, unknown>) => void;
-    onPartial?: (data: Record<string, unknown>) => void;
-    onWarning?: (message: string, data: Record<string, unknown>) => void;
-    onDone?: (job: AiJobSnapshot, result: unknown) => void;
-    onError?: (message: string, job?: AiJobSnapshot) => void;
-  },
-  signal?: AbortSignal
+  handlers: AiJobStreamHandlers,
+  signal?: AbortSignal,
+  lastEventId?: string
 ) {
-  return streamAiJobEventsOnce(jobId, handlers, signal, true);
+  return streamAiJobEventsOnce(jobId, handlers, signal, lastEventId, true);
 }
 
 async function streamAiJobEventsOnce(
   jobId: string,
-  handlers: {
-    onEvent?: (event: AiJobEvent) => void;
-    onSnapshot?: (job: AiJobSnapshot) => void;
-    onProgress?: (data: Record<string, unknown>) => void;
-    onPartial?: (data: Record<string, unknown>) => void;
-    onWarning?: (message: string, data: Record<string, unknown>) => void;
-    onDone?: (job: AiJobSnapshot, result: unknown) => void;
-    onError?: (message: string, job?: AiJobSnapshot) => void;
-  },
+  handlers: AiJobStreamHandlers,
   signal: AbortSignal | undefined,
+  lastEventId: string | undefined,
   allowRefresh: boolean
 ) {
   if (allowRefresh && !hasUsableAccessToken()) {
@@ -727,22 +804,36 @@ async function streamAiJobEventsOnce(
   const requestAccessToken = getAccessToken();
   const headers = new Headers();
   if (requestAccessToken) headers.set("Authorization", `Bearer ${requestAccessToken}`);
-  const response = await fetch(resolveApiUrl(`/ai/jobs/${encodeURIComponent(jobId)}/events`), {
-    method: "GET",
-    headers,
-    credentials: "omit",
-    cache: "no-store",
-    signal
-  });
+  if (lastEventId) headers.set("Last-Event-ID", lastEventId);
+  let response: Response;
+  try {
+    response = await fetch(resolveApiUrl(`/ai/jobs/${encodeURIComponent(jobId)}/events`), {
+      method: "GET",
+      headers,
+      credentials: "omit",
+      cache: "no-store",
+      signal
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") throw error;
+    throw networkApiError(error);
+  }
 
   if (response.status === 401 && allowRefresh) {
     if (getAccessToken() === requestAccessToken) clearAccessTokenMemory();
     await refreshAccessTokenOnce(requestAccessToken);
-    return streamAiJobEventsOnce(jobId, handlers, signal, false);
+    return streamAiJobEventsOnce(jobId, handlers, signal, lastEventId, false);
   }
 
-  if (!response.ok || !response.body) {
-    throw new Error(`AI 任务流连接失败：${response.status}`);
+  if (!response.ok) throw await parseApiErrorResponse(response);
+  if (!response.body) {
+    throw new ApiError({
+      statusCode: 502,
+      code: "EMPTY_SSE_RESPONSE",
+      message: "AI task stream returned an empty body",
+      retryable: true,
+      requestId: response.headers.get("x-request-id") ?? "unknown",
+    });
   }
 
   const reader = response.body.getReader();
@@ -750,6 +841,7 @@ async function streamAiJobEventsOnce(
   let buffer = "";
 
   while (true) {
+    // 读取流数据
     const { done, value } = await reader.read();
     if (done) break;
 
@@ -760,23 +852,27 @@ async function streamAiJobEventsOnce(
     for (const eventBlock of events) {
       const event = parseSseEvent(eventBlock) as AiJobEvent | null;
       if (!event) continue;
-      handlers.onEvent?.(event);
+      if (handlers.shouldHandleEvent && !handlers.shouldHandleEvent(event)) continue;
+      await handlers.onEvent?.(event);
       const data = event.data ?? {};
       const job = data.job as AiJobSnapshot | undefined;
 
       if (event.type === "snapshot" && job) {
-        handlers.onSnapshot?.(job);
+        await handlers.onSnapshot?.(job);
       } else if (event.type === "progress") {
-        handlers.onProgress?.(data);
+        await handlers.onProgress?.(data);
       } else if (event.type === "partial") {
-        handlers.onPartial?.(data);
+        await handlers.onPartial?.(data);
       } else if (event.type === "warning") {
-        handlers.onWarning?.(typeof data.message === "string" ? data.message : "AI 任务出现非致命问题", data);
+        await handlers.onWarning?.(typeof data.message === "string" ? data.message : "AI 任务出现非致命问题", data);
+      } else if (event.type === "result_ready" && job) {
+        await handlers.onResultReady?.(job, data.result, event);
       } else if (event.type === "done" && job) {
-        handlers.onDone?.(job, data.result);
+        await handlers.onDone?.(job, data.result);
       } else if (event.type === "error") {
-        handlers.onError?.(typeof data.message === "string" ? data.message : "AI 任务失败", job);
+        await handlers.onError?.(typeof data.message === "string" ? data.message : "AI 任务失败", job);
       }
+      await handlers.onEventProcessed?.(event);
     }
   }
 }
@@ -868,12 +964,13 @@ export async function attachCreativeConversation(conversationId: string, content
 
 function parseSseEvent(block: string) {
   const lines = block.split("\n");
+  const id = lines.find((line) => line.startsWith("id:"))?.slice(3).trim();
   const type = lines.find((line) => line.startsWith("event:"))?.slice(6).trim();
   const dataLine = lines.find((line) => line.startsWith("data:"))?.slice(5).trim();
   if (!type || !dataLine) return null;
 
   try {
-    return { type, data: JSON.parse(dataLine) as unknown };
+    return { ...(id ? { id } : {}), type, data: JSON.parse(dataLine) as unknown };
   } catch {
     return null;
   }

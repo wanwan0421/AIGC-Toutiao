@@ -102,7 +102,7 @@ export class SafetyReviewAgent {
 
   async run(
     input: { title: string; body: string; ruleRiskItems?: AuditRiskItem[] },
-    options: { trustedContext?: string } = {}
+    options: { trustedContext?: string; signal?: AbortSignal } = {}
   ): Promise<AuditResult> {
     const startedAt = Date.now();
     const variables = {
@@ -125,6 +125,7 @@ export class SafetyReviewAgent {
           },
           { role: "user", content: prompt },
         ],
+        signal: options.signal,
       });
       const parsed = parseJsonObject<Partial<AuditResult>>(content);
       if (!parsed) {

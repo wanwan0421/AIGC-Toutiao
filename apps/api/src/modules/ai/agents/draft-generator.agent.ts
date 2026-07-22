@@ -8,6 +8,7 @@ import { promptTemperature } from "../prompt-model-options";
 import { parseJsonObject } from "../structured-output";
 import { validateDirectGenerateResult } from "../skills-runtime/direct-generate-result.validator";
 import { SkillRegistryService } from "../skills-runtime/skill-registry.service";
+import { throwIfAborted } from "../../../common/app-error";
 
 type RequirementAnalysis = Record<string, unknown>;
 
@@ -21,6 +22,7 @@ type StageOptions = {
   model?: string;
   temperature: number;
   trustedContext?: string;
+  signal?: AbortSignal;
 };
 
 @Injectable()
@@ -34,7 +36,7 @@ export class DraftGeneratorAgent {
     private readonly registry: SkillRegistryService
   ) {}
 
-  async run(input: DirectGenerateRequest, options: { trustedContext?: string } = {}): Promise<DirectGenerateResult> {
+  async run(input: DirectGenerateRequest, options: { trustedContext?: string; signal?: AbortSignal } = {}): Promise<DirectGenerateResult> {
     const startedAt = Date.now();
     const renderSettings = await this.prompts.render(
       AI_PROMPT_NAMES.directGenerate,
@@ -44,6 +46,7 @@ export class DraftGeneratorAgent {
       model: renderSettings.model,
       temperature: promptTemperature(renderSettings.modelOptions, 0.7),
       trustedContext: options.trustedContext,
+      signal: options.signal,
     };
 
     const requirement = await this.runStage<RequirementAnalysis>(
@@ -117,6 +120,7 @@ export class DraftGeneratorAgent {
     return result;
   }
 
+  // 执行输出归一化
   private async normalizeOutput(
     payload: Record<string, unknown>,
     options: StageOptions,
@@ -130,6 +134,7 @@ export class DraftGeneratorAgent {
         { ...options, temperature: Math.min(options.temperature, 0.25) }
       );
     } catch (error) {
+      throwIfAborted(options.signal);
       if (fallback) {
         this.logger.warn(`Output normalizer skipped: ${(error as Error).message}`);
         return fallback;
@@ -158,6 +163,7 @@ export class DraftGeneratorAgent {
           content: JSON.stringify(payload, null, 2),
         },
       ],
+      signal: options.signal,
     });
 
     const parsed = parseJsonObject<T>(content);

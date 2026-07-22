@@ -90,6 +90,7 @@ function ensureImageSlotMarkers(bodyMarkdown: string, slotIds: string[]) {
   return output.join("\n\n");
 }
 
+// 执行确定性校验
 export function validateDirectGenerateResult(input: unknown): ValidationResult {
   const record = asRecord(input);
   const errors: string[] = [];

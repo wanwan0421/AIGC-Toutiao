@@ -51,7 +51,7 @@ export class ComplianceRewriteAgent {
     private readonly logs: AiCallLogService
   ) {}
 
-  async run(input: ComplianceRewriteInput, options: { trustedContext?: string } = {}): Promise<ComplianceRewriteResult> {
+  async run(input: ComplianceRewriteInput, options: { trustedContext?: string; signal?: AbortSignal } = {}): Promise<ComplianceRewriteResult> {
     const startedAt = Date.now();
     const variables = {
       ...input,
@@ -78,6 +78,7 @@ export class ComplianceRewriteAgent {
           },
           { role: "user", content: prompt },
         ],
+        signal: options.signal,
       });
       const parsed = parseJsonObject<Partial<ComplianceRewriteResult>>(content);
       if (!parsed) {

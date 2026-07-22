@@ -4,6 +4,7 @@ import { CreativeProductionCapability } from "../capabilities/creative-productio
 import { SafetyReviewCapability } from "../capabilities/safety-review.capability";
 import { SkillRegistryService } from "./skill-registry.service";
 import type { ContentProductionLineInput, SkillExecutionContext, SkillProgressHooks } from "./skill-runtime.types";
+import { throwIfAborted } from "../../../common/app-error";
 
 type ImageTask = {
   position: string;
@@ -36,8 +37,15 @@ export class SkillExecutorService {
     const operationId = input.operationId ?? context.conversationId ?? request.contentId ?? `production-${Date.now()}`;
 
     await hooks.progress?.(10, "分析需求与生成正文", "AI 正在分析需求、写作正文并规划配图");
-    const draft = await this.productionCapability.generateDraft(request, { trustedContext });
-    await hooks.partial?.("draft", draft);
+    throwIfAborted(hooks.signal);
+    const cachedDraft = await hooks.loadCheckpoint?.("draft");
+    const draft = cachedDraft && typeof cachedDraft === "object"
+      ? (cachedDraft as DirectGenerateResult)
+      : await this.productionCapability.generateDraft(request, { trustedContext, signal: hooks.signal });
+    if (!cachedDraft) {
+      await hooks.saveCheckpoint?.("draft", draft);
+      await hooks.partial?.("draft", draft);
+    }
     await hooks.assertNotCancelled?.();
 
     const imageTasks = this.buildImageTasks(draft);
@@ -60,11 +68,11 @@ export class SkillExecutorService {
     };
   }
 
-  async runContentSafetyReviewer(input: { title: string; body: string }): Promise<{
+  async runContentSafetyReviewer(input: { title: string; body: string }, options: { signal?: AbortSignal } = {}): Promise<{
     audit: AuditResult;
     rewrite: ComplianceRewriteResult | null;
   }> {
-    return this.safetyReviewCapability.reviewWithRewrite(input, { trustedContext: this.safetyTrustedContext() });
+    return this.safetyReviewCapability.reviewWithRewrite(input, { trustedContext: this.safetyTrustedContext(), signal: options.signal });
   }
 
   private async generateImages(
@@ -84,6 +92,7 @@ export class SkillExecutorService {
 
     const worker = async () => {
       while (nextIndex < total) {
+        throwIfAborted(hooks.signal);
         const index = nextIndex;
         nextIndex += 1;
         const task = imageTasks[index];
@@ -94,15 +103,22 @@ export class SkillExecutorService {
         );
 
         try {
-          const asset = await this.productionCapability.generateSingleImage({
+          const stepKey = task.cover ? "image:cover" : `image:inline:${task.slotId ?? index}`;
+          const cached = await hooks.loadCheckpoint?.(stepKey);
+          let asset = this.asGeneratedImageAsset(cached);
+          const generatedNow = !asset;
+          if (!asset) asset = await this.productionCapability.generateSingleImage({
             userId: context.userId,
             contentId: request.contentId,
             position: task.position,
             prompt: task.prompt,
             slotId: task.slotId,
+            signal: hooks.signal,
+            generationKey: `${operationId}:${stepKey}`,
           });
+          if (generatedNow) await hooks.saveCheckpoint?.(stepKey, asset);
           results[index] = { task, asset };
-          await hooks.partial?.("imageAsset", {
+          if (generatedNow) await hooks.partial?.("imageAsset", {
             asset,
             cover: Boolean(task.cover),
             role: task.cover ? "cover" : "inline",
@@ -114,6 +130,7 @@ export class SkillExecutorService {
             slotId: task.slotId,
           });
         } catch (error) {
+          throwIfAborted(hooks.signal);
           await hooks.warning?.(`${task.position}生成失败：${(error as Error).message}`);
         } finally {
           completed += 1;
@@ -125,6 +142,11 @@ export class SkillExecutorService {
     await Promise.all(Array.from({ length: concurrency }, () => worker()));
     await hooks.progress?.(95, "整理图文结果", "正在整理正文、封面和正文配图");
     return results.filter((item): item is ImageTaskResult => Boolean(item));
+  }
+
+  private asGeneratedImageAsset(value: unknown) {
+    if (!value || typeof value !== "object" || typeof (value as { id?: unknown }).id !== "string") return undefined;
+    return value as GeneratedImageAsset;
   }
 
   private buildImageTasks(draft: DirectGenerateResult): ImageTask[] {

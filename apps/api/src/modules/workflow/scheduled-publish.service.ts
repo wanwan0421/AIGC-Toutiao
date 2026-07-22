@@ -17,6 +17,7 @@ export class ScheduledPublishService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit() {
+    if (process.env.AI_JOB_PROCESS_ROLE === "worker") return;
     this.timer = setInterval(() => void this.publishDueContents(), POLL_INTERVAL_MS);
     void this.publishDueContents();
   }

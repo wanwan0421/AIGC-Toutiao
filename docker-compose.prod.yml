@@ -5,7 +5,7 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     env_file:
-      - .env.production
+      - ${ENV_FILE:-.env.production}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -26,22 +26,60 @@ services:
       timeout: 5s
       retries: 5
 
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: "no"
+    env_file:
+      - ${ENV_FILE:-.env.production}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["sh", "-c", "npm run prisma -w @aicp/api -- migrate deploy && node apps/api/dist/scripts/seed-production-prompts.js"]
+
   api:
     build:
       context: .
       dockerfile: Dockerfile.api
     restart: unless-stopped
     env_file:
-      - .env.production
+      - ${ENV_FILE:-.env.production}
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     volumes:
       - uploads:/app/uploads
     expose:
       - "3001"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    restart: unless-stopped
+    env_file:
+      - ${ENV_FILE:-.env.production}
+    environment:
+      WORKER_HEALTH_PORT: 3002
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    command: ["node", "apps/api/dist/worker.js"]
+    volumes:
+      - uploads:/app/uploads
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3002/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   web:
     build:

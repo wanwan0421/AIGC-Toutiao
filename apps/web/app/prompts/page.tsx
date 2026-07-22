@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
+  AiJobType,
   PromptScene,
   type PromptDefinitionSummary,
   type PromptEvalComparisonSummary,
@@ -40,6 +41,7 @@ import {
   startPromptEvalJob,
   updatePrompt,
 } from "../../lib/api";
+import { listStoredAiJobs } from "../../lib/ai-job-session";
 import { useAiJob } from "../../lib/use-ai-job";
 
 const sceneOrder: PromptScene[] = [PromptScene.Generate, PromptScene.Audit, PromptScene.Score, PromptScene.Rewrite];
@@ -111,7 +113,9 @@ const LLM_EVAL_CASE_LIMIT = 5;
 const SAFETY_REVIEW_PROMPT_KEY = "safety_review";
 
 export default function PromptManagePage() {
-  const { runJob } = useAiJob();
+  const { runJob, resumeJob } = useAiJob();
+  const restoredEvalJobIdsRef = useRef(new Set<string>());
+  const appliedRestoredEvalJobIdsRef = useRef(new Set<string>());
   const [definitions, setDefinitions] = useState<PromptDefinitionSummary[]>([]);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [versions, setVersions] = useState<PromptVersionSummary[]>([]);
@@ -173,6 +177,36 @@ export default function PromptManagePage() {
   useEffect(() => {
     void loadDefinitions();
   }, []);
+
+  useEffect(() => {
+    const stored = listStoredAiJobs().find((item) => item.type === AiJobType.PromptEvalRun);
+    if (!stored || restoredEvalJobIdsRef.current.has(stored.jobId)) return;
+
+    restoredEvalJobIdsRef.current.add(stored.jobId);
+    setBusy("eval");
+    setMessage("检测到未完成的 Prompt Eval，正在恢复事件流...");
+    void resumeJob(stored.jobId, {
+      onProgress: (data) => {
+        if (typeof data.message === "string") setMessage(data.message);
+      },
+      onWarning: (message) => setMessage(message),
+      onDone: (job, result) => {
+        if (appliedRestoredEvalJobIdsRef.current.has(job.id)) return;
+        const restoredRun = promptEvalRunSummary(result);
+        if (!restoredRun) return;
+        const mode: PromptEvalMode = job.input?.mode === "llm_eval" ? "llm_eval" : "dry_run";
+        setEvalRun(restoredRun);
+        setMessage(evalRunMessage(mode, restoredRun));
+        appliedRestoredEvalJobIdsRef.current.add(job.id);
+      },
+      onError: (message) => setMessage(`Prompt Eval 恢复失败：${message}`),
+    })
+      .catch((error) => {
+        restoredEvalJobIdsRef.current.delete(stored.jobId);
+        setMessage(errorMessage(error, "Prompt Eval 恢复失败"));
+      })
+      .finally(() => setBusy(null));
+  }, [resumeJob]);
 
   useEffect(() => {
     if (!selected) return;

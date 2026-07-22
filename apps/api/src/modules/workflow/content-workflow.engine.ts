@@ -5,7 +5,6 @@ import type {
   ContentApprovalResult,
   ContentVisibility,
   CreativeChatRequest,
-  DirectGenerateRequest,
   QualityScoreResult,
   SelectionRewriteRequest,
   TitleGenerateRequest,
@@ -46,8 +45,8 @@ export class ContentWorkflowEngine {
     private readonly heatScores: ContentHeatScoreService
   ) {}
 
-  rewriteText(body: { title: string; body: string; reasons?: string[] }) {
-    return this.safetyReviewSkill.rewrite(body);
+  rewriteText(body: { title: string; body: string; reasons?: string[] }, options: { signal?: AbortSignal } = {}) {
+    return this.safetyReviewSkill.rewrite(body, options);
   }
 
   logs() {
@@ -59,14 +58,6 @@ export class ContentWorkflowEngine {
 
   streamCreativeChat(body: CreativeChatRequest) {
     return this.assistantSkill.streamChat(body);
-  }
-
-  directGenerate(body: DirectGenerateRequest) {
-    return this.skillExecutor.runContentProductionLine(body, {
-      userId: body.userId ?? "",
-      contentId: body.contentId,
-      source: "button",
-    });
   }
 
   generateTitles(body: TitleGenerateRequest) {
@@ -98,7 +89,7 @@ export class ContentWorkflowEngine {
   }
 
   // 提交审核，审核不通过则更新状态为 rejected，并返回审核结果和改写建议；审核通过则更新状态为 approved。
-  async submitReview(userId: string, id: string) {
+  async submitReview(userId: string, id: string, options: { signal?: AbortSignal; aiJobId?: string } = {}) {
     const content = await this.getOwnedContent(userId, id);
     const result = await this.reviewAndPersist({
       contentId: id,
@@ -106,6 +97,8 @@ export class ContentWorkflowEngine {
       body: content.body,
       contentHash: this.reviewPolicy.computeContentReviewHash(content),
       updateStatus: true,
+      signal: options.signal,
+      aiJobId: options.aiJobId,
     });
 
     return {
@@ -116,7 +109,7 @@ export class ContentWorkflowEngine {
     };
   }
 
-  async runContentAudit(contentId: string) {
+  async runContentAudit(contentId: string, options: { signal?: AbortSignal; aiJobId?: string } = {}) {
     const content = await this.prisma.content.findUnique({ where: { id: contentId }, include: contentInclude });
     if (!content) {
       throw new NotFoundException("content not found");
@@ -128,6 +121,8 @@ export class ContentWorkflowEngine {
       body: content.body,
       contentHash: this.reviewPolicy.computeContentReviewHash(content),
       updateStatus: false,
+      signal: options.signal,
+      aiJobId: options.aiJobId,
     });
 
     return {
@@ -153,7 +148,7 @@ export class ContentWorkflowEngine {
     return this.scoreQuality(userId, id);
   }
 
-  async scoreQuality(userId: string, id: string): Promise<ContentApprovalResult> {
+  async scoreQuality(userId: string, id: string, options: { signal?: AbortSignal; aiJobId?: string } = {}): Promise<ContentApprovalResult> {
     const content = await this.getOwnedContent(userId, id);
     const allowed = new Set<DbContentStatus>([
       DbContentStatus.approved,
@@ -166,10 +161,19 @@ export class ContentWorkflowEngine {
     }
     await this.reviewPolicy.assertCurrentContentAuditPassed(content);
 
-    const quality = await this.contentQualitySkill.score({ title: content.title, body: content.body });
+    const existing = options.aiJobId
+      ? await this.prisma.qualityScore.findUnique({ where: { aiJobId: options.aiJobId } })
+      : null;
+    if (existing) {
+      return {
+        content: await this.toNormalizedContentSummary(content),
+        quality: this.qualityResultFromRecord(existing),
+      };
+    }
+    const quality = await this.contentQualitySkill.score({ title: content.title, body: content.body }, { signal: options.signal });
 
     const [, updated] = await this.prisma.$transaction([
-      this.createQualityScoreRecord(id, quality),
+      this.createQualityScoreRecord(id, quality, options.aiJobId),
       this.prisma.content.update({
         where: { id },
         data: {
@@ -212,11 +216,13 @@ export class ContentWorkflowEngine {
     contentId: string,
     contentHash: string,
     audit: AuditResult,
-    rewrite: ComplianceRewriteResult | null
+    rewrite: ComplianceRewriteResult | null,
+    aiJobId?: string
   ) {
     return this.prisma.auditRecord.create({
       data: {
         contentId,
+        aiJobId,
         contentHash,
         passed: audit.passed,
         riskLevel: toDbAuditRiskLevel(audit.riskLevel),
@@ -227,10 +233,11 @@ export class ContentWorkflowEngine {
     });
   }
 
-  private createQualityScoreRecord(contentId: string, quality: QualityScoreResult) {
+  private createQualityScoreRecord(contentId: string, quality: QualityScoreResult, aiJobId?: string) {
     return this.prisma.qualityScore.create({
       data: {
         contentId,
+        aiJobId,
         total: quality.total,
         dimensions: quality.dimensions as unknown as Prisma.InputJsonValue,
         reason: quality.reason,
@@ -257,12 +264,30 @@ export class ContentWorkflowEngine {
     body: string;
     contentHash: string;
     updateStatus: boolean;
+    signal?: AbortSignal;
+    aiJobId?: string;
   }) {
+    if (input.aiJobId) {
+      const existing = await this.prisma.auditRecord.findUnique({ where: { aiJobId: input.aiJobId } });
+      if (existing) {
+        const content = await this.prisma.content.findUnique({ where: { id: input.contentId }, include: contentInclude });
+        if (!content) throw new NotFoundException("content not found");
+        const audit = this.auditResultFromRecord(existing);
+        return {
+          content: await this.toNormalizedContentSummary(content),
+          audit,
+          quality: null,
+          rewrite: audit.passed ? null : this.rewriteFromAuditRecord(existing),
+          auditRecord: existing,
+          qualityRecord: null,
+        };
+      }
+    }
     const { audit, rewrite } = await this.skillExecutor.runContentSafetyReviewer({
       title: input.title,
       body: input.body,
-    });
-    const createAuditRecord = () => this.createAuditRecord(input.contentId, input.contentHash, audit, rewrite);
+    }, { signal: input.signal });
+    const createAuditRecord = () => this.createAuditRecord(input.contentId, input.contentHash, audit, rewrite, input.aiJobId);
 
     const contentUpdateData = !audit.passed
       ? input.updateStatus
@@ -339,6 +364,66 @@ export class ContentWorkflowEngine {
     if (count === 0) {
       throw new NotFoundException("content not found");
     }
+  }
+
+  private auditResultFromRecord(record: {
+    passed: boolean;
+    riskLevel: string;
+    riskTypes: string[];
+    reasons: string[];
+    rawResponse: Prisma.JsonValue | null;
+  }): AuditResult {
+    const raw = this.record(record.rawResponse);
+    const audit = this.record(raw?.audit);
+    if (audit && typeof audit.passed === "boolean" && Array.isArray(audit.riskItems)) {
+      return audit as unknown as AuditResult;
+    }
+    return {
+      passed: record.passed,
+      riskLevel: record.riskLevel as AuditResult["riskLevel"],
+      riskTypes: record.riskTypes as AuditResult["riskTypes"],
+      reasons: record.reasons,
+      rewriteAvailable: !record.passed,
+      riskItems: [],
+      categoryScores: {},
+    };
+  }
+
+  private rewriteFromAuditRecord(record: { rawResponse: Prisma.JsonValue | null }) {
+    const rewrite = this.record(this.record(record.rawResponse)?.rewrite);
+    return rewrite && typeof rewrite.title === "string" && typeof rewrite.body === "string"
+      ? (rewrite as unknown as ComplianceRewriteResult)
+      : null;
+  }
+
+  private qualityResultFromRecord(record: {
+    total: number;
+    dimensions: Prisma.JsonValue;
+    reason: string;
+    rawResponse: Prisma.JsonValue | null;
+  }): QualityScoreResult {
+    const raw = this.record(record.rawResponse);
+    const dimensions = this.record(raw?.dimensions) ?? this.record(record.dimensions) ?? {};
+    return {
+      total: typeof raw?.total === "number" ? raw.total : record.total,
+      dimensions: {
+        structure: this.scoreNumber(dimensions.structure),
+        clarity: this.scoreNumber(dimensions.clarity),
+        value: this.scoreNumber(dimensions.value),
+        attraction: this.scoreNumber(dimensions.attraction),
+        compliance: this.scoreNumber(dimensions.compliance),
+      },
+      reason: typeof raw?.reason === "string" ? raw.reason : record.reason,
+    };
+  }
+
+  private record(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+  }
+
+  private scoreNumber(value: unknown) {
+    const parsed = typeof value === "number" ? value : Number(value ?? 0);
+    return Number.isFinite(parsed) ? parsed : 0;
   }
 
   private parseScheduledAt(value: string | null | undefined) {

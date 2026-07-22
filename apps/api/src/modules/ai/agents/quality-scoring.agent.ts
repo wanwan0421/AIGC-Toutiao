@@ -40,7 +40,7 @@ export class QualityScoringAgent {
     private readonly logs: AiCallLogService
   ) {}
 
-  async run(input: { title: string; body: string }): Promise<QualityScoreResult> {
+  async run(input: { title: string; body: string }, options: { signal?: AbortSignal } = {}): Promise<QualityScoreResult> {
     const startedAt = Date.now();
     const rendered = await this.prompts.render(AI_PROMPT_NAMES.qualityScore, input, QUALITY_SCORE_FALLBACK_PROMPT);
     const { prompt, model } = rendered;
@@ -56,6 +56,7 @@ export class QualityScoringAgent {
           },
           { role: "user", content: prompt },
         ],
+        signal: options.signal,
       });
       const parsed = parseJsonObject<Partial<QualityScoreResult>>(content);
       if (!parsed) {

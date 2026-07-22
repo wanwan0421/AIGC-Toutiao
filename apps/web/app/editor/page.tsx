@@ -3,7 +3,10 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
+  AiJobType,
   ContentStatus,
+  type AiJobEvent,
+  type AiJobSnapshot,
   type AuditResult,
   type AuditRiskItem,
   type CreativeChatSkillEvent,
@@ -24,6 +27,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   attachCreativeConversation,
+  commitAiJobResult,
   createContent,
   deleteAsset,
   deleteContent,
@@ -48,6 +52,11 @@ import {
   updateContent,
   uploadAsset,
 } from "../../lib/api";
+import {
+  clearStoredAiJobPendingCommit,
+  listStoredAiJobs,
+  setStoredAiJobPendingCommit,
+} from "../../lib/ai-job-session";
 import { useAiJob } from "../../lib/use-ai-job";
 import { useDraftAutosave, type EditorDraftCache } from "./use-draft-autosave";
 import {
@@ -98,6 +107,13 @@ type EditorOperation =
   | "publish";
 
 type DraftCache = EditorDraftCache;
+
+const RESTORABLE_EDITOR_JOB_TYPES = new Set<AiJobType>([
+  AiJobType.CreativeDirectGenerate,
+  AiJobType.CreativeImageGenerate,
+  AiJobType.ContentSubmitReview,
+  AiJobType.ContentApprove,
+]);
 
 type ChatMessage = {
   id: string;
@@ -797,7 +813,7 @@ function snapshotFromCloudDraft(draft: CloudDraft, detail: ContentDetailForDraft
 export default function EditorPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { runJob } = useAiJob();
+  const { runJob, resumeJob } = useAiJob();
   const editingContentId = searchParams.get("contentId");
   const editorRef = useRef<RichTextEditorHandle | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
@@ -816,6 +832,8 @@ export default function EditorPage() {
   const conversationIdRef = useRef<string | undefined>();
   const generatedImageCandidatesRef = useRef<GeneratedImageCandidate[]>([]);
   const publishRedirectTimerRef = useRef<number | null>(null);
+  const restoredAiJobIdsRef = useRef(new Set<string>());
+  const appliedRestoredAiJobIdsRef = useRef(new Set<string>());
 
   const [contentId, setContentId] = useState<string | null>(editingContentId);
   const [editingStatus, setEditingStatus] = useState<ContentStatus | null>(
@@ -1018,6 +1036,34 @@ export default function EditorPage() {
     void loadTopics();
     void loadImageConfig();
   }, [editingContentId]);
+
+  useEffect(() => {
+    if (isLoadingInitial || isBusy) return;
+    const expectedContentId = contentIdRef.current ?? editingContentId;
+    const stored = listStoredAiJobs().find(
+      (item) =>
+        RESTORABLE_EDITOR_JOB_TYPES.has(item.type) &&
+        (expectedContentId ? item.contentId === expectedContentId : !item.contentId)
+    );
+    if (!stored || restoredAiJobIdsRef.current.has(stored.jobId)) return;
+
+    restoredAiJobIdsRef.current.add(stored.jobId);
+    setActiveOperation(editorOperationForJobType(stored.type));
+    setStatusMessage("检测到未完成的 AI 任务，正在恢复事件流...");
+    void resumeJob(stored.jobId, {
+      onProgress: (data) => {
+        if (typeof data.message === "string") setStatusMessage(data.message);
+      },
+      onWarning: (message) => setStatusMessage(message),
+      onResultReady: (restoredJob, result, event) => commitCreativeJobResult(restoredJob, result, event),
+      onDone: (restoredJob, result) => handleEditorJobDone(restoredJob, result),
+      onError: (message) => setStatusMessage(`AI 任务恢复失败：${message}`),
+    })
+      .catch((error) => {
+        setStatusMessage(error instanceof Error ? `AI 任务恢复失败：${error.message}` : "AI 任务恢复失败");
+      })
+      .finally(() => setActiveOperation(null));
+  }, [editingContentId, isBusy, isLoadingInitial, resumeJob]);
 
   useEffect(() => {
     if (localSaveError) setStatusMessage(localSaveError);
@@ -1704,6 +1750,243 @@ export default function EditorPage() {
     };
   }
 
+  async function commitCreativeJobResult(
+    resultJob: AiJobSnapshot,
+    result: unknown,
+    event: AiJobEvent,
+    partialAssetIds: string[] = [],
+  ) {
+    if (!event.id) throw new Error("result_ready event is missing its persisted event ID");
+    let next: DraftCache;
+    const pendingCommit = listStoredAiJobs().find((item) => item.jobId === resultJob.id)?.pendingCommit;
+
+    if (pendingCommit?.resultEventId === event.id) {
+      next = snapshotFromPendingCommit(pendingCommit.content);
+      applySnapshot(next);
+    } else if (resultJob.type === AiJobType.CreativeDirectGenerate) {
+      const generated = result as DirectGenerateResult;
+      finishGeneratedDraft(generated, partialAssetIds);
+      const generatedIds = [
+        generated.coverAsset?.id,
+        ...(generated.imageAssets ?? []).map((item) => item.id),
+        ...partialAssetIds,
+      ].filter((id): id is string => Boolean(id));
+      const current = snapshot();
+      next = {
+        ...current,
+        contentId: contentIdRef.current ?? resultJob.contentId ?? null,
+        title: generated.title,
+        body: editorText(),
+        html: editorHtml(),
+        json: editorJson(),
+        selectedTopics: normalizeTopicList(generated.tags),
+        coverPreview: coverPreviewRef.current,
+        coverAssetId: coverAssetIdRef.current,
+        assetIds: Array.from(new Set([...generatedIds, ...current.assetIds])),
+        generatedImageCandidates: generatedImageCandidatesRef.current,
+      };
+    } else if (resultJob.type === AiJobType.CreativeImageGenerate) {
+      const asset = (result as { asset?: GeneratedImageAsset }).asset;
+      if (!asset) throw new Error("AI image result is missing its asset");
+      const position = typeof resultJob.input?.position === "string" ? resultJob.input.position : "";
+      setAssets((items) => [asset, ...items.filter((item) => item.id !== asset.id)]);
+      if (position === "封面") {
+        setCoverFromAsset(asset);
+        setCoverPickerOpen(false);
+      } else {
+        insertAsset(asset);
+      }
+      const current = snapshot();
+      next = {
+        ...current,
+        contentId: contentIdRef.current ?? resultJob.contentId ?? null,
+        body: editorText(),
+        html: editorHtml(),
+        json: editorJson(),
+        coverPreview: coverPreviewRef.current,
+        coverAssetId: coverAssetIdRef.current,
+        assetIds: Array.from(new Set([asset.id, ...current.assetIds])),
+      };
+    } else {
+      throw new Error(`AI job ${resultJob.type} does not require editor commit`);
+    }
+
+    const commitRequest = {
+      resultEventId: event.id,
+      content: {
+        contentId: next.contentId ?? undefined,
+        title: next.title,
+        body: next.body,
+        bodyHtml: next.html,
+        bodyJson: next.json,
+        tags: next.selectedTopics,
+        assetIds: next.assetIds,
+        payload: editorDraftPayload(next),
+      },
+    };
+    setStoredAiJobPendingCommit(resultJob.id, commitRequest);
+    const committed = await commitAiJobResult(resultJob.id, commitRequest);
+    clearStoredAiJobPendingCommit(resultJob.id);
+    contentIdRef.current = committed.content.id;
+    setContentId(committed.content.id);
+    setEditingStatus(committed.content.status);
+    setLastContentSummary(committed.content);
+    skipNextEditorInitRef.current = committed.content.id;
+    window.history.replaceState(null, "", `/studio/editor?contentId=${committed.content.id}`);
+    appliedRestoredAiJobIdsRef.current.add(resultJob.id);
+    setStatusMessage("AI 结果已回填并保存到云端");
+    await loadAssets();
+  }
+
+  async function handleEditorJobDone(doneJob: AiJobSnapshot, result: unknown) {
+    if (doneJob.type === AiJobType.CreativeDirectGenerate || doneJob.type === AiJobType.CreativeImageGenerate) {
+      if (!doneJob.contentId) return;
+      const [detail, cloudDraft] = await Promise.all([getContentDetail(doneJob.contentId), getDraft(doneJob.contentId)]);
+      contentIdRef.current = doneJob.contentId;
+      applySnapshot(snapshotFromCloudDraft(cloudDraft, detail));
+      setEditingStatus(detail.status);
+      setLastContentSummary(detail);
+      window.history.replaceState(null, "", `/studio/editor?contentId=${doneJob.contentId}`);
+      appliedRestoredAiJobIdsRef.current.add(doneJob.id);
+      setStatusMessage("AI 结果已保存");
+      return;
+    }
+    applyRestoredEditorJobResult(doneJob, result);
+  }
+
+  function editorDraftPayload(data: DraftCache): Record<string, unknown> {
+    return {
+      html: data.html,
+      json: data.json,
+      tags: data.selectedTopics,
+      coverPreview: data.coverPreview,
+      coverAssetId: data.coverAssetId,
+      coverMode: data.coverMode,
+      assetIds: data.assetIds,
+      briefTheme: data.briefTheme,
+      audience: data.audience,
+      style: data.style,
+      viewpoint: data.viewpoint,
+      publishTimeMode: data.publishTimeMode,
+      scheduledAt: data.scheduledAt,
+      selectedLocation: data.selectedLocation,
+      visibility: data.visibility,
+      originalStatement: data.originalStatement,
+      contentStatement: data.contentStatement,
+      generatedImageCandidates: data.generatedImageCandidates ?? [],
+    };
+  }
+
+  function snapshotFromPendingCommit(content: {
+    contentId?: string;
+    title: string;
+    body: string;
+    bodyHtml?: string | null;
+    bodyJson?: Record<string, unknown> | null;
+    tags: string[];
+    assetIds: string[];
+    payload: Record<string, unknown>;
+  }): DraftCache {
+    const current = snapshot();
+    const payload = content.payload;
+    return {
+      ...current,
+      contentId: content.contentId ?? current.contentId,
+      title: content.title,
+      body: content.body,
+      html: content.bodyHtml ?? textToEditorHtml(content.body),
+      json: content.bodyJson ?? null,
+      selectedTopics: content.tags,
+      assetIds: content.assetIds,
+      coverPreview: typeof payload.coverPreview === "string" ? payload.coverPreview : current.coverPreview,
+      coverAssetId: typeof payload.coverAssetId === "string" ? payload.coverAssetId : null,
+      coverMode: payload.coverMode === "none" ? "none" : "single",
+      briefTheme: typeof payload.briefTheme === "string" ? payload.briefTheme : current.briefTheme,
+      audience: typeof payload.audience === "string" ? payload.audience : current.audience,
+      style: typeof payload.style === "string" ? payload.style : current.style,
+      viewpoint: typeof payload.viewpoint === "string" ? payload.viewpoint : current.viewpoint,
+      publishTimeMode: payload.publishTimeMode === "scheduled" ? "scheduled" : "now",
+      scheduledAt: typeof payload.scheduledAt === "string" ? payload.scheduledAt : "",
+      selectedLocation: typeof payload.selectedLocation === "string" ? payload.selectedLocation : "",
+      visibility: payload.visibility === "followers" || payload.visibility === "private" ? payload.visibility : "public",
+      originalStatement: Boolean(payload.originalStatement),
+      contentStatement: typeof payload.contentStatement === "string" ? payload.contentStatement : current.contentStatement,
+      generatedImageCandidates: Array.isArray(payload.generatedImageCandidates)
+        ? payload.generatedImageCandidates as GeneratedImageCandidate[]
+        : [],
+    };
+  }
+
+  function applyRestoredEditorJobResult(restoredJob: AiJobSnapshot, result: unknown) {
+    if (appliedRestoredAiJobIdsRef.current.has(restoredJob.id) || !result) return;
+
+    if (restoredJob.type === AiJobType.CreativeDirectGenerate) {
+      finishGeneratedDraft(result as DirectGenerateResult, []);
+      appliedRestoredAiJobIdsRef.current.add(restoredJob.id);
+      void loadAssets();
+      return;
+    }
+
+    if (restoredJob.type === AiJobType.CreativeImageGenerate) {
+      const asset = (result as { asset?: GeneratedImageAsset }).asset;
+      if (!asset) return;
+      const position = typeof restoredJob.input?.position === "string" ? restoredJob.input.position : "";
+      setAssets((items) => [asset, ...items.filter((item) => item.id !== asset.id)]);
+      setAssetIds((items) => Array.from(new Set([asset.id, ...items])));
+      if (position === "封面") {
+        setCoverFromAsset(asset);
+        setCoverPickerOpen(false);
+        setStatusMessage("AI 封面图任务已恢复并回填");
+      } else {
+        insertAsset(asset);
+        setStatusMessage("AI 正文配图任务已恢复并插入");
+      }
+      appliedRestoredAiJobIdsRef.current.add(restoredJob.id);
+      void loadAssets();
+      return;
+    }
+
+    if (restoredJob.type === AiJobType.ContentSubmitReview) {
+      const reviewed = result as {
+        content: ContentSummary;
+        audit: AuditResult;
+        quality: null;
+        rewrite: ReviewRewrite;
+      };
+      if (!reviewed.content || !reviewed.audit) return;
+      applyReviewJobResult(reviewed);
+      appliedRestoredAiJobIdsRef.current.add(restoredJob.id);
+      void refreshWorkflowState(reviewed.content.id).catch(() => null);
+      void loadDraftCards();
+      return;
+    }
+
+    if (restoredJob.type === AiJobType.ContentApprove) {
+      const approved = result as ContentApprovalResult;
+      if (!approved.content || !approved.quality) return;
+      setLastContentSummary(approved.content);
+      setEditingStatus(approved.content.status);
+      setQualityResult(approved.quality);
+      setWorkflowState((current) =>
+        current
+          ? {
+              ...current,
+              content: approved.content,
+              latestQuality: { ...approved.quality, scoredAt: new Date().toISOString() },
+              canPublish:
+                approved.content.status === ContentStatus.Approved ||
+                approved.content.status === ContentStatus.Updated ||
+                approved.content.status === ContentStatus.PendingReview ||
+                approved.content.status === ContentStatus.Scheduled,
+            }
+          : current
+      );
+      appliedRestoredAiJobIdsRef.current.add(restoredJob.id);
+      setStatusMessage(`质量评估任务已恢复，综合得分 ${approved.quality.total}`);
+      void refreshWorkflowState(approved.content.id).catch(() => null);
+    }
+  }
+
   // 完成生成的草稿内容的收尾工作，包括设置标题、话题、封面图，注册生成的图片素材，写入编辑器内容，以及提示用户后续需要确认的生成图片
   function finishGeneratedDraft(generated: DirectGenerateResult, generatedAssetIds: string[]) {
     setTitle(generated.title);
@@ -1819,9 +2102,8 @@ export default function EditorPage() {
             }
           },
           onWarning: (message) => setStatusMessage(message),
-          onDone: (_job, result) => {
-            finishGeneratedDraft(result as DirectGenerateResult, generatedAssetIds);
-          },
+          onResultReady: (job, result, event) => commitCreativeJobResult(job, result, event, generatedAssetIds),
+          onDone: (job, result) => handleEditorJobDone(job, result),
           onError: (message) => setStatusMessage(`AI 生成失败：${message}`),
         },
       );
@@ -1874,16 +2156,19 @@ export default function EditorPage() {
             const value = data.value as { asset?: GeneratedImageAsset };
             if (value.asset) generated.asset = value.asset;
           },
-          onDone: (_job, result) => {
+          onResultReady: async (job, result, event) => {
             const value = result as { asset?: GeneratedImageAsset };
             if (value.asset) generated.asset = value.asset;
+            await commitCreativeJobResult(job, result, event);
           },
+          onDone: (job, result) => handleEditorJobDone(job, result),
           onError: (message) => setStatusMessage(`AI 封面生成失败：${message}`),
         },
       );
       if (imageJob.status !== "succeeded") {
         throw new Error(imageJob.errorMessage ?? "AI 封面生成失败");
       }
+      if (appliedRestoredAiJobIdsRef.current.has(imageJob.id)) return;
       const finalAsset = generated.asset;
       if (!finalAsset) {
         setStatusMessage("图片模型暂未返回封面图");
@@ -1927,16 +2212,19 @@ export default function EditorPage() {
             const value = data.value as { asset?: GeneratedImageAsset };
             if (value.asset) generated.asset = value.asset;
           },
-          onDone: (_job, result) => {
+          onResultReady: async (job, result, event) => {
             const value = result as { asset?: GeneratedImageAsset };
             if (value.asset) generated.asset = value.asset;
+            await commitCreativeJobResult(job, result, event);
           },
+          onDone: (job, result) => handleEditorJobDone(job, result),
           onError: (message) => setStatusMessage(`AI 配图生成失败：${message}`),
         },
       );
       if (imageJob.status !== "succeeded") {
         throw new Error(imageJob.errorMessage ?? "AI 配图生成失败");
       }
+      if (appliedRestoredAiJobIdsRef.current.has(imageJob.id)) return;
       const finalAsset = generated.asset;
       if (!finalAsset) {
         setStatusMessage("图片模型暂未返回正文配图");
@@ -2038,8 +2326,8 @@ export default function EditorPage() {
             setStatusMessage(message);
             setAssistantSkillStatus(assistantId, `提示：${message}`);
           },
-          onDone: (_job, result) => {
-            finishGeneratedDraft(result as DirectGenerateResult, generatedAssetIds);
+          onResultReady: async (job, result, event) => {
+            await commitCreativeJobResult(job, result, event, generatedAssetIds);
             setAssistantSkillStatus(assistantId, "完整图文已写入编辑器；正文配图已自动插入，少数无法定位的图片会留在候选区。");
           },
           onError: (message) => {
@@ -4074,6 +4362,13 @@ function QualityRadarChart({ quality }: { quality: QualityScoreResult }) {
       })}
     </svg>
   );
+}
+
+function editorOperationForJobType(type: AiJobType): EditorOperation {
+  if (type === AiJobType.CreativeImageGenerate) return "inline-image";
+  if (type === AiJobType.ContentSubmitReview) return "audit";
+  if (type === AiJobType.ContentApprove) return "quality";
+  return "draft";
 }
 
 function Field({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (value: string) => void; placeholder: string }) {

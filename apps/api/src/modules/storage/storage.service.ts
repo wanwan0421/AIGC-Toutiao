@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, extname, join, normalize, sep } from "node:path";
 import { getUploadPublicBase, getUploadRoot } from "./storage.config";
+import { AppError, throwIfAborted } from "../../common/app-error";
 
 type SaveFileInput = {
   folder?: string;
@@ -137,11 +138,23 @@ export class StorageService {
     return this.localAdapter.saveBuffer(input);
   }
 
-  async saveRemoteFile(url: string, input: SaveFileInput = {}) {
-    const response = await fetch(url);
+  async saveRemoteFile(url: string, input: SaveFileInput = {}, signal?: AbortSignal) {
+    throwIfAborted(signal);
+    let response: Response;
+    try {
+      response = await fetch(url, { signal });
+    } catch (error) {
+      throwIfAborted(signal);
+      throw new AppError({ code: "UPSTREAM_UNAVAILABLE", message: error instanceof Error ? error.message : "remote file download failed", statusCode: 503, retryable: true, cause: error });
+    }
     if (!response.ok) {
       const errorText = await response.text().catch(() => "");
-      throw new Error(`remote file download failed: ${response.status} ${errorText}`);
+      throw new AppError({
+        code: response.status === 429 ? "UPSTREAM_RATE_LIMITED" : response.status >= 500 ? "UPSTREAM_UNAVAILABLE" : "UPSTREAM_BAD_REQUEST",
+        message: `remote file download failed: ${response.status} ${errorText}`,
+        statusCode: 502,
+        retryable: response.status === 429 || response.status >= 500,
+      });
     }
 
     const contentType = response.headers.get("content-type")?.split(";")[0]?.trim();

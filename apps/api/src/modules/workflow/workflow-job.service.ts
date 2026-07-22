@@ -1,35 +1,27 @@
-import { Injectable, Logger, NotFoundException, OnModuleInit } from "@nestjs/common";
-import { Prisma } from "@prisma/client";
-import { AiJobStatus, AiJobEvent, AiJobSnapshot, AiJobType } from "@aicp/shared";
+import { Injectable, Logger, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import { AiJobDispatchStatus, AiJobStatus as DbAiJobStatus, Prisma } from "@prisma/client";
+import { randomUUID } from "node:crypto";
+import { AiJobStatus, AiJobType, type AiJobEvent, type AiJobSnapshot } from "@aicp/shared";
 import { RedisService } from "../../infra/redis/redis.service";
 import { PrismaService } from "../../infra/prisma/prisma.service";
+import { WorkflowJobDispatcherService } from "./workflow-job-dispatcher.service";
 import { WorkflowJobEventsService } from "./workflow-job-events.service";
-import { WorkflowJobRunner } from "./workflow-job.runner";
-import { isTerminalJobStatus, toAiJobSnapshot, type AiJobRecord } from "./workflow-job.mapper";
+import { WorkflowJobQueueService } from "./workflow-job-queue.service";
+import { isTerminalJobStatus, toAiJobSnapshot } from "./workflow-job.mapper";
 
-type AiJobDelegate = {
-  create(args: unknown): Promise<AiJobRecord>;
-  update(args: unknown): Promise<AiJobRecord>;
-  updateMany(args: unknown): Promise<unknown>;
-  findUnique(args: unknown): Promise<AiJobRecord | null>;
-  findFirst(args: unknown): Promise<AiJobRecord | null>;
-  findMany(args: unknown): Promise<AiJobRecord[]>;
-};
+export const AI_JOB_CANCEL_CHANNEL = "ai-job:cancel";
 
 @Injectable()
-export class WorkflowJobService implements OnModuleInit {
+export class WorkflowJobService {
   private readonly logger = new Logger(WorkflowJobService.name);
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly redisService: RedisService,
     private readonly events: WorkflowJobEventsService,
-    private readonly runner: WorkflowJobRunner
+    private readonly dispatcher: WorkflowJobDispatcherService,
+    private readonly queue: WorkflowJobQueueService
   ) {}
-
-  async onModuleInit() {
-    await this.recoverPendingJobs();
-  }
 
   async create(input: {
     userId: string;
@@ -37,160 +29,185 @@ export class WorkflowJobService implements OnModuleInit {
     payload: Record<string, unknown>;
     contentId?: string;
   }): Promise<AiJobSnapshot> {
-    const job = await this.aiJobs.create({
-      data: {
-        userId: input.userId,
-        contentId: input.contentId ?? this.contentIdFromPayload(input.payload),
-        type: input.type,
-        input: this.toJson(input.payload),
-      },
+    if (!Object.values(AiJobType).includes(input.type as AiJobType)) {
+      throw new UnprocessableEntityException("unsupported AI job type");
+    }
+    if (!input.payload || typeof input.payload !== "object" || Array.isArray(input.payload)) {
+      throw new UnprocessableEntityException("AI job payload must be an object");
+    }
+    const jobId = randomUUID();
+    const created = await this.prisma.$transaction(async (tx) => {
+      const job = await tx.aiJob.create({
+        data: {
+          id: jobId,
+          userId: input.userId,
+          contentId: input.contentId ?? this.contentIdFromPayload(input.payload),
+          type: input.type,
+          status: DbAiJobStatus.queued,
+          input: this.toJson(input.payload),
+          dispatch: { create: { status: AiJobDispatchStatus.pending } },
+        },
+      });
+      const snapshot = toAiJobSnapshot(job);
+      const event = await this.events.createInTransaction(tx, job.id, {
+        type: "snapshot",
+        data: { job: snapshot },
+      });
+      return { snapshot, event };
     });
 
-    const snapshot = toAiJobSnapshot(job);
-    setTimeout(() => void this.runner.run(job.id), 0);
-    return snapshot;
+    await this.events.notify(jobId, created.event);
+    await this.dispatcher.dispatchJob(jobId);
+    return created.snapshot;
   }
 
   async get(userId: string, jobId: string) {
     return toAiJobSnapshot(await this.getOwnedJob(userId, jobId));
   }
 
-  async cancel(userId: string, jobId: string) {
-    const job = await this.getOwnedJob(userId, jobId);
-    if (isTerminalJobStatus(job.status)) {
-      return toAiJobSnapshot(job);
-    }
+  async cancel(userId: string, jobId: string, reason = "任务已取消") {
+    await this.getOwnedJob(userId, jobId);
+    const outcome = await this.prisma.$transaction(async (tx) => {
+      const changed = await tx.aiJob.updateMany({
+        where: {
+          id: jobId,
+          userId,
+          status: { in: [DbAiJobStatus.queued, DbAiJobStatus.running, DbAiJobStatus.awaiting_commit] },
+        },
+        data: {
+          status: DbAiJobStatus.cancelled,
+          runToken: null,
+          errorMessage: reason,
+          errorCode: "JOB_CANCELLED",
+          errorRetryable: false,
+          cancelRequestedAt: new Date(),
+          completedAt: new Date(),
+        },
+      });
+      const job = await tx.aiJob.findUniqueOrThrow({ where: { id: jobId } });
+      if (changed.count === 0) return { snapshot: toAiJobSnapshot(job), event: null };
 
-    const updated = await this.aiJobs.update({
-      where: { id: jobId },
-      data: {
-        status: AiJobStatus.Cancelled,
-        errorMessage: "任务已取消",
-        completedAt: new Date(),
-      },
+      await tx.aiJobDispatch.updateMany({
+        where: { jobId, status: { not: AiJobDispatchStatus.dispatched } },
+        data: { status: AiJobDispatchStatus.cancelled, lockedUntil: null },
+      });
+      const snapshot = toAiJobSnapshot(job);
+      const event = await this.events.createInTransaction(tx, jobId, {
+        type: "error",
+        data: { job: snapshot, message: reason, code: "JOB_CANCELLED", retryable: false },
+      });
+      return { snapshot, event };
     });
-    const snapshot = toAiJobSnapshot(updated);
-    await this.events.publish(jobId, { type: "error", data: { job: snapshot, message: "任务已取消" } });
-    return snapshot;
+
+    if (outcome.event) {
+      await this.queue.removeWaiting(jobId).catch(() => false);
+      await this.redisService.getClient().publish(AI_JOB_CANCEL_CHANNEL, JSON.stringify({ jobId, reason })).catch(() => 0);
+      await this.events.notify(jobId, outcome.event);
+    }
+    return outcome.snapshot;
   }
 
-  async *stream(userId: string, jobId: string): AsyncGenerator<AiJobEvent> {
-    const initial = await this.getOwnedJob(userId, jobId);
-    const initialSnapshot = toAiJobSnapshot(initial);
-    yield { type: "snapshot", data: { job: initialSnapshot } };
-    if (isTerminalJobStatus(initial.status)) {
-      yield this.terminalEvent(initialSnapshot);
-      return;
-    }
-
-    const queue: AiJobEvent[] = [];
-    let notify: (() => void) | undefined;
-    const push = (event: AiJobEvent) => {
-      queue.push(event);
-      notify?.();
-      notify = undefined;
-    };
-    const wait = () =>
-      new Promise<void>((resolve) => {
-        notify = resolve;
-      });
-
-    const subscriber = this.redisService.getClient().duplicate();
-    let redisSubscribed = false;
-    try {
-      await subscriber.connect();
-      await subscriber.subscribe(this.events.channel(jobId));
-      subscriber.on("message", (_channel: string, message: string) => {
-        try {
-          push(JSON.parse(message) as AiJobEvent);
-        } catch {
-          // Ignore malformed event payloads from the realtime channel.
-        }
-      });
-      redisSubscribed = true;
-    } catch (error: unknown) {
-      this.logger.debug(`AI job SSE uses DB polling fallback: ${(error as Error).message}`);
-      subscriber.disconnect();
-    }
-
-    // SSE 断线不会取消任务；这里定期读取 DB 快照，也兜底 Redis 丢失事件。
-    const interval = setInterval(() => {
-      void this.pushPolledSnapshot(userId, jobId, push);
-      push({ type: "heartbeat", data: { jobId, at: new Date().toISOString(), redisSubscribed } });
-    }, redisSubscribed ? 15000 : 3000);
+  async *stream(userId: string, jobId: string, lastEventId?: string, signal?: AbortSignal): AsyncGenerator<AiJobEvent> {
+    await this.getOwnedJob(userId, jobId);
+    let deliveredEventId = /^\d+$/.test(lastEventId?.trim() ?? "") ? lastEventId!.trim() : undefined;
+    let deliveredPersistedEvent = false;
+    const reader = this.redisService.getClient().duplicate();
+    let redisAvailable = false;
+    let redisCursor = "$";
+    const handleAbort = () => reader.disconnect();
+    signal?.addEventListener("abort", handleAbort, { once: true });
 
     try {
-      while (true) {
-        if (!queue.length) {
-          await wait();
+      await reader.connect();
+      redisCursor = await this.events.latestStreamId(reader, jobId);
+      redisAvailable = true;
+    } catch (error) {
+      this.logger.debug(`AI job stream uses PostgreSQL polling fallback: ${error instanceof Error ? error.message : String(error)}`);
+      reader.disconnect();
+    }
+
+    try {
+      while (!signal?.aborted) {
+        while (true) {
+          const replay = await this.events.listAfter(jobId, deliveredEventId);
+          if (!replay.length) break;
+          for (const event of replay) {
+            if (!this.events.isAfter(event.id, deliveredEventId)) continue;
+            deliveredPersistedEvent = true;
+            deliveredEventId = event.id;
+            yield event;
+            if (signal?.aborted || event.type === "done" || event.type === "error") return;
+          }
+          if (replay.length < 500) break;
         }
-        const event = queue.shift();
-        if (!event) continue;
-        yield event;
-        if (event.type === "done" || event.type === "error") break;
+
+        const current = await this.getOwnedJob(userId, jobId);
+        const snapshot = toAiJobSnapshot(current);
+        if (!deliveredPersistedEvent) {
+          yield { type: "snapshot", data: { job: snapshot } };
+          deliveredPersistedEvent = true;
+        }
+        if (isTerminalJobStatus(current.status)) {
+          yield this.terminalEvent(snapshot);
+          return;
+        }
+
+        if (redisAvailable) {
+          try {
+            const read = await this.events.readStream(reader, jobId, redisCursor, 15_000);
+            redisCursor = read.cursor;
+          } catch (error) {
+            this.logger.debug(`AI job Redis wait failed; using PostgreSQL polling: ${error instanceof Error ? error.message : String(error)}`);
+            redisAvailable = false;
+            reader.disconnect();
+          }
+        } else {
+          await this.delay(3_000, signal);
+        }
+
+        if (!signal?.aborted) {
+          yield { type: "heartbeat", data: { jobId, at: new Date().toISOString(), redisAvailable } };
+        }
       }
     } finally {
-      clearInterval(interval);
-      if (redisSubscribed) {
-        await subscriber.unsubscribe(this.events.channel(jobId)).catch(() => undefined);
-      }
-      subscriber.disconnect();
-    }
-  }
-
-  private async recoverPendingJobs() {
-    await this.aiJobs
-      .updateMany({
-        where: { status: AiJobStatus.Running },
-        data: { status: AiJobStatus.Queued, currentStep: "等待恢复" },
-      })
-      .catch((error: unknown) => {
-        this.logger.warn(`AI job recovery skipped: ${(error as Error).message}`);
-      });
-
-    const jobs = await this.aiJobs
-      .findMany({
-        where: { status: AiJobStatus.Queued },
-        orderBy: { createdAt: "asc" },
-        take: 20,
-      })
-      .catch(() => []);
-
-    for (const job of jobs) {
-      setTimeout(() => void this.runner.run(job.id), 0);
-    }
-  }
-
-  private async pushPolledSnapshot(userId: string, jobId: string, push: (event: AiJobEvent) => void) {
-    const job = await this.aiJobs.findFirst({ where: { id: jobId, userId } }).catch(() => null);
-    if (!job) return;
-    const snapshot = toAiJobSnapshot(job);
-    push({ type: "snapshot", data: { job: snapshot } });
-    if (isTerminalJobStatus(job.status)) {
-      push(this.terminalEvent(snapshot));
+      signal?.removeEventListener("abort", handleAbort);
+      reader.disconnect();
     }
   }
 
   private async getOwnedJob(userId: string, jobId: string) {
-    const job = await this.aiJobs.findFirst({ where: { id: jobId, userId } });
-    if (!job) {
-      throw new NotFoundException("AI job not found");
-    }
+    const job = await this.prisma.aiJob.findFirst({ where: { id: jobId, userId } });
+    if (!job) throw new NotFoundException("AI job not found");
     return job;
   }
 
   private terminalEvent(job: AiJobSnapshot): AiJobEvent {
-    if (job.status === "succeeded") {
+    if (job.status === AiJobStatus.Succeeded) {
       return { type: "done", data: { job, result: job.result } };
     }
     return {
       type: "error",
-      data: { job, message: job.errorMessage ?? (job.status === AiJobStatus.Cancelled ? "任务已取消" : "任务失败") },
+      data: {
+        job,
+        message: job.errorMessage ?? (job.status === AiJobStatus.Cancelled ? "任务已取消" : "任务失败"),
+        code: job.errorCode ?? (job.status === AiJobStatus.Cancelled ? "JOB_CANCELLED" : "AI_JOB_FAILED"),
+        retryable: job.errorRetryable,
+      },
     };
   }
 
-  private get aiJobs(): AiJobDelegate {
-    return (this.prisma as unknown as { aiJob: AiJobDelegate }).aiJob;
+  private delay(ms: number, signal?: AbortSignal) {
+    return new Promise<void>((resolve) => {
+      if (signal?.aborted) return resolve();
+      const timeout = setTimeout(done, ms);
+      const handleAbort = () => done();
+      signal?.addEventListener("abort", handleAbort, { once: true });
+      function done() {
+        clearTimeout(timeout);
+        signal?.removeEventListener("abort", handleAbort);
+        resolve();
+      }
+    });
   }
 
   private contentIdFromPayload(payload: Record<string, unknown>) {

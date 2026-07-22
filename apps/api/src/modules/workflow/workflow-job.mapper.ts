@@ -11,9 +11,14 @@ export type AiJobRecord = {
   input: unknown;
   result: unknown;
   errorMessage: string | null;
+  errorCode: string | null;
+  errorRetryable: boolean;
   warnings: string[];
   attempts: number;
   startedAt: Date | null;
+  resultReadyAt: Date | null;
+  appliedAt: Date | null;
+  appliedEventId: bigint | null;
   completedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
@@ -34,9 +39,14 @@ export function toAiJobSnapshot(job: AiJobRecord): AiJobSnapshot {
     input: toRecord(job.input),
     result: job.result,
     errorMessage: job.errorMessage,
+    errorCode: job.errorCode,
+    errorRetryable: job.errorRetryable,
     warnings: job.warnings,
     attempts: job.attempts,
     startedAt: job.startedAt?.toISOString() ?? null,
+    resultReadyAt: job.resultReadyAt?.toISOString() ?? null,
+    appliedAt: job.appliedAt?.toISOString() ?? null,
+    appliedEventId: job.appliedEventId?.toString() ?? null,
     completedAt: job.completedAt?.toISOString() ?? null,
     createdAt: job.createdAt.toISOString(),
     updatedAt: job.updatedAt.toISOString(),

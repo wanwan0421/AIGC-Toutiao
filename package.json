@@ -8,11 +8,13 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "echo Run npm.cmd run dev:api and npm.cmd run dev:web in separate terminals",
+    "dev": "echo Run npm.cmd run dev:api, npm.cmd run dev:worker, and npm.cmd run dev:web in separate terminals",
     "dev:web": "npm run build -w @aicp/shared && npm run dev -w @aicp/web",
     "dev:api": "npm run build -w @aicp/shared && npm run start:dev -w @aicp/api",
+    "dev:worker": "npm run build -w @aicp/shared && npm run start:worker:dev -w @aicp/api",
     "build": "npm run build -w @aicp/shared && npm run build -w @aicp/api && npm run build -w @aicp/web",
     "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run build -w @aicp/shared && npm run typecheck --workspaces --if-present",
     "db:generate": "npm run prisma -w @aicp/api -- generate",
     "db:migrate": "npm run prisma -w @aicp/api -- migrate dev --name init",

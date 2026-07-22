@@ -240,6 +240,7 @@ export class AuthService {
     });
   }
 
+  // 获取当前登录用户的信息
   async me(authorization?: string) {
     const token = this.extractAccessToken(authorization);
     const parsed = token ? this.verifyAccessToken(token) : undefined;

@@ -251,6 +251,7 @@ model PromptEvalResult {
   testCase       PromptTestCase? @relation(fields: [testCaseId], references: [id], onDelete: SetNull)
 
   @@index([runId, status])
+  @@unique([runId, testCaseId])
 }
 
 model Asset {
@@ -260,6 +261,7 @@ model Asset {
   mimeType    String
   url         String
   source      String           @default("uploaded")
+  generationKey String?        @unique
   metadata    Json?
   auditStatus AssetAuditStatus @default(pending)
   auditReason String?
@@ -310,6 +312,7 @@ model AuditRecord {
   id          String         @id @default(cuid())
   contentId   String
   contentHash String?
+  aiJobId     String?          @unique
   passed      Boolean
   riskLevel   AuditRiskLevel
   riskTypes   String[]       @default([])
@@ -324,6 +327,7 @@ model AuditRecord {
 model QualityScore {
   id          String   @id @default(cuid())
   contentId   String
+  aiJobId     String?  @unique
   total       Int
   dimensions  Json
   reason      String
@@ -357,18 +361,71 @@ model AiJob {
   input        Json
   result       Json?
   errorMessage String?
+  errorCode    String?
+  errorRetryable Boolean       @default(false)
   warnings     String[]    @default([])
   attempts     Int         @default(0)
+  runToken     String?
   startedAt    DateTime?
+  resultReadyAt DateTime?
+  appliedAt    DateTime?
+  appliedEventId BigInt?
+  appliedPayloadHash String?
+  cancelRequestedAt DateTime?
   completedAt  DateTime?
   createdAt    DateTime    @default(now())
   updatedAt    DateTime    @updatedAt
   user         User        @relation(fields: [userId], references: [id])
   content      Content?    @relation(fields: [contentId], references: [id])
+  events       AiJobEvent[]
+  dispatch     AiJobDispatch?
+  checkpoints  AiJobCheckpoint[]
 
   @@index([userId, createdAt])
   @@index([contentId, createdAt])
   @@index([status, updatedAt])
+  @@index([status, completedAt])
+}
+
+model AiJobEvent {
+  id        BigInt   @id @default(autoincrement())
+  jobId     String
+  type      String
+  data      Json
+  createdAt DateTime @default(now())
+  job       AiJob    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, id])
+  @@index([createdAt, id])
+}
+
+model AiJobDispatch {
+  id            String              @id @default(cuid())
+  jobId         String              @unique
+  status        AiJobDispatchStatus @default(pending)
+  attempts      Int                 @default(0)
+  lockedUntil   DateTime?
+  nextAttemptAt DateTime            @default(now())
+  lastError     String?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  job           AiJob               @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([lockedUntil])
+}
+
+model AiJobCheckpoint {
+  id        String   @id @default(cuid())
+  jobId     String
+  stepKey   String
+  data      Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  job       AiJob    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, stepKey])
+  @@index([jobId, createdAt])
 }
 
 model UserActionEvent {
@@ -435,8 +492,16 @@ enum AiMessageRole {
 enum AiJobStatus {
   queued
   running
+  awaiting_commit
   succeeded
   failed
+  cancelled
+}
+
+enum AiJobDispatchStatus {
+  pending
+  dispatching
+  dispatched
   cancelled
 }
 

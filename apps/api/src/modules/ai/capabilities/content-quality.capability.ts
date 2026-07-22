@@ -11,7 +11,7 @@ type ScoreInput = {
 export class ContentQualityCapability {
   constructor(private readonly qualityScoring: QualityScoringAgent) {}
 
-  score(input: ScoreInput): Promise<QualityScoreResult> {
-    return this.qualityScoring.run(input);
+  score(input: ScoreInput, options: { signal?: AbortSignal } = {}): Promise<QualityScoreResult> {
+    return this.qualityScoring.run(input, options);
   }
 }

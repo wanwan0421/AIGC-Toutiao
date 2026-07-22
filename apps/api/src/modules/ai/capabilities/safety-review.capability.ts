@@ -4,6 +4,7 @@ import { ComplianceRewriteAgent } from "../agents/compliance-rewrite.agent";
 import { SafetyReviewAgent } from "../agents/safety-review.agent";
 import { SafetyResultMerger } from "../safety/safety-result-merger.service";
 import { SafetyRuleEngine } from "../safety/safety-rule-engine.service";
+import { throwIfAborted } from "../../../common/app-error";
 
 type ReviewInput = {
   title: string;
@@ -24,7 +25,8 @@ export class SafetyReviewCapability {
     private readonly complianceRewrite: ComplianceRewriteAgent
   ) {}
 
-  async review(input: ReviewInput, options: { trustedContext?: string } = {}): Promise<AuditResult> {
+  async review(input: ReviewInput, options: { trustedContext?: string; signal?: AbortSignal } = {}): Promise<AuditResult> {
+    throwIfAborted(options.signal);
     const ruleResult = this.safetyRules.scan(input);
     const llmResult = await this.safetyReview.run(
       {
@@ -36,13 +38,13 @@ export class SafetyReviewCapability {
     return this.resultMerger.merge(ruleResult, llmResult, input);
   }
 
-  rewrite(input: RewriteInput, options: { trustedContext?: string } = {}): Promise<ComplianceRewriteResult> {
+  rewrite(input: RewriteInput, options: { trustedContext?: string; signal?: AbortSignal } = {}): Promise<ComplianceRewriteResult> {
     return this.complianceRewrite.run(input, options);
   }
 
   async reviewWithRewrite(
     input: ReviewInput,
-    options: { trustedContext?: string } = {}
+    options: { trustedContext?: string; signal?: AbortSignal } = {}
   ): Promise<{
     audit: AuditResult;
     rewrite: ComplianceRewriteResult | null;
@@ -60,11 +62,12 @@ export class SafetyReviewCapability {
 
   private async tryRewrite(
     input: RewriteInput,
-    options: { trustedContext?: string } = {}
+    options: { trustedContext?: string; signal?: AbortSignal } = {}
   ): Promise<ComplianceRewriteResult | null> {
     try {
       return await this.rewrite(input, options);
     } catch {
+      throwIfAborted(options.signal);
       return null;
     }
   }

@@ -1,23 +1,16 @@
-"use client";
-
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
-import { ArrowRight, BookOpen, Flame, Hash, Loader2, PenTool, Sparkles, TrendingUp } from "lucide-react";
+import { Suspense } from "react";
+import { ArrowRight, BookOpen, Flame, Hash, Loader2, PenTool, TrendingUp } from "lucide-react";
 import type { ContentSummary, OfficialTopicSummary } from "@aicp/shared";
 import { getOfficialTopics, getRankings } from "../lib/api";
 
-type HomeState = {
-  featured: ContentSummary[];
-  quality: ContentSummary[];
-  hot: ContentSummary[];
-  topics: OfficialTopicSummary[];
-};
+export const dynamic = "force-dynamic";
 
-const emptyState: HomeState = {
-  featured: [],
-  quality: [],
-  hot: [],
-  topics: [],
+type HomeDataPromises = {
+  featuredPromise: ReturnType<typeof getRankings>;
+  qualityPromise: ReturnType<typeof getRankings>;
+  hotPromise: ReturnType<typeof getRankings>;
+  topicsPromise: ReturnType<typeof getOfficialTopics>;
 };
 
 function compactNumber(value: number) {
@@ -42,95 +35,114 @@ function mergeUnique(items: ContentSummary[]) {
 }
 
 export default function HomePage() {
-  const [data, setData] = useState<HomeState>(emptyState);
-  const [loading, setLoading] = useState(true);
-  const [message, setMessage] = useState("");
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadHome() {
-      setLoading(true);
-      setMessage("");
-      try {
-        const [featuredResponse, qualityResponse, hotResponse, topicsResponse] = await Promise.all([
-          getRankings({ type: "viral", limit: 8 }),
-          getRankings({ type: "recommended", limit: 8 }),
-          getRankings({ type: "hot", limit: 6 }),
-          getOfficialTopics({ limit: 10 }),
-        ]);
-
-        if (!cancelled) {
-          setData({
-            featured: featuredResponse.items,
-            quality: qualityResponse.items,
-            hot: hotResponse.items,
-            topics: topicsResponse.items,
-          });
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setMessage(error instanceof Error ? `阅读广场加载失败：${error.message}` : "阅读广场加载失败");
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    }
-
-    void loadHome();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const hero = data.featured[0];
-  const spotlight = data.featured.slice(1, 5);
-  const feedItems = useMemo(() => mergeUnique([...data.quality, ...data.featured]).filter((item) => item.id !== hero?.id).slice(0, 8), [data.featured, data.quality, hero?.id]);
-  const hotItems = data.hot.length ? data.hot : data.featured.slice(0, 6);
+  const dataPromises: HomeDataPromises = {
+    featuredPromise: getRankings({ type: "viral", limit: 8 }, "no-store"),
+    qualityPromise: getRankings({ type: "recommended", limit: 8 }, "no-store"),
+    hotPromise: getRankings({ type: "hot", limit: 6 }, "no-store"),
+    topicsPromise: getOfficialTopics({ limit: 10 }, "no-store"),
+  };
 
   return (
     <section className="w-full bg-[#fbfaf7] text-slate-950">
-      <div className="border-b border-slate-200 bg-[#f6efe3]">
-        <div className="mx-auto w-full max-w-350 px-4 py-6 sm:px-6 lg:px-8">
-          {message ? <div className="mb-5 rounded-lg bg-white px-4 py-3 text-sm font-semibold text-rose-600 shadow-sm">{message}</div> : null}
-          {loading ? <HomeSkeleton /> : hero ? <MagazineCover hero={hero} topics={data.topics.slice(0, 6)} hotItems={hotItems.slice(0, 3)} /> : <EmptyPanel title="暂无推荐内容" description="发布后的公开内容会出现在这里。" />}
-        </div>
-      </div>
+      <Suspense fallback={<HomeHeroFallback />}>
+        <HomeHero
+          featuredPromise={dataPromises.featuredPromise}
+          hotPromise={dataPromises.hotPromise}
+          topicsPromise={dataPromises.topicsPromise}
+        />
+      </Suspense>
 
-      {!loading ? (
-        <div className="mx-auto grid w-full max-w-350 gap-8 px-4 py-8 sm:px-6 lg:px-8">
-          {spotlight.length ? (
-            <section className="grid gap-4">
-              <SectionTitle eyebrow="精选" title="像翻杂志一样浏览" href="/rankings" />
-              <div className="grid grid-cols-12 gap-4">
-                {spotlight.map((content, index) => (
-                  <SpotlightCard content={content} featured={index === 0} key={content.id} />
-                ))}
-              </div>
-            </section>
-          ) : null}
-
-          <section className="grid grid-cols-[minmax(0,1fr)_320px] items-start gap-6 max-lg:grid-cols-1">
-            <main className="grid gap-4">
-              <SectionTitle eyebrow="新鲜" title="继续读下去" href="/rankings" />
-              <div className="grid gap-3">
-                {feedItems.map((content) => (
-                  <FeedArticle content={content} key={content.id} />
-                ))}
-              </div>
-            </main>
-
-            <aside className="grid gap-4 lg:sticky lg:top-20">
-              <HotRail items={hotItems.slice(0, 6)} />
-              <TopicPanel topics={data.topics.slice(0, 6)} />
-            </aside>
-          </section>
-        </div>
-      ) : null}
+      <Suspense fallback={<HomeFeedFallback />}>
+        <HomeFeed {...dataPromises} />
+      </Suspense>
     </section>
   );
+}
+
+async function HomeHero({
+  featuredPromise,
+  hotPromise,
+  topicsPromise,
+}: Pick<HomeDataPromises, "featuredPromise" | "hotPromise" | "topicsPromise">) {
+  try {
+    const [featuredResponse, hotResponse, topicsResponse] = await Promise.all([
+      featuredPromise,
+      hotPromise,
+      topicsPromise,
+    ]);
+    const hero = featuredResponse.items[0];
+    const hotItems = hotResponse.items.length ? hotResponse.items : featuredResponse.items.slice(0, 6);
+
+    return (
+      <div className="border-b border-slate-200 bg-[#f6efe3]">
+        <div className="mx-auto w-full max-w-350 px-4 py-6 sm:px-6 lg:px-8">
+          {hero ? (
+            <MagazineCover hero={hero} topics={topicsResponse.items.slice(0, 6)} hotItems={hotItems.slice(0, 3)} />
+          ) : (
+            <EmptyPanel title="暂无推荐内容" description="发布后的公开内容会出现在这里。" />
+          )}
+        </div>
+      </div>
+    );
+  } catch (error) {
+    console.error("Failed to render the home hero", error);
+    return (
+      <div className="border-b border-slate-200 bg-[#f6efe3]">
+        <HomeSectionError section="首屏内容" />
+      </div>
+    );
+  }
+}
+
+async function HomeFeed({ featuredPromise, qualityPromise, hotPromise, topicsPromise }: HomeDataPromises) {
+  try {
+    const [featuredResponse, qualityResponse, hotResponse, topicsResponse] = await Promise.all([
+      featuredPromise,
+      qualityPromise,
+      hotPromise,
+      topicsPromise,
+    ]);
+    const hero = featuredResponse.items[0];
+    const spotlight = featuredResponse.items.slice(1, 5);
+    const feedItems = mergeUnique([...qualityResponse.items, ...featuredResponse.items])
+      .filter((item) => item.id !== hero?.id)
+      .slice(0, 8);
+    const hotItems = hotResponse.items.length ? hotResponse.items : featuredResponse.items.slice(0, 6);
+
+    return (
+      <div className="mx-auto grid w-full max-w-350 gap-8 px-4 py-8 sm:px-6 lg:px-8">
+        {spotlight.length ? (
+          <section className="grid gap-4">
+            <SectionTitle eyebrow="精选" title="像翻杂志一样浏览" href="/rankings" />
+            <div className="grid grid-cols-12 gap-4">
+              {spotlight.map((content, index) => (
+                <SpotlightCard content={content} featured={index === 0} key={content.id} />
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        <section className="grid grid-cols-[minmax(0,1fr)_320px] items-start gap-6 max-lg:grid-cols-1">
+          <main className="grid gap-4">
+            <SectionTitle eyebrow="新鲜" title="继续读下去" href="/rankings" />
+            <div className="grid gap-3">
+              {feedItems.map((content) => (
+                <FeedArticle content={content} key={content.id} />
+              ))}
+            </div>
+          </main>
+
+          <aside className="grid gap-4 lg:sticky lg:top-20">
+            <HotRail items={hotItems.slice(0, 6)} />
+            <TopicPanel topics={topicsResponse.items.slice(0, 6)} />
+          </aside>
+        </section>
+      </div>
+    );
+  } catch (error) {
+    console.error("Failed to render the home feed", error);
+    return <HomeSectionError section="推荐内容" />;
+  }
 }
 
 function MagazineCover({ hero, topics, hotItems }: { hero: ContentSummary; topics: OfficialTopicSummary[]; hotItems: ContentSummary[] }) {
@@ -368,6 +380,46 @@ function HomeSkeleton() {
           <div className="min-h-35 animate-pulse rounded-lg bg-white/70" />
           <div className="min-h-35 animate-pulse rounded-lg bg-white/70" />
         </div>
+      </div>
+    </div>
+  );
+}
+
+function HomeHeroFallback() {
+  return (
+    <div className="border-b border-slate-200 bg-[#f6efe3]">
+      <div className="mx-auto w-full max-w-350 px-4 py-6 sm:px-6 lg:px-8">
+        <HomeSkeleton />
+      </div>
+    </div>
+  );
+}
+
+function HomeFeedFallback() {
+  return (
+    <div className="mx-auto grid w-full max-w-350 gap-8 px-4 py-8 sm:px-6 lg:px-8">
+      <div className="grid grid-cols-12 gap-4">
+        <div className="col-span-6 h-82 animate-pulse rounded-lg bg-white shadow-sm ring-1 ring-slate-200 max-lg:col-span-12" />
+        <div className="col-span-3 h-58 animate-pulse rounded-lg bg-white shadow-sm ring-1 ring-slate-200 max-lg:col-span-6 max-sm:col-span-12" />
+        <div className="col-span-3 h-58 animate-pulse rounded-lg bg-white shadow-sm ring-1 ring-slate-200 max-lg:col-span-6 max-sm:col-span-12" />
+      </div>
+      <div className="grid grid-cols-[minmax(0,1fr)_320px] gap-6 max-lg:grid-cols-1">
+        <div className="grid gap-3">
+          <div className="h-28 animate-pulse rounded-lg bg-white ring-1 ring-slate-200" />
+          <div className="h-28 animate-pulse rounded-lg bg-white ring-1 ring-slate-200" />
+          <div className="h-28 animate-pulse rounded-lg bg-white ring-1 ring-slate-200" />
+        </div>
+        <div className="h-80 animate-pulse rounded-lg bg-slate-900" />
+      </div>
+    </div>
+  );
+}
+
+function HomeSectionError({ section }: { section: string }) {
+  return (
+    <div className="mx-auto w-full max-w-350 px-4 py-8 sm:px-6 lg:px-8">
+      <div className="rounded-lg border border-rose-200 bg-white px-5 py-4 text-sm font-semibold text-rose-700 shadow-sm">
+        {section}暂时加载失败，请稍后刷新重试。
       </div>
     </div>
   );

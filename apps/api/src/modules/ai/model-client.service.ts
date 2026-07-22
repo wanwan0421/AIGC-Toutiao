@@ -1,4 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { AppError, combineAbortSignals, throwIfAborted } from "../../common/app-error";
 
 type ChatMessage = {
   role: "system" | "user" | "assistant";
@@ -29,6 +30,7 @@ export class ModelClientService {
     model?: string;
     temperature?: number;
     timeoutMs?: number;
+    signal?: AbortSignal;
   }) {
     this.assertConfigured(options.model);
 
@@ -43,20 +45,25 @@ export class ModelClientService {
           },
           body: JSON.stringify(this.buildRequestBody(options, false)),
         },
-        options.timeoutMs
+        options.timeoutMs,
+        options.signal
       );
 
       if (!response.ok) {
-        throw new Error(await this.formatArkError(response, "Ark request failed", this.modelName(options.model)));
+        throw await this.upstreamHttpError(response, "Ark request failed", this.modelName(options.model));
       }
       const payload = (await response.json()) as Record<string, unknown>;
       const text = this.extractText(payload);
       if (!text) {
-        throw new Error("Ark response did not contain text output");
+        throw new AppError({ code: "UPSTREAM_INVALID_RESPONSE", message: "Ark response did not contain text output", statusCode: 502, retryable: true });
       }
       return text;
     } catch (error) {
-      this.logger.error(`Ark completion failed: ${(error as Error).message}`);
+      if (error instanceof AppError && error.code === "JOB_CANCELLED") {
+        this.logger.debug(`Ark completion cancelled: ${error.message}`);
+      } else {
+        this.logger.error(`Ark completion failed: ${(error as Error).message}`);
+      }
       throw error;
     }
   }
@@ -99,6 +106,8 @@ export class ModelClientService {
     messages: ChatMessage[];
     model?: string;
     temperature?: number;
+    timeoutMs?: number;
+    signal?: AbortSignal;
   }) {
     this.assertConfigured(options.model);
 
@@ -110,12 +119,12 @@ export class ModelClientService {
           Authorization: `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify(this.buildRequestBody(options, true)),
-      });
+      }, options.timeoutMs, options.signal);
       if (!response.ok) {
-        throw new Error(await this.formatArkError(response, "Ark stream failed", this.modelName(options.model)));
+        throw await this.upstreamHttpError(response, "Ark stream failed", this.modelName(options.model));
       }
       if (!response.body) {
-        throw new Error("Ark stream failed: empty response body");
+        throw new AppError({ code: "UPSTREAM_INVALID_RESPONSE", message: "Ark stream failed: empty response body", statusCode: 502, retryable: true });
       }
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -123,6 +132,7 @@ export class ModelClientService {
       let eventType = "";
 
       while (true) {
+        throwIfAborted(options.signal);
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
@@ -151,7 +161,11 @@ export class ModelClientService {
         }
       }
     } catch (error) {
-      this.logger.error(`Ark stream failed: ${(error as Error).message}`);
+      if (error instanceof AppError && error.code === "JOB_CANCELLED") {
+        this.logger.debug(`Ark stream cancelled: ${error.message}`);
+      } else {
+        this.logger.error(`Ark stream failed: ${(error as Error).message}`);
+      }
       throw error;
     }
   }
@@ -179,21 +193,27 @@ export class ModelClientService {
     );
   }
 
-  private async fetchWithTimeout(input: string, init: RequestInit, timeoutMs?: number) {
-    if (!timeoutMs) {
-      return fetch(input, init);
-    }
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  private async fetchWithTimeout(input: string, init: RequestInit, timeoutMs?: number, externalSignal?: AbortSignal) {
+    throwIfAborted(externalSignal);
+    const controller = timeoutMs ? new AbortController() : undefined;
+    const timeout = timeoutMs
+      ? setTimeout(() => controller!.abort(new AppError({
+          code: "UPSTREAM_TIMEOUT",
+          message: `Ark request timed out after ${timeoutMs}ms`,
+          statusCode: 504,
+          retryable: true,
+        })), timeoutMs)
+      : undefined;
+    const signal = combineAbortSignals([init.signal ?? undefined, externalSignal, controller?.signal]);
     try {
-      return await fetch(input, { ...init, signal: controller.signal });
+      return await fetch(input, { ...init, signal });
     } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") {
-        throw new Error(`Ark request timed out after ${timeoutMs}ms`);
-      }
-      throw error;
+      if (externalSignal?.aborted) throwIfAborted(externalSignal);
+      if (controller?.signal.aborted && controller.signal.reason instanceof AppError) throw controller.signal.reason;
+      if (error instanceof AppError) throw error;
+      throw new AppError({ code: "UPSTREAM_UNAVAILABLE", message: error instanceof Error ? error.message : "Ark request failed", statusCode: 503, retryable: true, cause: error });
     } finally {
-      clearTimeout(timeout);
+      if (timeout) clearTimeout(timeout);
     }
   }
 
@@ -215,6 +235,35 @@ export class ModelClientService {
       detail ? `body=${detail}` : "",
     ].filter(Boolean);
     return `${prefix}: ${suffix.join("; ")}`;
+  }
+
+  private async upstreamHttpError(response: Response, prefix: string, model?: string) {
+    const message = await this.formatArkError(response, prefix, model);
+    const retryAfterMs = this.retryAfterMs(response.headers.get("retry-after"));
+    if (response.status === 429) {
+      return new AppError({ code: "UPSTREAM_RATE_LIMITED", message, statusCode: 503, retryable: true, retryAfterMs });
+    }
+    if (response.status === 401 || response.status === 403) {
+      return new AppError({ code: "UPSTREAM_AUTH_FAILED", message, statusCode: 502, retryable: false });
+    }
+    if (response.status === 400 || response.status === 404 || response.status === 422) {
+      return new AppError({ code: "UPSTREAM_BAD_REQUEST", message, statusCode: 502, retryable: false });
+    }
+    return new AppError({
+      code: response.status >= 500 ? "UPSTREAM_UNAVAILABLE" : "UPSTREAM_INVALID_RESPONSE",
+      message,
+      statusCode: 502,
+      retryable: response.status >= 500 || process.env.AI_RETRY_INVALID_RESPONSE === "true",
+      retryAfterMs,
+    });
+  }
+
+  private retryAfterMs(value: string | null) {
+    if (!value) return undefined;
+    const seconds = Number(value);
+    if (Number.isFinite(seconds)) return Math.max(0, seconds * 1_000);
+    const timestamp = new Date(value).getTime();
+    return Number.isFinite(timestamp) ? Math.max(0, timestamp - Date.now()) : undefined;
   }
 
   private buildRequestBody(
