@@ -2,6 +2,52 @@
 
 这是一个面向图文内容创作者的 AI 内容生产平台，覆盖选题、写作、配图、审核、评分、发布和数据反馈等流程。项目采用 monorepo 组织，包含 Next.js 前端、NestJS 后端、PostgreSQL、Redis 和前后端共享类型包。
 
+## 项目预览
+
+### AI 创作中心
+
+![AI 创作中心](./docs/media/image-20260627150643396.png)
+
+创作者可以在同一工作台中完成需求输入、AI 初稿生成、富文本编辑、素材管理、自动保存以及与 AI 助手的连续对话。
+
+### 创作与数据看板
+
+![创作与数据看板](./docs/media/image1.png)
+
+看板汇总账号信息、创作入口、作品指标、热门榜单和成长任务，帮助创作者跟踪内容发布后的反馈。
+
+## 功能演示
+
+### AI 一键生成图文
+
+![AI 一键生成图文](./docs/media/AI生成图文.gif)
+
+根据主题、目标人群、风格和核心观点生成结构化图文草稿，并持续反馈生成状态。
+
+### AI 对话式创作
+
+![AI 对话式创作](./docs/media/AI对话.gif)
+
+通过上下文对话获取选题建议、内容修改、扩写和完整图文生成能力。
+
+### 内容审核
+
+![内容审核风险识别](./docs/media/内容审核失败.gif)
+
+在发布前进行内容安全检查，展示风险原因，并为后续合规改写和重新审核提供依据。
+
+### 榜单与内容分发
+
+![榜单与内容分发](./docs/media/榜单.gif)
+
+公开内容会进入阅读、榜单和话题分发链路，并结合浏览、点赞、收藏和评论形成反馈数据。
+
+更多演示素材：
+
+- 创作辅助：[智能标题](./docs/media/智能标题.gif) · [文本扩写](./docs/media/扩写.gif) · [自动保存](./docs/media/自动保存.gif) · [生成封面图](./docs/media/生成封面图.gif)
+- 生产流程：[一键生成初稿](./docs/media/一键生成初稿.gif) · [审核通过](./docs/media/内容审核成功.gif) · [质量评估](./docs/media/质量评估.gif)
+- 内容运营：[作品管理](./docs/media/作品管理.gif) · [内容发布](./docs/media/内容发布.gif) · [浏览与互动](./docs/media/浏览与互动.gif)
+
 ## 核心功能
 
 - 用户注册登录：支持邮箱/手机号注册、验证码、登录会话和个人资料管理。
@@ -23,81 +69,8 @@
 - AI：火山方舟 Ark Chat Completions 和 Images API
 - 工程化：npm workspaces、TypeScript、Docker Compose
 
-## 目录结构
+## 系统架构
 
-```text
-apps/web         Next.js 前端
-apps/api         NestJS 后端
-packages/shared 前后端共享类型
-```
+![系统架构图](./docs/media/系统架构图.png)
 
-## 本地开发
-
-先安装依赖：
-
-```bash
-npm install
-```
-
-启动本地 PostgreSQL 和 Redis：
-
-```bash
-docker compose up -d postgres redis
-```
-
-配置后端环境变量：
-
-```bash
-cp apps/api/.env.example apps/api/.env
-```
-
-根据需要填写 `DATABASE_URL`、`REDIS_URL`、`AUTH_TOKEN_SECRET`、`ARK_API_KEY`、`ARK_MODEL_ID` 等配置。若要使用地点定位、附近地点和地点搜索，还需要填写高德地图 Web 服务 Key：`AMAP_API_KEY`。
-
-生成 Prisma Client 并初始化数据库：
-
-```bash
-npm run db:generate
-npm run prisma -w @aicp/api -- migrate dev
-npm run db:seed:prompts
-```
-
-分别启动前后端：
-
-```bash
-npm run dev:api
-npm run dev:worker
-npm run dev:web
-```
-
-默认访问地址：
-
-```text
-Web: http://localhost:3000
-API: http://localhost:3001/api/health
-Worker readiness: http://localhost:3002/ready
-```
-
-## 常用脚本
-
-```bash
-npm run typecheck        类型检查
-npm run build            构建 shared、api、web
-npm run db:generate      生成 Prisma Client
-npm run db:seed:prompts  初始化 Prompt 模板
-```
-
-## 环境变量
-
-本地开发至少需要配置：
-
-```env
-DATABASE_URL=postgresql://...
-REDIS_URL=redis://...
-AUTH_TOKEN_SECRET=...
-ARK_API_KEY=...
-ARK_MODEL_ID=...
-ARK_API_URL=https://ark.cn-beijing.volces.com/api/v3/chat/completions
-AMAP_API_KEY=...
-```
-
-如需真实发送验证码，还需要配置 SMTP 邮件或阿里云短信相关变量。不要提交真实 `.env` 或任何密钥。
+Web 端通过 Next.js 提供页面渲染、路由和 API 代理；NestJS 负责鉴权、内容生命周期、AI 工作流、审核评分、素材、榜单和数据持久化。PostgreSQL 保存业务数据，Redis 承担缓存、会话和异步任务状态管理。
