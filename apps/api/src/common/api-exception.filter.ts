@@ -37,12 +37,17 @@ export class ApiExceptionFilter implements ExceptionFilter {
       const response = exception.getResponse();
       const record = typeof response === "object" && response ? (response as Record<string, unknown>) : {};
       const rawMessage = record.message ?? exception.message;
-      const message = Array.isArray(rawMessage) ? rawMessage.map(String).join("; ") : String(rawMessage);
+      const message = statusCode >= 500
+        ? "服务暂时不可用，请稍后重试"
+        : Array.isArray(rawMessage) ? rawMessage.map(String).join("; ") : String(rawMessage);
       return new AppError({
         statusCode,
         code: this.httpCode(statusCode),
         message,
         retryable: statusCode === 429 || statusCode === 502 || statusCode === 503 || statusCode === 504,
+        details: statusCode < 500 && record.details && typeof record.details === "object"
+          ? record.details as Record<string, unknown>
+          : undefined,
       });
     }
     return new AppError({

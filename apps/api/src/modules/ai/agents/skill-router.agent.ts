@@ -24,7 +24,7 @@ export class SkillRouterAgent {
     private readonly registry: SkillRegistryService
   ) {}
 
-  async decide(input: RouterInput): Promise<SkillRouterDecision> {
+  async decide(input: RouterInput, options: { signal?: AbortSignal } = {}): Promise<SkillRouterDecision> {
     if (!this.modelClient.hasRemoteProvider()) {
       return this.routeUnavailableDecision();
     }
@@ -42,6 +42,7 @@ export class SkillRouterAgent {
             content: this.userPrompt(input),
           },
         ],
+        signal: options.signal,
       });
       const parsed = parseJsonObject<Partial<SkillRouterDecision>>(content);
       return this.normalize(parsed) ?? this.routeUnavailableDecision();

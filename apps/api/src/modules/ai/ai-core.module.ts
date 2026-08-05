@@ -24,6 +24,9 @@ import { ContentQualityCapability } from "./capabilities/content-quality.capabil
 import { CreativeAssistantCapability } from "./capabilities/creative-assistant.capability";
 import { CreativeProductionCapability } from "./capabilities/creative-production.capability";
 import { SafetyReviewCapability } from "./capabilities/safety-review.capability";
+import { ImageModerationService } from "../assets/image-moderation.service";
+import { ToolRegistryService } from "./tools/tool-registry.service";
+import { ToolOrchestratorService } from "./tools/tool-orchestrator.service";
 
 const providers = [
   AiCallLogService,
@@ -50,6 +53,9 @@ const providers = [
   ContentQualityCapability,
   CreativeAssistantCapability,
   CreativeProductionCapability,
+  ImageModerationService,
+  ToolRegistryService,
+  ToolOrchestratorService,
 ];
 
 @Module({

@@ -4,6 +4,8 @@ import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { AssetsService } from "./assets.service";
 import { FileInterceptor } from "@nestjs/platform-express";
+import { CreateAssetDto, UploadAssetDto } from "./assets.dto";
+import { AdminGuard } from "../auth/admin.guard";
 
 type UploadFile = {
   originalname: string;
@@ -25,11 +27,13 @@ export class AssetsController {
   }
 
   @Get("admin/pending-audit")
+  @UseGuards(AdminGuard)
   listPendingAudit() {
     return this.assetsService.listAllPendingAudit();
   }
 
   @Post("admin/batch-reaudit")
+  @UseGuards(AdminGuard)
   batchReaudit() {
     return this.assetsService.batchReauditAllPending();
   }
@@ -37,17 +41,17 @@ export class AssetsController {
   @Post()
   create(
     @CurrentUser() user: UserProfileSummary,
-    @Body() body: { fileName: string; mimeType: string; url: string; contentId?: string }
+    @Body() body: CreateAssetDto
   ) {
     return this.assetsService.create(user.id, body);
   }
 
   @Post("upload")
-  @UseInterceptors(FileInterceptor("file", { storage: memoryStorage() }))
+  @UseInterceptors(FileInterceptor("file", { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } }))
   upload(
     @CurrentUser() user: UserProfileSummary,
     @UploadedFile() file: UploadFile,
-    @Body() body: { contentId?: string }
+    @Body() body: UploadAssetDto
   ) {
     return this.assetsService.upload(user.id, file, body.contentId);
   }

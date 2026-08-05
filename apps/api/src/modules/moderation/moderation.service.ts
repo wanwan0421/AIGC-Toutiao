@@ -9,7 +9,8 @@ export class ModerationService {
     private readonly workflow: ContentWorkflowEngine
   ) {}
 
-  async getContentAudit(contentId: string) {
+  async getContentAudit(userId: string, contentId: string) {
+    await this.assertOwned(userId, contentId);
     const [audit, quality] = await Promise.all([
       this.prisma.auditRecord.findFirst({ where: { contentId }, orderBy: { createdAt: "desc" } }),
       this.prisma.qualityScore.findFirst({ where: { contentId }, orderBy: { createdAt: "desc" } }),
@@ -24,19 +25,24 @@ export class ModerationService {
       };
     }
 
-    return this.runContentAudit(contentId);
+    return this.runContentAudit(userId, contentId);
   }
 
-  async runContentAudit(contentId: string) {
-    const content = await this.prisma.content.findUnique({ where: { id: contentId } });
+  async runContentAudit(userId: string, contentId: string) {
+    const content = await this.prisma.content.findFirst({ where: { id: contentId, authorId: userId } });
     if (!content) {
       throw new NotFoundException("content not found");
     }
 
-    return this.workflow.runContentAudit(contentId);
+    return this.workflow.runContentAudit(userId, contentId);
   }
 
   async checkText(body: { title: string; body: string }) {
     return this.workflow.checkText(body);
+  }
+
+  private async assertOwned(userId: string, contentId: string) {
+    const count = await this.prisma.content.count({ where: { id: contentId, authorId: userId } });
+    if (!count) throw new NotFoundException("content not found");
   }
 }

@@ -162,6 +162,7 @@ export enum AiJobStatus {
 }
 
 export enum AiJobType {
+  CreativeChat = "creative_chat",
   CreativeDirectGenerate = "creative_direct_generate",
   CreativeImageGenerate = "creative_image_generate",
   ContentSubmitReview = "content_submit_review",
@@ -660,6 +661,8 @@ export interface AiJobSnapshot {
   type: AiJobType;
   status: AiJobStatus;
   contentId?: string | null;
+  conversationId?: string | null;
+  assistantMessageId?: string | null;
   progress: number;
   currentStep?: string | null;
   input?: Record<string, unknown>;
@@ -682,6 +685,8 @@ export interface AiJobStartRequest {
   type: AiJobType;
   payload: Record<string, unknown>;
   contentId?: string;
+  conversationId?: string;
+  assistantMessageId?: string;
 }
 
 export interface AiJobEvent {

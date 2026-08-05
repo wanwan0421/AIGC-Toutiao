@@ -8,6 +8,10 @@ import { WorkflowJobDispatcherService } from "./workflow-job-dispatcher.service"
 import { WorkflowJobEventsService } from "./workflow-job-events.service";
 import { WorkflowJobQueueService } from "./workflow-job-queue.service";
 import { isTerminalJobStatus, toAiJobSnapshot } from "./workflow-job.mapper";
+import { AppError } from "../../common/app-error";
+import { AiJobPayloadValidator } from "./ai-job-payload.validator";
+import { UserRateLimitService } from "./user-rate-limit.service";
+import { ConversationArchiveService } from "../ai/conversation-archive.service";
 
 export const AI_JOB_CANCEL_CHANNEL = "ai-job:cancel";
 
@@ -20,7 +24,10 @@ export class WorkflowJobService {
     private readonly redisService: RedisService,
     private readonly events: WorkflowJobEventsService,
     private readonly dispatcher: WorkflowJobDispatcherService,
-    private readonly queue: WorkflowJobQueueService
+    private readonly queue: WorkflowJobQueueService,
+    private readonly payloadValidator: AiJobPayloadValidator,
+    private readonly rateLimit: UserRateLimitService,
+    private readonly conversations: ConversationArchiveService
   ) {}
 
   async create(input: {
@@ -28,6 +35,9 @@ export class WorkflowJobService {
     type: `${AiJobType}`;
     payload: Record<string, unknown>;
     contentId?: string;
+    conversationId?: string;
+    assistantMessageId?: string;
+    idempotencyKey?: string;
   }): Promise<AiJobSnapshot> {
     if (!Object.values(AiJobType).includes(input.type as AiJobType)) {
       throw new UnprocessableEntityException("unsupported AI job type");
@@ -35,16 +45,31 @@ export class WorkflowJobService {
     if (!input.payload || typeof input.payload !== "object" || Array.isArray(input.payload)) {
       throw new UnprocessableEntityException("AI job payload must be an object");
     }
+    const payload = this.payloadValidator.parse(input.type, input.payload);
+    await this.rateLimit.consume(input.userId, input.type === AiJobType.CreativeImageGenerate ? "image" : "ai");
+    const activeCount = await this.prisma.aiJob.count({
+      where: { userId: input.userId, status: { in: [DbAiJobStatus.queued, DbAiJobStatus.running] } },
+    });
+    if (activeCount >= 2) {
+      throw new AppError({ code: "AI_CONCURRENCY_LIMIT", message: "当前运行中的 AI 任务已达到上限", statusCode: 429, retryable: true, retryAfterMs: 5_000 });
+    }
+    if (input.idempotencyKey) {
+      const existing = await this.prisma.aiJob.findFirst({ where: { userId: input.userId, idempotencyKey: input.idempotencyKey } });
+      if (existing) return toAiJobSnapshot(existing);
+    }
     const jobId = randomUUID();
     const created = await this.prisma.$transaction(async (tx) => {
       const job = await tx.aiJob.create({
         data: {
           id: jobId,
           userId: input.userId,
-          contentId: input.contentId ?? this.contentIdFromPayload(input.payload),
+          contentId: input.contentId ?? this.contentIdFromPayload(payload),
+          conversationId: input.conversationId ?? this.stringFromPayload(payload, "conversationId"),
+          assistantMessageId: input.assistantMessageId ?? this.stringFromPayload(payload, "assistantMessageId"),
+          idempotencyKey: input.idempotencyKey,
           type: input.type,
           status: DbAiJobStatus.queued,
-          input: this.toJson(input.payload),
+          input: this.toJson(payload),
           dispatch: { create: { status: AiJobDispatchStatus.pending } },
         },
       });
@@ -63,6 +88,20 @@ export class WorkflowJobService {
 
   async get(userId: string, jobId: string) {
     return toAiJobSnapshot(await this.getOwnedJob(userId, jobId));
+  }
+
+  async recover(userId: string, input: { conversationId?: string; contentId?: string; limit?: number }) {
+    if (!input.conversationId && !input.contentId) throw new UnprocessableEntityException("conversationId or contentId is required");
+    const jobs = await this.prisma.aiJob.findMany({
+      where: {
+        userId,
+        ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+        ...(input.contentId ? { contentId: input.contentId } : {}),
+      },
+      orderBy: { createdAt: "desc" },
+      take: Math.min(input.limit ?? 20, 50),
+    });
+    return jobs.map(toAiJobSnapshot);
   }
 
   async cancel(userId: string, jobId: string, reason = "任务已取消") {
@@ -103,6 +142,16 @@ export class WorkflowJobService {
       await this.queue.removeWaiting(jobId).catch(() => false);
       await this.redisService.getClient().publish(AI_JOB_CANCEL_CHANNEL, JSON.stringify({ jobId, reason })).catch(() => 0);
       await this.events.notify(jobId, outcome.event);
+      const cancelledJob = await this.getOwnedJob(userId, jobId);
+      if (cancelledJob.conversationId) {
+        await this.conversations.appendMessage({
+          conversationId: cancelledJob.conversationId,
+          userId,
+          role: "assistant",
+          content: "AI 任务已取消",
+          metadata: { jobId, jobType: cancelledJob.type, terminal: "cancelled" },
+        }).catch(() => undefined);
+      }
     }
     return outcome.snapshot;
   }
@@ -212,6 +261,10 @@ export class WorkflowJobService {
 
   private contentIdFromPayload(payload: Record<string, unknown>) {
     return typeof payload.contentId === "string" ? payload.contentId : undefined;
+  }
+
+  private stringFromPayload(payload: Record<string, unknown>, key: string) {
+    return typeof payload[key] === "string" ? payload[key] as string : undefined;
   }
 
   private toJson(value: unknown) {

@@ -75,6 +75,7 @@ export class SkillExecutorService {
     return this.safetyReviewCapability.reviewWithRewrite(input, { trustedContext: this.safetyTrustedContext(), signal: options.signal });
   }
 
+  // 生成图片
   private async generateImages(
     imageTasks: ImageTask[],
     request: DirectGenerateRequest,
@@ -149,6 +150,7 @@ export class SkillExecutorService {
     return value as GeneratedImageAsset;
   }
 
+  // 生成图片任务列表
   private buildImageTasks(draft: DirectGenerateResult): ImageTask[] {
     const imageTasks: ImageTask[] = [];
     if (draft.coverSuggestion) {

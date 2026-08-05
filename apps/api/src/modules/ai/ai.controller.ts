@@ -15,6 +15,7 @@ import { CurrentUser } from "../auth/current-user.decorator";
 import { ContentWorkflowEngine } from "../workflow/content-workflow.engine";
 import { WorkflowJobService } from "../workflow/workflow-job.service";
 import { WorkflowJobResultCommitService } from "../workflow/workflow-job-result-commit.service";
+import { AttachConversationDto, CommitJobResultDto, CreativeImageJobDto, RecoverJobsQueryDto, StartAiJobDto } from "./ai.dto";
 
 @UseGuards(AuthGuard)
 @Controller("ai")
@@ -33,14 +34,23 @@ export class AiController {
   @Post("jobs")
   startJob(
     @CurrentUser() user: UserProfileSummary,
-    @Body() body: { type: AiJobType; payload?: Record<string, unknown>; contentId?: string }
+    @Body() body: StartAiJobDto,
+    @Headers("idempotency-key") idempotencyKey?: string,
   ) {
     return this.jobs.create({
       userId: user.id,
       type: body.type,
       payload: body.payload ?? {},
       contentId: body.contentId,
+      conversationId: body.conversationId,
+      assistantMessageId: body.assistantMessageId,
+      idempotencyKey: idempotencyKey?.slice(0, 128),
     });
+  }
+
+  @Get("jobs")
+  recoverJobs(@CurrentUser() user: UserProfileSummary, @Query() query: RecoverJobsQueryDto) {
+    return this.jobs.recover(user.id, query);
   }
 
   @Get("jobs/:id/events")
@@ -68,7 +78,7 @@ export class AiController {
       }
     } catch (error) {
       if (!streamAbort.signal.aborted) {
-        this.writeSse(response, { type: "error", data: { message: (error as Error).message } });
+        this.writeSse(response, { type: "error", data: { message: "任务事件连接暂时中断，请重新连接", code: "EVENT_STREAM_INTERRUPTED", retryable: true } });
       }
     } finally {
       response.removeListener("close", handleClose);
@@ -90,7 +100,7 @@ export class AiController {
   commitJobResult(
     @CurrentUser() user: UserProfileSummary,
     @Param("id") id: string,
-    @Body() body: AiJobResultCommitRequest
+    @Body() body: CommitJobResultDto
   ) {
     return this.jobResultCommit.commit(user.id, id, body);
   }
@@ -115,7 +125,7 @@ export class AiController {
         this.writeSse(response, event);
       }
     } catch (error) {
-      this.writeSse(response, { type: "error", data: { message: (error as Error).message } });
+      this.writeSse(response, { type: "error", data: { message: "AI 对话暂时失败，请稍后重试", code: "AI_STREAM_FAILED", retryable: true } });
     } finally {
       response.end();
     }
@@ -123,10 +133,11 @@ export class AiController {
 
   @Post("creative/direct-generate/jobs")
   startDirectGenerateJob(@CurrentUser() user: UserProfileSummary, @Body() body: DirectGenerateRequest) {
+    const { userId: _ignoredUserId, ...payload } = body;
     return this.jobs.create({
       userId: user.id,
       type: AiJobType.CreativeDirectGenerate,
-      payload: { ...body, userId: user.id },
+      payload,
       contentId: body.contentId,
     });
   }
@@ -134,13 +145,17 @@ export class AiController {
   @Post("creative/image/jobs")
   startCreativeImageJob(
     @CurrentUser() user: UserProfileSummary,
-    @Body() body: { contentId?: string; position?: string; prompt: string }
+    @Body() body: CreativeImageJobDto,
+    @Headers("idempotency-key") idempotencyKey?: string,
   ) {
     return this.jobs.create({
       userId: user.id,
       type: AiJobType.CreativeImageGenerate,
-      payload: body,
+      payload: { ...body },
       contentId: body.contentId,
+      conversationId: body.conversationId,
+      assistantMessageId: body.assistantMessageId,
+      idempotencyKey: idempotencyKey?.slice(0, 128),
     });
   }
 
@@ -169,7 +184,7 @@ export class AiController {
   attachCreativeConversation(
     @CurrentUser() user: UserProfileSummary,
     @Param("id") id: string,
-    @Body() body: { contentId: string }
+    @Body() body: AttachConversationDto
   ) {
     return this.workflow.attachCreativeConversation(id, { ...body, userId: user.id });
   }
@@ -213,7 +228,7 @@ export class AiController {
         data: {
           type: "skill_error",
           skillKey,
-          message: `Skill 任务创建失败：${(error as Error).message}`,
+          message: "Skill 任务创建失败，请稍后重试",
         },
       });
     }

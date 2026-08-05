@@ -50,6 +50,7 @@ export class ConversationArchiveService {
     contentId?: string | null;
     title?: string;
   }) {
+    if (input.contentId) await this.assertOwnedContent(input.contentId, input.userId);
     if (input.contentId) {
       const existing = await this.store.aiConversation.findFirst({
         where: {
@@ -86,28 +87,30 @@ export class ConversationArchiveService {
     contentId?: string | null;
     title?: string;
   }) {
-    return this.store.aiConversation.upsert({
-      where: { id: input.conversationId },
-      create: {
-        id: input.conversationId,
-        userId: input.userId,
-        contentId: input.contentId ?? undefined,
-        title: input.title,
-      },
-      update: {
-        contentId: input.contentId ?? undefined,
-        title: input.title,
-      },
+    const existing = await this.store.aiConversation.findFirst({ where: { id: input.conversationId } });
+    if (existing && existing.userId !== input.userId) throw new NotFoundException("conversation not found");
+    if (!existing) {
+      return this.store.aiConversation.upsert({
+        where: { id: input.conversationId },
+        create: { id: input.conversationId, userId: input.userId, contentId: input.contentId ?? undefined, title: input.title },
+        update: {},
+      });
+    }
+    return this.store.aiConversation.update({
+      where: { id: existing.id },
+      data: { contentId: input.contentId ?? undefined, title: input.title },
     });
   }
 
   async appendMessage(input: {
     id?: string;
     conversationId: string;
+    userId: string;
     role: "user" | "assistant";
     content: string;
     metadata?: Record<string, unknown>;
   }) {
+    await this.assertOwned(input.conversationId, input.userId);
     return this.store.aiMessage.create({
       data: {
         id: input.id,
@@ -119,7 +122,8 @@ export class ConversationArchiveService {
     });
   }
 
-  async recentMessages(conversationId: string, limit = 12): Promise<CreativeConversationSummary["messages"]> {
+  async recentMessages(conversationId: string, userId: string, limit = 12): Promise<CreativeConversationSummary["messages"]> {
+    await this.assertOwned(conversationId, userId);
     const messages = await this.store.aiMessage.findMany({
       where: { conversationId },
       orderBy: { createdAt: "desc" },
@@ -150,6 +154,7 @@ export class ConversationArchiveService {
   }
 
   async attachToContent(input: { conversationId: string; userId: string; contentId: string }) {
+    await this.assertOwnedContent(input.contentId, input.userId);
     const source = await this.store.aiConversation.findFirst({
       where: {
         id: input.conversationId,
@@ -249,6 +254,17 @@ export class ConversationArchiveService {
       updatedAt: conversation.updatedAt.toISOString(),
       messages: (conversation.messages ?? []).map((message) => this.toMessageSummary(message)),
     };
+  }
+
+  private async assertOwned(conversationId: string, userId: string) {
+    const conversation = await this.store.aiConversation.findFirst({ where: { id: conversationId, userId } });
+    if (!conversation) throw new NotFoundException("conversation not found");
+    return conversation;
+  }
+
+  private async assertOwnedContent(contentId: string, userId: string) {
+    const count = await this.prisma.content.count({ where: { id: contentId, authorId: userId } });
+    if (!count) throw new NotFoundException("content not found");
   }
 
   private toMessageSummary(message: ArchivedMessage): CreativeConversationSummary["messages"][number] {

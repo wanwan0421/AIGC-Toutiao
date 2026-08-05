@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AiJobStatus, type AiJobEvent, type AiJobSnapshot } from "@aicp/shared";
-import { ApiError, cancelAiJob, getAiJob, streamAiJobEvents } from "./api";
+import { ApiError, cancelAiJob, getAiJob, recoverAiJobs, streamAiJobEvents } from "./api";
 import {
   listStoredAiJobs,
   persistAiJobSession,
@@ -203,6 +203,7 @@ export function useAiJob() {
 
       // 将已启动的 AI 任务快照持久化到本地存储中，以便在页面刷新或关闭后能够恢复任务状态
       persistAiJobSession(started);
+      handlers.onSnapshot?.(started);
       if (mountedRef.current && abortRef.current === controller) {
         setJob(started);
         setIsRunning(true);
@@ -273,6 +274,16 @@ export function useAiJob() {
     if (mountedRef.current) setIsRunning(false);
   }, []);
 
+  const resumeLatest = useCallback(async (
+    scope: { conversationId?: string; contentId?: string },
+    handlers: AiJobRunHandlers = {},
+  ) => {
+    const jobs = await recoverAiJobs({ ...scope, limit: 20 });
+    const candidate = jobs.find((item) => !isTerminalJob(item)) ?? jobs[0];
+    if (!candidate) return null;
+    return resumeJob(candidate.id, handlers);
+  }, [resumeJob]);
+
   const cancelJob = useCallback(async (jobId?: string) => {
     const targetId = jobId ?? job?.id;
     if (!targetId) return null;
@@ -291,6 +302,7 @@ export function useAiJob() {
     isRunning,
     runJob,
     resumeJob,
+    resumeLatest,
     cancelJob,
     stopStreaming,
   };

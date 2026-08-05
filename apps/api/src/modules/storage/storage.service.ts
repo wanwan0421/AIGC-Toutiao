@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { randomUUID } from "node:crypto";
-import { mkdir, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, extname, join, normalize, sep } from "node:path";
 import { getUploadPublicBase, getUploadRoot } from "./storage.config";
 import { AppError, throwIfAborted } from "../../common/app-error";
@@ -59,6 +59,10 @@ export class LocalStorageAdapter {
     const filePath = this.resolveStoragePath(storageKey);
     await stat(filePath).catch(() => null);
     await unlink(filePath).catch(() => {});
+  }
+
+  readBuffer(storageKey: string) {
+    return readFile(this.resolveStoragePath(storageKey));
   }
 
   storageKeyFromPublicUrl(url?: string | null) {
@@ -132,14 +136,20 @@ export class LocalStorageAdapter {
 
 @Injectable()
 export class StorageService {
+  private readonly logger = new Logger(StorageService.name);
   constructor(private readonly localAdapter: LocalStorageAdapter) {}
 
   saveBuffer(input: SaveBufferInput) {
     return this.localAdapter.saveBuffer(input);
   }
 
+  readBuffer(storageKey: string) {
+    return this.localAdapter.readBuffer(storageKey);
+  }
+
   async saveRemoteFile(url: string, input: SaveFileInput = {}, signal?: AbortSignal) {
     throwIfAborted(signal);
+    const parsed = this.assertSafeRemoteUrl(url);
     let response: Response;
     try {
       response = await fetch(url, { signal });
@@ -149,16 +159,17 @@ export class StorageService {
     }
     if (!response.ok) {
       const errorText = await response.text().catch(() => "");
+      this.logger.debug(`Remote download failed: status=${response.status}; body=${errorText.slice(0, 200)}`);
       throw new AppError({
         code: response.status === 429 ? "UPSTREAM_RATE_LIMITED" : response.status >= 500 ? "UPSTREAM_UNAVAILABLE" : "UPSTREAM_BAD_REQUEST",
-        message: `remote file download failed: ${response.status} ${errorText}`,
+        message: "远程图片下载失败",
         statusCode: 502,
         retryable: response.status === 429 || response.status >= 500,
       });
     }
 
     const contentType = response.headers.get("content-type")?.split(";")[0]?.trim();
-    const buffer = Buffer.from(await response.arrayBuffer());
+    const buffer = await this.readLimitedBody(response, 10 * 1024 * 1024, signal);
     return this.saveBuffer({
       ...input,
       buffer,
@@ -200,6 +211,37 @@ export class StorageService {
     } catch {
       return "asset";
     }
+  }
+
+  private assertSafeRemoteUrl(value: string) {
+    let url: URL;
+    try { url = new URL(value); } catch { throw new BadRequestException("invalid remote URL"); }
+    if (url.protocol !== "https:") throw new BadRequestException("remote files require HTTPS");
+    const host = url.hostname.toLowerCase();
+    if (host === "localhost" || host === "::1" || /^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) || /^169\.254\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host)) {
+      throw new BadRequestException("private remote hosts are not allowed");
+    }
+    const allowed = (process.env.AI_IMAGE_ALLOWED_HOSTS ?? "").split(",").map((item) => item.trim().toLowerCase()).filter(Boolean);
+    if (allowed.length && !allowed.some((item) => host === item || host.endsWith(`.${item}`))) throw new BadRequestException("remote image host is not allowed");
+    return url;
+  }
+
+  private async readLimitedBody(response: Response, maxBytes: number, signal?: AbortSignal) {
+    const declared = Number(response.headers.get("content-length") ?? 0);
+    if (declared > maxBytes) throw new BadRequestException("remote file exceeds size limit");
+    if (!response.body) throw new BadRequestException("remote file response was empty");
+    const reader = response.body.getReader();
+    const chunks: Buffer[] = [];
+    let total = 0;
+    while (true) {
+      throwIfAborted(signal);
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) { await reader.cancel(); throw new BadRequestException("remote file exceeds size limit"); }
+      chunks.push(Buffer.from(value));
+    }
+    return Buffer.concat(chunks, total);
   }
 
   private mimeFromUrl(url: string) {

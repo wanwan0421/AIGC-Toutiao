@@ -28,6 +28,9 @@ export class WorkflowJobDispatcherService implements OnModuleInit, OnModuleDestr
     if (this.timer) clearTimeout(this.timer);
   }
 
+  /**
+   * 调度AI任务
+   */
   async dispatchJob(jobId: string) {
     try {
       await this.jobs.enqueue(jobId);

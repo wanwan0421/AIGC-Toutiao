@@ -42,13 +42,14 @@ import {
   getOfficialTopics,
   postNearbyLocations,
   publishContent,
+  recoverAiJobs,
   rewriteSelection,
   searchLocations,
   startCreativeDraftJob,
   startCreativeImageJob,
+  startAiJob,
   startQualityScoreJob,
   startSubmitReviewJob,
-  streamCreativeChat,
   updateContent,
   uploadAsset,
 } from "../../lib/api";
@@ -109,6 +110,7 @@ type EditorOperation =
 type DraftCache = EditorDraftCache;
 
 const RESTORABLE_EDITOR_JOB_TYPES = new Set<AiJobType>([
+  AiJobType.CreativeChat,
   AiJobType.CreativeDirectGenerate,
   AiJobType.CreativeImageGenerate,
   AiJobType.ContentSubmitReview,
@@ -351,6 +353,7 @@ function stripImageSlotMarkers(markdown: string) {
     .trim();
 }
 
+// 渲染生成的草稿，包含图片的插入位置和 HTML 输出
 function renderGeneratedDraftWithImages(markdown: string, title: string, placements: GeneratedImagePlacement[]) {
   const bodyMarkdown = stripDuplicateTitleFromMarkdown(markdown, title);
   const slotMatches = Array.from(bodyMarkdown.matchAll(imageSlotPattern()));
@@ -813,12 +816,13 @@ function snapshotFromCloudDraft(draft: CloudDraft, detail: ContentDetailForDraft
 export default function EditorPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { runJob, resumeJob } = useAiJob();
+  const { runJob, resumeJob, cancelJob, stopStreaming } = useAiJob();
   const editingContentId = searchParams.get("contentId");
   const editorRef = useRef<RichTextEditorHandle | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const textInputRef = useRef<HTMLInputElement | null>(null);
   const streamLockRef = useRef(false);
+  const chatJobIdRef = useRef<string | null>(null);
   const editorReadyRef = useRef(false);
   const skipNextEditorInitRef = useRef<string | null>(null);
   const draggedAssetRef = useRef<AssetSummary | null>(null);
@@ -1019,8 +1023,11 @@ export default function EditorPage() {
   }, [generatedImageCandidates]);
 
   useEffect(() => {
+    // Switching works detaches local subscriptions only. Durable jobs remain
+    // active and are discoverable from the server when the user returns.
+    stopStreaming();
     setContentId(editingContentId);
-  }, [editingContentId]);
+  }, [editingContentId, stopStreaming]);
 
   useEffect(() => {
     if (editingContentId && skipNextEditorInitRef.current === editingContentId) {
@@ -1039,30 +1046,63 @@ export default function EditorPage() {
 
   useEffect(() => {
     if (isLoadingInitial || isBusy) return;
+    let disposed = false;
     const expectedContentId = contentIdRef.current ?? editingContentId;
-    const stored = listStoredAiJobs().find(
-      (item) =>
-        RESTORABLE_EDITOR_JOB_TYPES.has(item.type) &&
-        (expectedContentId ? item.contentId === expectedContentId : !item.contentId)
-    );
-    if (!stored || restoredAiJobIdsRef.current.has(stored.jobId)) return;
-
-    restoredAiJobIdsRef.current.add(stored.jobId);
-    setActiveOperation(editorOperationForJobType(stored.type));
-    setStatusMessage("检测到未完成的 AI 任务，正在恢复事件流...");
-    void resumeJob(stored.jobId, {
-      onProgress: (data) => {
-        if (typeof data.message === "string") setStatusMessage(data.message);
-      },
-      onWarning: (message) => setStatusMessage(message),
-      onResultReady: (restoredJob, result, event) => commitCreativeJobResult(restoredJob, result, event),
-      onDone: (restoredJob, result) => handleEditorJobDone(restoredJob, result),
-      onError: (message) => setStatusMessage(`AI 任务恢复失败：${message}`),
-    })
-      .catch((error) => {
-        setStatusMessage(error instanceof Error ? `AI 任务恢复失败：${error.message}` : "AI 任务恢复失败");
-      })
-      .finally(() => setActiveOperation(null));
+    void (async () => {
+      const local = listStoredAiJobs().find(
+        (item) => RESTORABLE_EDITOR_JOB_TYPES.has(item.type) && (expectedContentId ? item.contentId === expectedContentId : !item.contentId)
+      );
+      const serverJobs = !local && expectedContentId ? await recoverAiJobs({ contentId: expectedContentId, limit: 20 }).catch(() => []) : [];
+      const restorableServerJobs = serverJobs.filter((item) => RESTORABLE_EDITOR_JOB_TYPES.has(item.type));
+      const server = restorableServerJobs.find((item) => !["succeeded", "failed", "cancelled"].includes(item.status)) ?? restorableServerJobs[0];
+      const candidate = local ? { id: local.jobId, type: local.type } : server ? { id: server.id, type: server.type } : undefined;
+      if (!candidate || disposed || restoredAiJobIdsRef.current.has(candidate.id)) return;
+      restoredAiJobIdsRef.current.add(candidate.id);
+      if (candidate.type === AiJobType.CreativeChat) {
+        setIsChatStreaming(true);
+        chatJobIdRef.current = candidate.id;
+        await resumeJob(candidate.id, {
+          onSnapshot: (snapshot) => { chatJobIdRef.current = snapshot.id; },
+          onPartial: (data) => {
+            if (data.kind !== "creativeChatEvent" || !data.value || typeof data.value !== "object") return;
+            const event = data.value as { type?: string; data?: Record<string, unknown> };
+            if (event.type === "meta" && typeof event.data?.conversationId === "string") setConversationId(event.data.conversationId);
+            if (event.type !== "delta") return;
+            const delta = typeof event.data?.text === "string" ? event.data.text : "";
+            setChatMessages((items) => {
+              const id = `restored-${candidate.id}`;
+              const existing = items.find((item) => item.id === id);
+              return existing
+                ? items.map((item) => item.id === id ? { ...item, content: `${item.content}${delta}` } : item)
+                : [...items, { id, role: "assistant", kind: "chat", content: delta }];
+            });
+          },
+          onDone: async () => {
+            if (expectedContentId) {
+              const conversations = await getCreativeConversations(expectedContentId).catch(() => []);
+              const latest = conversations[0];
+              if (latest) setChatMessages(latest.messages.map((item, index) => ({ id: item.id ?? `${latest.id}-${index}`, role: item.role, kind: "chat", content: item.content })));
+            }
+          },
+          onError: (message) => setStatusMessage(message),
+        });
+        chatJobIdRef.current = null;
+        setIsChatStreaming(false);
+        return;
+      }
+      setActiveOperation(editorOperationForJobType(candidate.type));
+      setStatusMessage("检测到 AI 任务，正在从服务器恢复状态...");
+      await resumeJob(candidate.id, {
+        onProgress: (data) => { if (typeof data.message === "string") setStatusMessage(data.message); },
+        onWarning: (message) => setStatusMessage(message),
+        onResultReady: (restoredJob, result, event) => commitCreativeJobResult(restoredJob, result, event),
+        onDone: (restoredJob, result) => handleEditorJobDone(restoredJob, result),
+        onError: (message) => setStatusMessage(`AI 任务恢复失败：${message}`),
+      });
+    })().catch((error) => {
+      if (!disposed) setStatusMessage(error instanceof Error ? `AI 任务恢复失败：${error.message}` : "AI 任务恢复失败");
+    }).finally(() => { if (!disposed) setActiveOperation(null); });
+    return () => { disposed = true; };
   }, [editingContentId, isBusy, isLoadingInitial, resumeJob]);
 
   useEffect(() => {
@@ -2457,7 +2497,8 @@ export default function EditorPage() {
     }
   }
 
-  // 用户发送对话消息的入口，负责把用户消息添加到对话列表里，并调用 streamCreativeChat 进行流式对话，处理好各种回调来更新对话状态和内容
+  // Chat is a durable job. Starting another chat only detaches the old SSE;
+  // it does not cancel the old server task.
   async function sendCreativeChatMessage() {
     const message = chatInput.trim();
     if (!message || isChatStreaming || streamLockRef.current) return;
@@ -2472,28 +2513,42 @@ export default function EditorPage() {
       { id: assistantId, role: "assistant", kind: "chat", content: "" },
     ]);
     try {
-      await streamCreativeChat(
-        {
+      await runJob(
+        () => startAiJob({
+          type: AiJobType.CreativeChat,
+          conversationId,
+          assistantMessageId: assistantId,
+          contentId: contentId ?? undefined,
+          payload: {
           conversationId,
           contentId: contentId ?? undefined,
           message,
           currentTitle: title,
           currentBody: editorText(),
           selectedText: selectionMenu?.text,
-        },
+          assistantMessageId: assistantId,
+        }}),
         {
-          onMeta: (event) => setConversationId(event.conversationId),
-          onDelta: (text) => {
-            setChatMessages((items) =>
-              items.map((item) =>
-                item.id === assistantId
+          onSnapshot: (snapshot) => { chatJobIdRef.current = snapshot.id; },
+          onPartial: (data) => {
+            if (data.kind !== "creativeChatEvent" || !data.value || typeof data.value !== "object") return;
+            const event = data.value as { type?: string; data?: Record<string, unknown> };
+            if (event.type === "meta" && typeof event.data?.conversationId === "string") setConversationId(event.data.conversationId);
+            if (event.type === "delta") {
+              const text = typeof event.data?.text === "string" ? event.data.text : "";
+              setChatMessages((items) =>
+                items.map((item) =>
+                  item.id === assistantId
                   ? { ...item, content: `${item.content}${text}` }
                   : item,
-              ),
-            );
+                ),
+              );
+            }
+            if (event.type === "skill") handleCreativeChatSkillEvent(event.data as unknown as CreativeChatSkillEvent, assistantId);
           },
-          onDone: (event) => {
-            setConversationId(event.conversationId);
+          onDone: (_job, rawResult) => {
+            const event = rawResult as { conversationId?: string; messageId?: string };
+            if (event.conversationId) setConversationId(event.conversationId);
             let hasInsertableMessage = false;
             setChatMessages((items) =>
               items.map((item) =>
@@ -2503,14 +2558,14 @@ export default function EditorPage() {
                       hasInsertableMessage = hasInsertableMessage || insertable;
                       return item.kind === "skill_status"
                         ? { ...item, insertable: false }
-                        : { ...item, id: event.messageId, insertable };
+                        : { ...item, id: event.messageId ?? item.id, insertable };
                     })()
                   : item,
               ),
             );
             setStatusMessage(hasInsertableMessage ? "AI 回复完成，可插入正文或生成配图" : "AI 回复完成");
+            chatJobIdRef.current = null;
           },
-          onSkill: (event) => handleCreativeChatSkillEvent(event, assistantId),
           onError: (text) => setStatusMessage(text),
         },
       );
@@ -2524,6 +2579,16 @@ export default function EditorPage() {
       streamLockRef.current = false;
       setIsChatStreaming(false);
     }
+  }
+
+  async function stopCreativeChat() {
+    const jobId = chatJobIdRef.current;
+    if (!jobId) return;
+    await cancelJob(jobId).catch(() => undefined);
+    chatJobIdRef.current = null;
+    streamLockRef.current = false;
+    setIsChatStreaming(false);
+    setStatusMessage("AI 任务已取消");
   }
 
   async function rewriteSelected(action: "polish" | "expand" | "tone", toneOverride?: string) {
@@ -4137,13 +4202,13 @@ export default function EditorPage() {
               />
               <button
                 type="button"
-                onClick={() => void sendCreativeChatMessage()}
-                disabled={isBusy || isChatStreaming}
+                onClick={() => void (isChatStreaming ? stopCreativeChat() : sendCreativeChatMessage())}
+                disabled={isBusy}
                 className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-[#ff2442] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <Sparkles size={16} />
                 {isChatStreaming
-                  ? "AI 输出中..."
+                  ? "停止并取消任务"
                   : "发送给 AI"}
               </button>
             </div>

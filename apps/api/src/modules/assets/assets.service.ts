@@ -5,6 +5,10 @@ import { PrismaService } from "../../infra/prisma/prisma.service";
 import { SafetyRuleEngine } from "../ai/safety/safety-rule-engine.service";
 import { StorageService } from "../storage/storage.service";
 import { ContentReviewPolicyService } from "../workflow/content-review-policy.service";
+import { fileTypeFromBuffer } from "file-type";
+import sharp, { type Metadata } from "sharp";
+import { ImageModerationService } from "./image-moderation.service";
+import { UserRateLimitService } from "../workflow/user-rate-limit.service";
 
 type UploadFile = {
   originalname: string;
@@ -26,7 +30,9 @@ export class AssetsService {
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
     private readonly safetyRuleEngine: SafetyRuleEngine,
-    private readonly reviewPolicy: ContentReviewPolicyService
+    private readonly reviewPolicy: ContentReviewPolicyService,
+    private readonly imageModeration: ImageModerationService,
+    private readonly rateLimit: UserRateLimitService
   ) {}
 
   async list(userId: string, contentId?: string) {
@@ -67,11 +73,17 @@ export class AssetsService {
     for (const asset of pendingAssets) {
       try {
         if (this.isImageMimeType(asset.mimeType)) {
+          const metadata = asset.metadata && typeof asset.metadata === "object" ? asset.metadata as Record<string, unknown> : {};
+          const storageKey = typeof metadata.storageKey === "string" ? metadata.storageKey : undefined;
+          if (!storageKey) throw new Error("image storage key is unavailable");
+          const buffer = await this.storage.readBuffer(storageKey);
+          const review = await this.imageModeration.reviewImage({ buffer, mimeType: asset.mimeType, fileName: asset.fileName });
           await this.prisma.asset.update({
             where: { id: asset.id },
-            data: this.approvedAudit("图片基础校验通过"),
+            data: review,
           });
-          successCount += 1;
+          if (review.auditStatus === AssetAuditStatus.rejected) rejectCount += 1;
+          else if (review.auditStatus === AssetAuditStatus.approved) successCount += 1;
           continue;
         }
 
@@ -121,6 +133,7 @@ export class AssetsService {
   }
 
   async create(userId: string, body: { fileName: string; mimeType: string; url: string; contentId?: string }) {
+    await this.rateLimit.consume(userId, "write");
     const safeName = this.normalizeFileName(body.fileName);
     const audit = await this.auditAssetInput({
       fileName: safeName,
@@ -152,12 +165,21 @@ export class AssetsService {
   }
 
   async upload(userId: string, file: UploadFile, contentId?: string) {
+    await this.rateLimit.consume(userId, "upload");
     if (!file) {
       throw new NotFoundException("asset file not found");
     }
 
     const originalName = this.normalizeFileName(file.originalname);
-    const mimeType = this.normalizeMimeType(file.mimetype, originalName);
+    let mimeType = this.normalizeMimeType(file.mimetype, originalName);
+    let safeBuffer = file.buffer;
+    let imageMetadata: Record<string, unknown> = {};
+    if (this.isImageMimeType(mimeType)) {
+      const validated = await this.validateImage(file.buffer, mimeType);
+      mimeType = validated.mimeType;
+      safeBuffer = validated.buffer;
+      imageMetadata = validated.metadata;
+    }
     const isTextFile = this.isTextMimeType(mimeType);
     const previewText = isTextFile ? file.buffer.toString("utf8").slice(0, 8000) : undefined;
 
@@ -166,6 +188,7 @@ export class AssetsService {
       mimeType,
       size: file.size,
       previewText,
+      imageBuffer: this.isImageMimeType(mimeType) ? safeBuffer : undefined,
     });
 
     if (audit.auditStatus === AssetAuditStatus.rejected) {
@@ -176,7 +199,7 @@ export class AssetsService {
       folder: "user-assets",
       fileName: originalName,
       mimeType,
-      buffer: file.buffer,
+      buffer: safeBuffer,
     });
 
     const asset = await this.prisma.asset.create({
@@ -191,6 +214,7 @@ export class AssetsService {
           originalName,
           storageKey: stored.storageKey,
           ...(previewText ? { previewText } : {}),
+          ...imageMetadata,
         },
         auditStatus: audit.auditStatus,
         auditReason: audit.auditReason,
@@ -210,6 +234,9 @@ export class AssetsService {
     const asset = await this.prisma.asset.findFirst({ where: { id, uploaderId: userId } });
     if (!asset) {
       throw new NotFoundException("asset not found");
+    }
+    if (asset.auditStatus !== AssetAuditStatus.approved) {
+      throw new BadRequestException("asset has not passed content moderation");
     }
 
     const content = await this.prisma.content.findFirst({ where: { id: contentId, authorId: userId } });
@@ -289,7 +316,7 @@ export class AssetsService {
   }
 
   private async auditAssetInput(
-    input: { fileName: string; mimeType: string; size?: number; previewText?: string; imageDesc?: string }
+    input: { fileName: string; mimeType: string; size?: number; previewText?: string; imageBuffer?: Buffer }
   ) {
     const mimeType = input.mimeType.toLowerCase();
     if (!this.isSafeMimeType(mimeType)) {
@@ -306,7 +333,8 @@ export class AssetsService {
     }
 
     if (this.isImageMimeType(mimeType)) {
-      return this.approvedAudit("图片基础校验通过");
+      if (!input.imageBuffer) return { auditStatus: AssetAuditStatus.pending, auditReason: "等待图片内容审核", riskLevel: "unknown" as const, riskTypes: [] };
+      return this.imageModeration.reviewImage({ buffer: input.imageBuffer, mimeType, fileName: input.fileName });
     }
 
     const scanText = `${input.fileName}\n${input.previewText ?? ""}`.toLowerCase();
@@ -374,5 +402,30 @@ export class AssetsService {
     if (extension === "txt") return "text/plain";
     if (extension === "md" || extension === "markdown") return "text/markdown";
     return normalized || "application/octet-stream";
+  }
+
+  private async validateImage(buffer: Buffer, declaredMimeType: string) {
+    if (buffer.byteLength > MAX_IMAGE_SIZE) throw new BadRequestException("image asset size exceeds 10MB");
+    const detected = await fileTypeFromBuffer(buffer);
+    if (!detected || !this.isImageMimeType(detected.mime)) throw new BadRequestException("invalid or unsupported image content");
+    if (declaredMimeType !== "application/octet-stream" && detected.mime !== declaredMimeType) {
+      throw new BadRequestException("declared image type does not match file content");
+    }
+    let metadata: Metadata;
+    try {
+      metadata = await sharp(buffer, { animated: true, limitInputPixels: 40_000_000 }).metadata();
+    } catch {
+      throw new BadRequestException("image decoding failed");
+    }
+    const width = metadata.width ?? 0;
+    const height = metadata.height ?? 0;
+    const pages = metadata.pages ?? 1;
+    if (!width || !height || width > 16_384 || height > 16_384 || width * height > 40_000_000 || pages > 200) {
+      throw new BadRequestException("image dimensions, pixels, or frame count exceed limits");
+    }
+    // Re-encode to strip untrusted metadata and ensure the decoder consumed a
+    // valid image. Animated input is normalized to a safe first-frame WebP.
+    const normalized = await sharp(buffer, { page: 0, limitInputPixels: 40_000_000 }).rotate().webp({ quality: 90 }).toBuffer();
+    return { buffer: normalized, mimeType: "image/webp", metadata: { width, height, pages, originalMimeType: detected.mime } };
   }
 }

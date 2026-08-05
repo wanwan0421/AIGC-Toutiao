@@ -6,10 +6,11 @@ import { WorkflowModule } from "../workflow/workflow.module";
 import { AssetsController } from "./assets.controller";
 import { AssetsService } from "./assets.service";
 import { ImageModerationService } from "./image-moderation.service";
+import { AdminGuard } from "../auth/admin.guard";
 
 @Module({
   imports: [AuthModule, StorageModule, AiCoreModule, WorkflowModule],
   controllers: [AssetsController],
-  providers: [AssetsService, ImageModerationService]
+  providers: [AssetsService, AdminGuard]
 })
 export class AssetsModule {}

@@ -60,7 +60,7 @@ describe("AI job reliability primitives", () => {
     vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
     })));
-    const service = new ImageGenerationService({} as never, {} as never);
+    const service = new ImageGenerationService({} as never, {} as never, {} as never);
     const controller = new AbortController();
     const request = service.generateSingleImage({ userId: "user-1", prompt: "cover", signal: controller.signal });
     await Promise.resolve();
@@ -142,6 +142,7 @@ describe("AI job reliability primitives", () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
       {} as never
     );
     const result = await (runner as unknown as {
@@ -161,6 +162,7 @@ describe("AI job reliability primitives", () => {
     const runner = new WorkflowJobRunner(
       prisma as never,
       { createInTransaction: createEvent, notify: vi.fn() } as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,

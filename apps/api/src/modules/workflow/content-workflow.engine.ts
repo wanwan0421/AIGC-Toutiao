@@ -56,8 +56,8 @@ export class ContentWorkflowEngine {
     });
   }
 
-  streamCreativeChat(body: CreativeChatRequest) {
-    return this.assistantSkill.streamChat(body);
+  streamCreativeChat(body: CreativeChatRequest, options: { signal?: AbortSignal } = {}) {
+    return this.assistantSkill.streamChat(body, options);
   }
 
   generateTitles(body: TitleGenerateRequest) {
@@ -109,8 +109,8 @@ export class ContentWorkflowEngine {
     };
   }
 
-  async runContentAudit(contentId: string, options: { signal?: AbortSignal; aiJobId?: string } = {}) {
-    const content = await this.prisma.content.findUnique({ where: { id: contentId }, include: contentInclude });
+  async runContentAudit(userId: string, contentId: string, options: { signal?: AbortSignal; aiJobId?: string } = {}) {
+    const content = await this.prisma.content.findFirst({ where: { id: contentId, authorId: userId }, include: contentInclude });
     if (!content) {
       throw new NotFoundException("content not found");
     }

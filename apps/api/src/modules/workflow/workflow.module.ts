@@ -14,6 +14,8 @@ import { ContentDraftPersistenceService } from "./content-draft-persistence.serv
 import { WorkflowJobResultCommitService } from "./workflow-job-result-commit.service";
 import { WorkflowJobRunner } from "./workflow-job.runner";
 import { WorkflowJobService } from "./workflow-job.service";
+import { AiJobPayloadValidator } from "./ai-job-payload.validator";
+import { UserRateLimitService } from "./user-rate-limit.service";
 
 @Module({
   imports: [AiCoreModule, ContentMetricsModule, PromptsModule],
@@ -30,6 +32,8 @@ import { WorkflowJobService } from "./workflow-job.service";
     WorkflowJobResultCommitService,
     WorkflowJobRunner,
     WorkflowJobService,
+    AiJobPayloadValidator,
+    UserRateLimitService,
   ],
   exports: [
     ContentReviewPolicyService,
@@ -40,6 +44,7 @@ import { WorkflowJobService } from "./workflow-job.service";
     WorkflowJobResultCommitService,
     WorkflowJobRunner,
     WorkflowJobService,
+    UserRateLimitService,
   ],
 })
 export class WorkflowModule {}

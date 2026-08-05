@@ -18,7 +18,7 @@ export class IdeaAssistantAgent {
     bodySummary?: string;
     selectedText?: string;
     historyText?: string;
-  }) {
+  }, options: { signal?: AbortSignal } = {}) {
     const rendered = await this.prompts.render(AI_PROMPT_NAMES.creativeChat, input, CREATIVE_CHAT_FALLBACK_PROMPT);
     const { model } = rendered;
     const prompt = rendered.prompt.trim() || this.interpolate(CREATIVE_CHAT_FALLBACK_PROMPT, input);
@@ -42,6 +42,7 @@ export class IdeaAssistantAgent {
           content: `请只回答这个问题：${input.message}`,
         },
       ],
+      signal: options.signal,
     });
   }
 

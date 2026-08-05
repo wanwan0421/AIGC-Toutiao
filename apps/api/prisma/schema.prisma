@@ -354,6 +354,9 @@ model AiJob {
   id           String      @id @default(cuid())
   userId       String
   contentId    String?
+  conversationId String?
+  assistantMessageId String?
+  idempotencyKey String?
   type         AiJobType
   status       AiJobStatus @default(queued)
   progress     Int         @default(0)
@@ -382,6 +385,9 @@ model AiJob {
   checkpoints  AiJobCheckpoint[]
 
   @@index([userId, createdAt])
+  @@index([userId, conversationId, createdAt])
+  @@index([userId, contentId, createdAt])
+  @@unique([userId, idempotencyKey])
   @@index([contentId, createdAt])
   @@index([status, updatedAt])
   @@index([status, completedAt])
@@ -506,6 +512,7 @@ enum AiJobDispatchStatus {
 }
 
 enum AiJobType {
+  creative_chat
   creative_direct_generate
   creative_image_generate
   content_submit_review

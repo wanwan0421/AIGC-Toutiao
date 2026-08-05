@@ -5,6 +5,9 @@ import { randomUUID } from "node:crypto";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { StorageService } from "../storage/storage.service";
 import { AppError, throwIfAborted } from "../../common/app-error";
+import { fileTypeFromBuffer } from "file-type";
+import sharp from "sharp";
+import { ImageModerationService } from "../assets/image-moderation.service";
 
 type GeneratedImageOutput = {
   kind: "remoteUrl" | "dataUrl";
@@ -26,7 +29,8 @@ export class ImageGenerationService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly storage: StorageService
+    private readonly storage: StorageService,
+    private readonly imageModeration: ImageModerationService
   ) {}
 
   configStatus() {
@@ -99,6 +103,20 @@ export class ImageGenerationService {
             mimeType: output.mimeType,
           }, input.signal);
 
+    let moderation;
+    try {
+      const inspected = await this.inspectStoredImage(stored.storageKey, input.signal);
+      moderation = await this.imageModeration.reviewImage({
+        buffer: inspected.buffer,
+        mimeType: inspected.mimeType,
+        fileName: requestedFileName,
+        signal: input.signal,
+      });
+    } catch (error) {
+      await this.storage.deleteObject({ storageKey: stored.storageKey }).catch(() => undefined);
+      throw error;
+    }
+
     const metadata: Prisma.InputJsonObject = {
       prompt: input.prompt,
       position: input.position,
@@ -122,10 +140,10 @@ export class ImageGenerationService {
         url: stored.url,
         source: "ai_generated",
         generationKey: input.generationKey,
-        auditStatus: AssetAuditStatus.approved,
-        auditReason: "AI生成图片默认免检",
-        riskLevel: "low",
-        riskTypes: [],
+        auditStatus: moderation.auditStatus,
+        auditReason: moderation.auditReason,
+        riskLevel: moderation.riskLevel,
+        riskTypes: moderation.riskTypes,
         metadata,
         },
       });
@@ -182,10 +200,11 @@ export class ImageGenerationService {
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => "");
+      this.logger.error(`Ark image generation failed: status=${response.status}; url=${this.apiUrl}; body=${errorText.slice(0, 500)}`);
       const retryable = response.status === 429 || response.status >= 500;
       throw new AppError({
         code: response.status === 429 ? "UPSTREAM_RATE_LIMITED" : retryable ? "UPSTREAM_UNAVAILABLE" : response.status === 401 || response.status === 403 ? "UPSTREAM_AUTH_FAILED" : "UPSTREAM_BAD_REQUEST",
-        message: `Ark image generation failed: ${response.status} - ${errorText}`,
+        message: response.status === 429 ? "图片生成服务请求过于频繁" : "图片生成服务暂时不可用",
         statusCode: 502,
         retryable,
       });
@@ -297,5 +316,18 @@ export class ImageGenerationService {
     } catch {
       return "unknown";
     }
+  }
+
+  private async inspectStoredImage(storageKey: string, signal?: AbortSignal) {
+    throwIfAborted(signal);
+    const buffer = await this.storage.readBuffer(storageKey);
+    if (buffer.byteLength > 10 * 1024 * 1024) throw new AppError({ code: "IMAGE_TOO_LARGE", message: "Generated image exceeds size limit", statusCode: 422, retryable: false });
+    const detected = await fileTypeFromBuffer(buffer);
+    if (!detected?.mime.startsWith("image/")) throw new AppError({ code: "INVALID_IMAGE", message: "Generated file is not an image", statusCode: 422, retryable: false });
+    const metadata = await sharp(buffer, { animated: true, limitInputPixels: 40_000_000 }).metadata();
+    if (!metadata.width || !metadata.height || metadata.width > 16_384 || metadata.height > 16_384 || metadata.width * metadata.height > 40_000_000 || (metadata.pages ?? 1) > 200) {
+      throw new AppError({ code: "IMAGE_DIMENSIONS_EXCEEDED", message: "Generated image dimensions exceed limits", statusCode: 422, retryable: false });
+    }
+    return { buffer, mimeType: detected.mime };
   }
 }

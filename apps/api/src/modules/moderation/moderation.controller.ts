@@ -5,6 +5,7 @@ import { CurrentUser } from "../auth/current-user.decorator";
 import { WorkflowJobService } from "../workflow/workflow-job.service";
 import { ModerationService } from "./moderation.service";
 
+@UseGuards(AuthGuard)
 @Controller("moderation")
 export class ModerationController {
   constructor(
@@ -13,16 +14,15 @@ export class ModerationController {
   ) {}
 
   @Get("contents/:contentId")
-  getContentAudit(@Param("contentId") contentId: string) {
-    return this.moderationService.getContentAudit(contentId);
+  getContentAudit(@CurrentUser() user: UserProfileSummary, @Param("contentId") contentId: string) {
+    return this.moderationService.getContentAudit(user.id, contentId);
   }
 
   @Post("contents/:contentId/run")
-  runContentAudit(@Param("contentId") contentId: string) {
-    return this.moderationService.runContentAudit(contentId);
+  runContentAudit(@CurrentUser() user: UserProfileSummary, @Param("contentId") contentId: string) {
+    return this.moderationService.runContentAudit(user.id, contentId);
   }
 
-  @UseGuards(AuthGuard)
   @Post("contents/:contentId/run/jobs")
   runContentAuditJob(@CurrentUser() user: UserProfileSummary, @Param("contentId") contentId: string) {
     return this.jobs.create({

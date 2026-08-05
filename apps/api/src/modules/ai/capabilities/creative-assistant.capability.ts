@@ -32,7 +32,7 @@ export class CreativeAssistantCapability {
     return this.selectionRewriter.run(request);
   }
 
-  async *streamChat(request: CreativeChatRequest) {
+  async *streamChat(request: CreativeChatRequest, options: { signal?: AbortSignal } = {}) {
     const startedAt = Date.now();
     const context = await this.contextBuilder.buildCreativeChatContext(request);
     const assistantMessageId = this.memory.createMessageId();
@@ -45,12 +45,13 @@ export class CreativeAssistantCapability {
       title: request.message.slice(0, 48),
     }).catch(() => null);
     const conversationId = conversation?.id ?? context.conversationId;
-    const archivedHistory = conversation ? await this.conversations.recentMessages(conversationId).catch(() => []) : [];
+    const archivedHistory = conversation ? await this.conversations.recentMessages(conversationId, context.userId).catch(() => []) : [];
     const historyText = this.contextBuilder.formatHistory(archivedHistory.length ? archivedHistory : context.history);
 
     await this.conversations.appendMessage({
       id: this.memory.createMessageId(),
       conversationId,
+      userId: context.userId,
       role: "user",
       content: request.message,
       metadata: {
@@ -74,7 +75,7 @@ export class CreativeAssistantCapability {
       currentBody: context.currentBody,
       selectedText: context.selectedText,
       historyText,
-    });
+    }, options);
 
     let archiveAssistantMessage = true;
 
@@ -123,7 +124,7 @@ export class CreativeAssistantCapability {
         bodySummary: context.bodySummary,
         selectedText: context.selectedText,
         historyText,
-      })) {
+      }, options)) {
         assistantContent += delta;
         yield {
           type: "delta" as const,
@@ -138,7 +139,7 @@ export class CreativeAssistantCapability {
         bodySummary: context.bodySummary,
         selectedText: context.selectedText,
         historyText,
-      })) {
+      }, options)) {
         assistantContent += delta;
         yield {
           type: "delta" as const,
@@ -165,6 +166,7 @@ export class CreativeAssistantCapability {
       await this.conversations.appendMessage({
         id: assistantMessageId,
         conversationId,
+        userId: context.userId,
         role: "assistant",
         content: assistantContent,
       }).catch(() => undefined);
@@ -222,6 +224,7 @@ export class CreativeAssistantCapability {
     return decision.message ?? "这个技能还缺少必要输入，请补充后再试。";
   }
 
+  // 构建Skill任务请求
   private buildSkillJobRequest(
     decision: SkillRouterDecision,
     input: {

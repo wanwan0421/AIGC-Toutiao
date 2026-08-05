@@ -650,11 +650,12 @@ export async function autosaveDraft(
   );
 }
 
-export async function startAiJob(body: AiJobStartRequest) {
+export async function startAiJob(body: AiJobStartRequest, idempotencyKey = crypto.randomUUID()) {
   return apiRequest<AiJobSnapshot>(
     "/ai/jobs",
     {
       method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
       body: JSON.stringify(body)
     },
     true
@@ -667,6 +668,14 @@ export async function getAiJob(id: string) {
 
 export async function cancelAiJob(id: string) {
   return apiRequest<AiJobSnapshot>(`/ai/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" }, true);
+}
+
+export async function recoverAiJobs(scope: { conversationId?: string; contentId?: string; limit?: number }) {
+  const query = new URLSearchParams();
+  if (scope.conversationId) query.set("conversationId", scope.conversationId);
+  if (scope.contentId) query.set("contentId", scope.contentId);
+  if (scope.limit) query.set("limit", String(scope.limit));
+  return apiRequest<AiJobSnapshot[]>(`/ai/jobs?${query.toString()}`, {}, true);
 }
 
 export async function commitAiJobResult(id: string, body: AiJobResultCommitRequest) {

@@ -80,7 +80,9 @@ export class DraftGeneratorAgent {
     );
 
     const candidate = this.mergeStageOutputs(draft, visualPlan);
+    // 执行输出确定性预校验
     const preValidation = validateDirectGenerateResult(candidate);
+    // 如果预校验失败，则尝试使用归一化阶段进行修复
     const normalized = await this.normalizeOutput(
       {
         request: input,
@@ -93,6 +95,7 @@ export class DraftGeneratorAgent {
       stageOptions,
       preValidation.ok ? candidate : undefined
     );
+    // 执行归一化结果的确定性校验
     const finalValidation = validateDirectGenerateResult(normalized);
     if (!finalValidation.ok) {
       throw new Error(`content-production-line output invalid: ${finalValidation.errors.join("; ")}`);
@@ -143,6 +146,7 @@ export class DraftGeneratorAgent {
     }
   }
 
+  // 运行一个阶段
   private async runStage<T>(
     stageName: string,
     promptFile: string,

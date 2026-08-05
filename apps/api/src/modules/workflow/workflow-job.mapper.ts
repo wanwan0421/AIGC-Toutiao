@@ -4,6 +4,8 @@ export type AiJobRecord = {
   id: string;
   userId: string;
   contentId: string | null;
+  conversationId: string | null;
+  assistantMessageId: string | null;
   type: string;
   status: string;
   progress: number;
@@ -34,6 +36,8 @@ export function toAiJobSnapshot(job: AiJobRecord): AiJobSnapshot {
     type: job.type as AiJobType,
     status: job.status as AiJobStatus,
     contentId: job.contentId,
+    conversationId: job.conversationId,
+    assistantMessageId: job.assistantMessageId,
     progress: job.progress,
     currentStep: job.currentStep,
     input: toRecord(job.input),

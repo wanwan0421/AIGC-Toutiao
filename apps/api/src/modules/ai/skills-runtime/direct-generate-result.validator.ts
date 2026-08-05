@@ -129,12 +129,12 @@ export function validateDirectGenerateResult(input: unknown): ValidationResult {
     imageAssets: [],
   };
 
-  if (!value.title) errors.push("title is required");
-  if (!value.bodyMarkdown) errors.push("bodyMarkdown is required");
-  if (!value.tags.length) errors.push("tags must contain at least one item");
-  if (!Array.isArray(record.titleCandidates)) errors.push("titleCandidates must be an array");
-  if (!Array.isArray(record.imagePrompts)) errors.push("imagePrompts must be an array");
-  if (!Array.isArray(record.outline)) errors.push("outline must be an array");
+  if (!value.title) errors.push("标题不能为空");
+  if (!value.bodyMarkdown) errors.push("正文不能为空");
+  if (!value.tags.length) errors.push("标签不能为空");
+  if (!Array.isArray(record.titleCandidates)) errors.push("标题候选不能为空");
+  if (!Array.isArray(record.imagePrompts)) errors.push("图片提示不能为空");
+  if (!Array.isArray(record.outline)) errors.push("大纲不能为空");
 
   return {
     ok: errors.length === 0,

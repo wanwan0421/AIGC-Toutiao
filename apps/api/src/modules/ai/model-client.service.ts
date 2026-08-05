@@ -1,9 +1,12 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { AppError, combineAbortSignals, throwIfAborted } from "../../common/app-error";
 
-type ChatMessage = {
-  role: "system" | "user" | "assistant";
+export type ModelToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
+export type ModelMessage = {
+  role: "system" | "user" | "assistant" | "tool";
   content: string;
+  tool_call_id?: string;
+  tool_calls?: ModelToolCall[];
 };
 
 @Injectable()
@@ -26,7 +29,7 @@ export class ModelClientService {
   }
 
   async complete(options: {
-    messages: ChatMessage[];
+    messages: ModelMessage[];
     model?: string;
     temperature?: number;
     timeoutMs?: number;
@@ -68,7 +71,19 @@ export class ModelClientService {
     }
   }
 
-  async describeImage(imageBuffer: Buffer, mimeType: string, prompt: string = "请用简洁中文描述这张图片的内容，不要超过150字"): Promise<string> {
+  async completeWithTools(options: { messages: ModelMessage[]; tools: Array<Record<string, unknown>>; signal?: AbortSignal; model?: string }) {
+    this.assertConfigured(options.model);
+    const response = await this.fetchWithTimeout(this.apiUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${this.apiKey}` },
+      body: JSON.stringify({ model: this.modelName(options.model), messages: options.messages, tools: options.tools, tool_choice: "auto" }),
+    }, undefined, options.signal);
+    if (!response.ok) throw await this.upstreamHttpError(response, "Ark tool call failed", this.modelName(options.model));
+    const payload = await response.json() as Record<string, unknown>;
+    return { text: this.extractText(payload), toolCalls: this.extractToolCalls(payload) };
+  }
+
+  async describeImage(imageBuffer: Buffer, mimeType: string, prompt: string = "请用简洁中文描述这张图片的内容，不要超过150字", signal?: AbortSignal): Promise<string> {
     if (!this.hasRemoteProvider()) {
       this.logger.warn("Model provider not configured, skip image description");
       return "";
@@ -85,7 +100,7 @@ export class ModelClientService {
           Authorization: `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify(this.buildImageDescriptionRequestBody(dataUri, prompt)),
-      });
+      }, undefined, signal);
 
       if (!response.ok) {
         this.logger.warn(`Describe image request failed: ${response.status}`);
@@ -103,7 +118,7 @@ export class ModelClientService {
   }
 
   async *stream(options: {
-    messages: ChatMessage[];
+    messages: ModelMessage[];
     model?: string;
     temperature?: number;
     timeoutMs?: number;
@@ -238,7 +253,9 @@ export class ModelClientService {
   }
 
   private async upstreamHttpError(response: Response, prefix: string, model?: string) {
-    const message = await this.formatArkError(response, prefix, model);
+    const diagnostic = await this.formatArkError(response, prefix, model);
+    this.logger.error(diagnostic);
+    const message = response.status === 429 ? "AI 服务请求过于频繁" : "AI 服务暂时不可用";
     const retryAfterMs = this.retryAfterMs(response.headers.get("retry-after"));
     if (response.status === 429) {
       return new AppError({ code: "UPSTREAM_RATE_LIMITED", message, statusCode: 503, retryable: true, retryAfterMs });
@@ -268,7 +285,7 @@ export class ModelClientService {
 
   private buildRequestBody(
     options: {
-      messages: ChatMessage[];
+      messages: ModelMessage[];
       model?: string;
       temperature?: number;
     },
@@ -293,13 +310,26 @@ export class ModelClientService {
     };
   }
 
-  private buildInput(messages: ChatMessage[]) {
+  private buildInput(messages: ModelMessage[]) {
     return messages
       .map((message) => {
         const roleLabel = message.role === "system" ? "系统" : message.role === "assistant" ? "助手" : "用户";
         return `${roleLabel}：${message.content}`;
       })
       .join("\n\n");
+  }
+
+  private extractToolCalls(payload: Record<string, unknown>): ModelToolCall[] {
+    const choices = Array.isArray(payload.choices) ? payload.choices : [];
+    const message = (choices[0] as Record<string, unknown> | undefined)?.message as Record<string, unknown> | undefined;
+    const calls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
+    return calls.flatMap((value) => {
+      if (!value || typeof value !== "object") return [];
+      const record = value as Record<string, unknown>;
+      const fn = record.function as Record<string, unknown> | undefined;
+      if (typeof record.id !== "string" || typeof fn?.name !== "string" || typeof fn.arguments !== "string") return [];
+      return [{ id: record.id, type: "function" as const, function: { name: fn.name, arguments: fn.arguments } }];
+    });
   }
 
   private buildImageDescriptionRequestBody(dataUri: string, prompt: string) {
