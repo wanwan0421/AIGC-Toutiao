@@ -133,20 +133,6 @@ JSON Schema + Zod 校验与自动修复
 
 ![系统架构图](./docs/media/系统架构图.png)
 
-```mermaid
-flowchart LR
-    Web[Next.js Web / 编辑器] -->|HTTP + SSE| API[NestJS API]
-    API --> PG[(PostgreSQL)]
-    API --> Redis[(Redis)]
-    PG -->|AiJobDispatch Outbox| Dispatcher[Outbox Dispatcher]
-    Dispatcher --> Queue[BullMQ]
-    Queue --> Worker[AI Worker]
-    Worker --> Ark[Ark Chat / Responses / Images]
-    Worker --> PG
-    Worker --> Redis
-    API -->|事件回放与结果提交| Web
-```
-
 - Web：页面渲染、富文本编辑、自动保存、AI Job 提交/订阅和结果确认。
 - API：鉴权、业务校验、内容生命周期、会话归档、Outbox 派发、SSE 和结果提交。
 - Worker：独立消费 BullMQ 任务，执行智能体、审核、生产线、图片生成和会话压缩。
