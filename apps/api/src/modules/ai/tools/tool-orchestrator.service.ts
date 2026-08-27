@@ -11,7 +11,18 @@ export class ToolOrchestratorService {
     const seen = new Set<string>();
     for (let round = 0; round < maxRounds; round += 1) {
       throwIfAborted(context.signal);
-      const response = await this.model.completeWithTools({ messages, tools: this.registry.modelTools(), signal: context.signal });
+      const response = await this.model.completeWithTools({
+        messages,
+        tools: this.registry.modelTools(),
+        signal: context.signal,
+        telemetry: {
+          scene: "tool_orchestrator",
+          aiJobId: context.aiJobId,
+          contentId: context.contentId,
+          conversationId: context.conversationId,
+          inputSummary: `round ${round + 1}`,
+        },
+      });
       if (!response.toolCalls.length) return response.text;
       messages.push({ role: "assistant", content: response.text, tool_calls: response.toolCalls });
       for (const call of response.toolCalls) {

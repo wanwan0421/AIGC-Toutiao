@@ -2,11 +2,15 @@ import { Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import type { CreativeConversationSummary } from "@aicp/shared";
 import { PrismaService } from "../../infra/prisma/prisma.service";
+import { MemoryService } from "./memory.service";
 
 type ArchivedMessage = {
   id: string;
+  conversationId: string;
+  dedupeKey?: string | null;
   role: "user" | "assistant";
   content: string;
+  metadata?: Prisma.JsonValue | null;
   createdAt: Date;
 };
 
@@ -29,15 +33,20 @@ type AiArchiveStore = {
     delete: (args: unknown) => Promise<ArchivedConversation>;
   };
   aiMessage: {
-    create: (args: unknown) => Promise<unknown>;
+    create: (args: unknown) => Promise<ArchivedMessage>;
+    findUnique: (args: unknown) => Promise<ArchivedMessage | null>;
     findMany: (args: unknown) => Promise<ArchivedMessage[]>;
+    count: (args: unknown) => Promise<number>;
     updateMany: (args: unknown) => Promise<{ count: number }>;
   };
 };
 
 @Injectable()
 export class ConversationArchiveService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly memory: MemoryService
+  ) {}
 
   private get store() {
     return this.prisma as unknown as AiArchiveStore;
@@ -109,20 +118,58 @@ export class ConversationArchiveService {
     role: "user" | "assistant";
     content: string;
     metadata?: Record<string, unknown>;
+    dedupeKey?: string;
   }) {
     await this.assertOwned(input.conversationId, input.userId);
-    return this.store.aiMessage.create({
+    if (input.dedupeKey) {
+      const existing = await this.store.aiMessage.findUnique({ where: { dedupeKey: input.dedupeKey } });
+      if (existing) {
+        if (existing.role !== input.role || existing.conversationId !== input.conversationId) {
+          throw new Error(`AI message dedupe key collision: ${input.dedupeKey}`);
+        }
+        await this.memory.appendConversationMessage({
+          userId: input.userId,
+          conversationId: input.conversationId,
+          message: this.toMessageSummary(existing),
+        });
+        return existing;
+      }
+    }
+    const created = await this.store.aiMessage.create({
       data: {
         id: input.id,
         conversationId: input.conversationId,
+        dedupeKey: input.dedupeKey,
         role: input.role,
         content: input.content,
         metadata: input.metadata as Prisma.InputJsonValue | undefined,
       },
     });
+    await this.memory.appendConversationMessage({
+      userId: input.userId,
+      conversationId: input.conversationId,
+      message: this.toMessageSummary(created),
+    });
+    return created;
+  }
+
+  async allMessages(conversationId: string, userId: string) {
+    await this.assertOwned(conversationId, userId);
+    return this.store.aiMessage.findMany({
+      where: { conversationId },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    });
+  }
+
+  async messageCount(conversationId: string, userId: string) {
+    await this.assertOwned(conversationId, userId);
+    return this.store.aiMessage.count({ where: { conversationId } });
   }
 
   async recentMessages(conversationId: string, userId: string, limit = 12): Promise<CreativeConversationSummary["messages"]> {
+    const cached = await this.memory.getConversationHistory({ conversationId, userId, limit });
+    if (cached.messages) return cached.messages;
+
     await this.assertOwned(conversationId, userId);
     const messages = await this.store.aiMessage.findMany({
       where: { conversationId },
@@ -130,7 +177,15 @@ export class ConversationArchiveService {
       take: limit,
     });
 
-    return messages.reverse().map((message) => this.toMessageSummary(message));
+    const result = messages.reverse().map((message) => this.toMessageSummary(message));
+    await this.memory.setConversationHistory({
+      conversationId,
+      userId,
+      generation: cached.generation,
+      limit,
+      messages: result,
+    });
+    return result;
   }
 
   async listByContent(input: { userId: string; contentId: string; limit?: number }) {
@@ -236,6 +291,14 @@ export class ConversationArchiveService {
   private async mergeConversation(input: { sourceConversationId: string; targetConversationId: string }) {
     if (input.sourceConversationId === input.targetConversationId) return;
 
+    await Promise.all([
+      this.prisma.aiConversationProviderSession.deleteMany({
+        where: { conversationId: { in: [input.sourceConversationId, input.targetConversationId] } },
+      }),
+      this.prisma.aiConversationSummary.deleteMany({
+        where: { conversationId: { in: [input.sourceConversationId, input.targetConversationId] } },
+      }),
+    ]);
     await this.store.aiMessage.updateMany({
       where: { conversationId: input.sourceConversationId },
       data: { conversationId: input.targetConversationId },
@@ -243,6 +306,10 @@ export class ConversationArchiveService {
     await this.store.aiConversation.delete({
       where: { id: input.sourceConversationId },
     });
+    await Promise.all([
+      this.memory.invalidateConversation(input.sourceConversationId),
+      this.memory.invalidateConversation(input.targetConversationId),
+    ]);
   }
 
   private toConversationSummary(conversation: ArchivedConversation): CreativeConversationSummary {

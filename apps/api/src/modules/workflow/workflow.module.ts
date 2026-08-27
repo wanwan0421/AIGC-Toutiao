@@ -16,6 +16,7 @@ import { WorkflowJobRunner } from "./workflow-job.runner";
 import { WorkflowJobService } from "./workflow-job.service";
 import { AiJobPayloadValidator } from "./ai-job-payload.validator";
 import { UserRateLimitService } from "./user-rate-limit.service";
+import { AiJobHandlerRegistry } from "./ai-job-handler.registry";
 
 @Module({
   imports: [AiCoreModule, ContentMetricsModule, PromptsModule],
@@ -34,6 +35,7 @@ import { UserRateLimitService } from "./user-rate-limit.service";
     WorkflowJobService,
     AiJobPayloadValidator,
     UserRateLimitService,
+    AiJobHandlerRegistry,
   ],
   exports: [
     ContentReviewPolicyService,

@@ -11,14 +11,13 @@ export class ContextBuilderService {
     const userId = await this.resolveUserId(request.userId);
     const contentId = request.contentId ?? "new-content";
     const conversationId = request.conversationId ?? this.memoryService.createConversationId();
-    const history = await this.memoryService.getShortTermMessages({ userId, contentId, conversationId });
 
     return {
       userId,
       contentId,
       persistenceContentId: request.contentId ?? null,
       conversationId,
-      history,
+      history: [] as CreativeChatMessage[],
       currentTitle: request.currentTitle ?? "",
       currentBody: request.currentBody ?? "",
       selectedText: request.selectedText ?? "",

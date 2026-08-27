@@ -1,31 +1,43 @@
 import { Injectable } from "@nestjs/common";
 import type { TitleGenerateRequest, TitleGenerateResult } from "@aicp/shared";
-import { AiCallLogService } from "../ai-call-log.service";
 import { ModelClientService } from "../model-client.service";
 import { PromptTemplateService } from "../prompt-template.service";
 import { AI_PROMPT_NAMES } from "../prompt-names";
 import { promptTemperature } from "../prompt-model-options";
-import { parseJsonObject } from "../structured-output";
+import { completeStructured } from "../structured-output";
+import { titleGenerateSchema } from "./structured-agent.schemas";
 
 @Injectable()
 export class TitleAgent {
   constructor(
     private readonly modelClient: ModelClientService,
-    private readonly prompts: PromptTemplateService,
-    private readonly logs: AiCallLogService
+    private readonly prompts: PromptTemplateService
   ) {}
 
-  async run(input: TitleGenerateRequest): Promise<TitleGenerateResult> {
-    const startedAt = Date.now();
+  async run(input: TitleGenerateRequest, options: { signal?: AbortSignal; aiJobId?: string; contentId?: string; conversationId?: string } = {}): Promise<TitleGenerateResult> {
     const rendered = await this.prompts.render(
       AI_PROMPT_NAMES.titleGenerate,
       input as unknown as Record<string, unknown>
     );
     const { prompt, model } = rendered;
 
-    const content = await this.modelClient.complete({
+    const parsed = await completeStructured({
+      modelClient: this.modelClient,
+      name: "title_generate",
+      schema: titleGenerateSchema,
       model,
+      telemetry: {
+        scene: AI_PROMPT_NAMES.titleGenerate,
+        promptKey: rendered.promptKey,
+        promptVersionId: rendered.promptVersionId,
+        inputSummary: `${input.currentTitle ?? ""} / ${input.body.slice(0, 100)}`,
+        aiJobId: options.aiJobId,
+        contentId: options.contentId,
+        conversationId: options.conversationId,
+      },
       temperature: promptTemperature(rendered.modelOptions, 0.65),
+      thinking: "disabled",
+      signal: options.signal,
       messages: [
         {
           role: "system",
@@ -33,22 +45,6 @@ export class TitleAgent {
         },
         { role: "user", content: prompt },
       ],
-    });
-
-    const parsed = parseJsonObject<TitleGenerateResult>(content);
-    if (!parsed?.candidates?.length) {
-      throw new Error("title_generate returned invalid candidates");
-    }
-
-    await this.logs.log({
-      scene: AI_PROMPT_NAMES.titleGenerate,
-      model: this.modelClient.modelName(model),
-      promptKey: rendered.promptKey,
-      promptVersionId: rendered.promptVersionId,
-      inputSummary: `${input.currentTitle ?? ""} / ${input.body.slice(0, 100)}`,
-      output: parsed,
-      latencyMs: Date.now() - startedAt,
-      success: true,
     });
 
     return parsed;

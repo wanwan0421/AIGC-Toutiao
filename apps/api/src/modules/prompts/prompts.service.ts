@@ -17,11 +17,9 @@ import { Prisma } from "@prisma/client";
 import { toApiPromptScene, toDbPromptScene } from "../../common/prisma-mappers";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { RedisService } from "../../infra/redis/redis.service";
-import { AiCallLogService } from "../ai/ai-call-log.service";
 import { ModelClientService } from "../ai/model-client.service";
 import { promptTemperature } from "../ai/prompt-model-options";
 import { AI_PROMPT_NAMES } from "../ai/prompt-names";
-import { parseJsonObject } from "../ai/structured-output";
 import { AppError, throwIfAborted } from "../../common/app-error";
 
 type DefinitionWithActiveVersion = Prisma.PromptDefinitionGetPayload<{ include: { activeVersion: true } }>;
@@ -71,8 +69,7 @@ export class PromptsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redisService: RedisService,
-    private readonly modelClient: ModelClientService,
-    private readonly logs: AiCallLogService
+    private readonly modelClient: ModelClientService
   ) {}
 
   async list(scene?: PromptScene) {
@@ -552,7 +549,7 @@ export class PromptsService {
         let errorMessage = assertionError;
 
         if (mode === "llm_eval" && !issues.some((item) => item.severity === "error")) {
-          const llmResult = await this.runLlmEvalCase(promptKey, version, testCase, renderedPrompt, startedAt, hooks.signal);
+          const llmResult = await this.runLlmEvalCase(promptKey, version, testCase, renderedPrompt, runId, hooks.signal);
           output = { ...output, ...llmResult.output };
           errorMessage = llmResult.errorMessage ?? assertionError;
         }
@@ -857,11 +854,11 @@ export class PromptsService {
     version: VersionRecord,
     testCase: TestCaseRecord,
     renderedPrompt: string,
-    startedAt: number,
+    aiJobId: string,
     signal?: AbortSignal
   ): Promise<{ output: PromptEvalStoredOutput; errorMessage?: string }> {
     try {
-      const rawText = await this.modelClient.complete({
+      const completion = await this.modelClient.completeWithMetadata({
         model: version.model ?? undefined,
         temperature: promptTemperature(this.jsonObject(version.modelOptions), 0.2),
         timeoutMs: this.promptEvalTimeoutMs(),
@@ -873,22 +870,30 @@ export class PromptsService {
           { role: "user", content: renderedPrompt },
         ],
         signal,
+        telemetry: {
+          scene: `prompt_eval:${promptKey}`,
+          promptKey,
+          promptVersionId: version.id,
+          inputSummary: testCase.name,
+          aiJobId,
+        },
       });
-      const parsedOutput = parseJsonObject<Record<string, unknown>>(rawText);
+      const rawText = completion.text;
+      let parsedOutput: Record<string, unknown> | null = null;
+      try {
+        const candidate = JSON.parse(rawText) as unknown;
+        parsedOutput = candidate && typeof candidate === "object" && !Array.isArray(candidate) ? candidate as Record<string, unknown> : null;
+      } catch {
+        parsedOutput = null;
+      }
       const judge = this.evaluateLlmJudge(parsedOutput, testCase);
       const errorMessage = this.evalJudgeError(judge);
 
-      await this.logEvalCall({
-        scene: `prompt_eval:${promptKey}`,
-        model: this.modelClient.modelName(version.model ?? undefined),
-        promptKey,
-        promptVersionId: version.id,
-        inputSummary: testCase.name,
-        output: { rawText, parsedOutput, judge },
-        latencyMs: Date.now() - startedAt,
-        success: !errorMessage,
-        errorMessage,
-      });
+      await this.modelClient.attachStructuredResult(
+        completion.callLogId,
+        { rawText, parsedOutput, judge },
+        { success: !errorMessage, errorMessage },
+      );
 
       return {
         output: {
@@ -902,29 +907,10 @@ export class PromptsService {
       throwIfAborted(signal);
       const message = error instanceof Error ? error.message : "unknown llm eval error";
       const judge = this.evaluateLlmJudge(null, testCase);
-      await this.logEvalCall({
-        scene: `prompt_eval:${promptKey}`,
-        model: this.modelClient.modelName(version.model ?? undefined),
-        promptKey,
-        promptVersionId: version.id,
-        inputSummary: testCase.name,
-        latencyMs: Date.now() - startedAt,
-        success: false,
-        errorMessage: message,
-      });
       return {
         output: { error: message, judge },
         errorMessage: message,
       };
-    }
-  }
-
-  private async logEvalCall(data: Parameters<AiCallLogService["log"]>[0]) {
-    try {
-      await this.logs.log(data);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "unknown ai call log error";
-      this.logger.warn(`Prompt eval log skipped: ${message}`);
     }
   }
 

@@ -46,6 +46,18 @@ export class WorkflowJobService {
       throw new UnprocessableEntityException("AI job payload must be an object");
     }
     const payload = this.payloadValidator.parse(input.type, input.payload);
+    const contentId = input.contentId ?? this.contentIdFromPayload(payload);
+    if (contentId) {
+      const ownedContent = await this.prisma.content.count({ where: { id: contentId, authorId: input.userId } });
+      if (ownedContent === 0) throw new NotFoundException("content not found");
+    }
+    const suppliedIdempotencyKey = input.idempotencyKey?.trim().slice(0, 128);
+    const idempotencyKey = suppliedIdempotencyKey || `server:${randomUUID()}`;
+    if (!suppliedIdempotencyKey) {
+      this.logger.warn(`AI job ${input.type} did not include an idempotency key; generated a server fallback`);
+    }
+    const existing = await this.prisma.aiJob.findFirst({ where: { userId: input.userId, idempotencyKey } });
+    if (existing) return toAiJobSnapshot(existing);
     await this.rateLimit.consume(input.userId, input.type === AiJobType.CreativeImageGenerate ? "image" : "ai");
     const activeCount = await this.prisma.aiJob.count({
       where: { userId: input.userId, status: { in: [DbAiJobStatus.queued, DbAiJobStatus.running] } },
@@ -53,35 +65,41 @@ export class WorkflowJobService {
     if (activeCount >= 2) {
       throw new AppError({ code: "AI_CONCURRENCY_LIMIT", message: "当前运行中的 AI 任务已达到上限", statusCode: 429, retryable: true, retryAfterMs: 5_000 });
     }
-    if (input.idempotencyKey) {
-      const existing = await this.prisma.aiJob.findFirst({ where: { userId: input.userId, idempotencyKey: input.idempotencyKey } });
-      if (existing) return toAiJobSnapshot(existing);
-    }
     const jobId = randomUUID();
-    const created = await this.prisma.$transaction(async (tx) => {
-      const job = await tx.aiJob.create({
-        data: {
-          id: jobId,
-          userId: input.userId,
-          contentId: input.contentId ?? this.contentIdFromPayload(payload),
-          conversationId: input.conversationId ?? this.stringFromPayload(payload, "conversationId"),
-          assistantMessageId: input.assistantMessageId ?? this.stringFromPayload(payload, "assistantMessageId"),
-          idempotencyKey: input.idempotencyKey,
-          type: input.type,
-          status: DbAiJobStatus.queued,
-          input: this.toJson(payload),
-          dispatch: { create: { status: AiJobDispatchStatus.pending } },
-        },
+    let created: { snapshot: AiJobSnapshot; event: AiJobEvent };
+    try {
+      created = await this.prisma.$transaction(async (tx) => {
+        const job = await tx.aiJob.create({
+          data: {
+            id: jobId,
+            userId: input.userId,
+            contentId,
+            conversationId: input.conversationId ?? this.stringFromPayload(payload, "conversationId"),
+            assistantMessageId: input.assistantMessageId ?? this.stringFromPayload(payload, "assistantMessageId"),
+            idempotencyKey,
+            type: input.type,
+            status: DbAiJobStatus.queued,
+            input: this.toJson(payload),
+            dispatch: { create: { status: AiJobDispatchStatus.pending } },
+          },
+        });
+        const snapshot = toAiJobSnapshot(job);
+        const event = await this.events.createInTransaction(tx, job.id, {
+          type: "snapshot",
+          data: { job: snapshot },
+        });
+        return { snapshot, event };
       });
-      const snapshot = toAiJobSnapshot(job);
-      const event = await this.events.createInTransaction(tx, job.id, {
-        type: "snapshot",
-        data: { job: snapshot },
-      });
-      return { snapshot, event };
-    });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        const duplicate = await this.prisma.aiJob.findFirst({ where: { userId: input.userId, idempotencyKey } });
+        if (duplicate) return toAiJobSnapshot(duplicate);
+      }
+      throw error;
+    }
 
     await this.events.notify(jobId, created.event);
+    // 将任务加入队列，等待调度器处理
     await this.dispatcher.dispatchJob(jobId);
     return created.snapshot;
   }

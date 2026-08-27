@@ -2,18 +2,28 @@ import { Injectable, Logger } from "@nestjs/common";
 import { AiJobStatus as DbAiJobStatus, Prisma } from "@prisma/client";
 import { UnrecoverableError } from "bullmq";
 import { randomUUID } from "node:crypto";
-import { AiJobType, type CreativeChatRequest, type DirectGenerateRequest, type PromptEvalRunRequest } from "@aicp/shared";
+import {
+  AiJobType,
+  type CreativeChatRequest,
+  type DirectGenerateRequest,
+  type PromptEvalRunRequest,
+  type SelectionRewriteRequest,
+  type TitleGenerateRequest,
+} from "@aicp/shared";
 import { AppError, asAppError, jobCancelledError, throwIfAborted } from "../../common/app-error";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { ConversationArchiveService } from "../ai/conversation-archive.service";
-import { CreativeProductionCapability } from "../ai/capabilities/creative-production.capability";
-import { SkillExecutorService } from "../ai/skills-runtime/skill-executor.service";
+import { ConversationCompactionService } from "../ai/conversation-compaction.service";
+import { ConversationSessionService } from "../ai/conversation-session.service";
+import { MemoryService } from "../ai/memory.service";
+import { GenerateContentUseCase } from "../ai/application/generate-content.use-case";
+import { ImageGenerationService } from "../ai/image-generation.service";
 import { PromptsService } from "../prompts/prompts.service";
 import { ContentWorkflowEngine } from "./content-workflow.engine";
 import { WorkflowJobEventsService } from "./workflow-job-events.service";
 import { toAiJobSnapshot, type AiJobRecord } from "./workflow-job.mapper";
-import { WorkflowJobDispatcherService } from "./workflow-job-dispatcher.service";
-import { AiJobDispatchStatus } from "@prisma/client";
+import { AiJobHandlerRegistry } from "./ai-job-handler.registry";
+import { WorkflowJobService } from "./workflow-job.service";
 
 type RunOptions = {
   signal?: AbortSignal;
@@ -34,12 +44,18 @@ export class WorkflowJobRunner {
     private readonly prisma: PrismaService,
     private readonly events: WorkflowJobEventsService,
     private readonly workflow: ContentWorkflowEngine,
-    private readonly productionCapability: CreativeProductionCapability,
-    private readonly skillExecutor: SkillExecutorService,
+    private readonly imageGeneration: ImageGenerationService,
+    private readonly generateContent: GenerateContentUseCase,
     private readonly conversations: ConversationArchiveService,
     private readonly prompts: PromptsService,
-    private readonly dispatcher: WorkflowJobDispatcherService
-  ) {}
+    private readonly jobs: WorkflowJobService,
+    private readonly handlers: AiJobHandlerRegistry,
+    private readonly conversationCompaction?: ConversationCompactionService,
+    private readonly conversationSessions?: ConversationSessionService,
+    private readonly memory?: MemoryService
+  ) {
+    this.registerHandlers();
+  }
 
   async run(jobId: string, options: RunOptions = {}) {
     const runToken = randomUUID();
@@ -48,15 +64,16 @@ export class WorkflowJobRunner {
 
     try {
       throwIfAborted(options.signal);
-      const result = await this.runByType(
+      const result = await this.handlers.execute({
         jobId,
         runToken,
-        job.type as `${AiJobType}`,
-        this.asPayload(job.input),
-        job.userId,
-        job.contentId ?? undefined,
-        options.signal
-      );
+        type: job.type as `${AiJobType}`,
+        payload: this.asPayload(job.input),
+        userId: job.userId,
+        contentId: job.contentId ?? undefined,
+        conversationId: job.conversationId ?? undefined,
+        signal: options.signal,
+      });
       if (BROWSER_COMMIT_TYPES.has(job.type)) {
         await this.resultReady(jobId, runToken, result);
       } else {
@@ -95,35 +112,69 @@ export class WorkflowJobRunner {
     }
   }
 
-  private async runByType(
+  private registerHandlers() {
+    this.handlers.register(AiJobType.CreativeChat, ({ jobId, runToken, payload, userId, signal }) =>
+      this.runCreativeChat(jobId, runToken, payload, userId, signal));
+    if (this.conversationCompaction && this.memory) {
+      this.handlers.register(AiJobType.ConversationCompaction, ({ jobId, runToken, payload, userId, signal }) =>
+        this.runConversationCompaction(jobId, runToken, payload, userId, signal));
+    }
+    this.handlers.register(AiJobType.CreativeTitleGenerate, ({ jobId, runToken, payload, contentId, conversationId, signal }) =>
+      this.runCreativeTitleGenerate(jobId, runToken, payload as unknown as TitleGenerateRequest, contentId, conversationId, signal));
+    this.handlers.register(AiJobType.CreativeSelectionRewrite, ({ jobId, runToken, payload, contentId, conversationId, signal }) =>
+      this.runCreativeSelectionRewrite(jobId, runToken, payload as unknown as SelectionRewriteRequest, contentId, conversationId, signal));
+    this.handlers.register(AiJobType.CreativeDirectGenerate, ({ jobId, runToken, payload, userId, signal }) =>
+      this.runCreativeDirectGenerate(jobId, runToken, payload as unknown as DirectGenerateRequest, userId, signal));
+    this.handlers.register(AiJobType.CreativeImageGenerate, ({ jobId, runToken, payload, userId, contentId, signal }) =>
+      this.runCreativeImageGenerate(jobId, runToken, payload, userId, contentId, signal));
+    this.handlers.register(AiJobType.ContentSubmitReview, ({ jobId, runToken, userId, contentId, signal }) =>
+      this.runContentSubmitReview(jobId, runToken, userId, contentId, signal));
+    this.handlers.register(AiJobType.ContentApprove, ({ jobId, runToken, userId, contentId, signal }) =>
+      this.runContentQualityScore(jobId, runToken, userId, contentId, signal));
+    this.handlers.register(AiJobType.ModerationContentRun, ({ jobId, runToken, userId, contentId, signal }) =>
+      this.runModerationContentAudit(jobId, runToken, userId, contentId, signal));
+    this.handlers.register(AiJobType.ModerationTextRun, ({ jobId, runToken, payload, signal }) =>
+      this.runModerationTextAudit(jobId, runToken, payload, signal));
+    this.handlers.register(AiJobType.ComplianceRewrite, ({ jobId, runToken, payload, signal }) =>
+      this.runComplianceRewrite(jobId, runToken, payload, signal));
+    this.handlers.register(AiJobType.PromptEvalRun, ({ jobId, runToken, payload, signal }) =>
+      this.runPromptEvalRun(jobId, runToken, payload, signal));
+  }
+
+  private async runCreativeTitleGenerate(
     jobId: string,
     runToken: string,
-    type: `${AiJobType}`,
-    payload: Record<string, unknown>,
-    userId: string,
-    contentId: string | undefined,
+    payload: TitleGenerateRequest,
+    contentId?: string,
+    conversationId?: string,
     signal?: AbortSignal
   ) {
-    switch (type) {
-      case AiJobType.CreativeChat:
-        return this.runCreativeChat(jobId, runToken, payload, userId, signal);
-      case AiJobType.CreativeDirectGenerate:
-        return this.runCreativeDirectGenerate(jobId, runToken, payload as unknown as DirectGenerateRequest, userId, signal);
-      case AiJobType.CreativeImageGenerate:
-        return this.runCreativeImageGenerate(jobId, runToken, payload, userId, contentId, signal);
-      case AiJobType.ContentSubmitReview:
-        return this.runContentSubmitReview(jobId, runToken, userId, contentId, signal);
-      case AiJobType.ContentApprove:
-        return this.runContentQualityScore(jobId, runToken, userId, contentId, signal);
-      case AiJobType.ModerationContentRun:
-        return this.runModerationContentAudit(jobId, runToken, userId, contentId, signal);
-      case AiJobType.ComplianceRewrite:
-        return this.runComplianceRewrite(jobId, runToken, payload, signal);
-      case AiJobType.PromptEvalRun:
-        return this.runPromptEvalRun(jobId, runToken, payload, signal);
-      default:
-        throw new AppError({ code: "UNSUPPORTED_AI_JOB_TYPE", message: `Unsupported AI job type: ${type}`, statusCode: 422, retryable: false });
-    }
+    const cached = await this.loadCheckpoint(jobId, "workflow-result");
+    if (cached) return cached;
+    await this.progress(jobId, runToken, 20, "标题生成", "AI 正在生成标题候选");
+    await this.assertActive(jobId, runToken, signal);
+    const result = await this.workflow.generateTitles(payload, { signal, aiJobId: jobId, contentId, conversationId });
+    await this.saveCheckpoint(jobId, runToken, "workflow-result", result);
+    await this.partial(jobId, runToken, "titles", result);
+    return result;
+  }
+
+  private async runCreativeSelectionRewrite(
+    jobId: string,
+    runToken: string,
+    payload: SelectionRewriteRequest,
+    contentId?: string,
+    conversationId?: string,
+    signal?: AbortSignal
+  ) {
+    const cached = await this.loadCheckpoint(jobId, "workflow-result");
+    if (cached) return cached;
+    await this.progress(jobId, runToken, 20, "局部改写", "AI 正在改写选中文本");
+    await this.assertActive(jobId, runToken, signal);
+    const result = await this.workflow.rewriteSelection(payload, { signal, aiJobId: jobId, contentId, conversationId });
+    await this.saveCheckpoint(jobId, runToken, "workflow-result", result);
+    await this.partial(jobId, runToken, "selectionRewrite", result);
+    return result;
   }
 
   // 运行聊天任务
@@ -133,7 +184,11 @@ export class WorkflowJobRunner {
     let text = "";
     let conversationId = typeof payload.conversationId === "string" ? payload.conversationId : undefined;
     let messageId = typeof payload.assistantMessageId === "string" ? payload.assistantMessageId : undefined;
-    for await (const event of this.workflow.streamCreativeChat(request, { signal })) {
+    for await (const event of this.workflow.streamCreativeChat(request, {
+      signal,
+      aiJobId: jobId,
+      assistantMessageId: messageId,
+    })) {
       await this.assertActive(jobId, runToken, signal);
       if (event.type === "delta") text += String((event.data as { text?: string }).text ?? "");
       if (event.type === "meta" || event.type === "done") {
@@ -145,7 +200,7 @@ export class WorkflowJobRunner {
         const data = event.data as Record<string, unknown>;
         const requestData = data.jobRequest as { type?: AiJobType; payload?: Record<string, unknown>; contentId?: string } | undefined;
         if (requestData?.type) {
-          const nested = await this.createNestedJob(userId, conversationId, messageId, requestData);
+          const nested = await this.createNestedJob(jobId, userId, conversationId, messageId, requestData);
           const { jobRequest: _private, ...publicData } = data;
           await this.partial(jobId, runToken, "creativeChatEvent", { type: "skill", data: publicData });
           await this.partial(jobId, runToken, "creativeChatEvent", { type: "skill", data: { type: "job_started", skillKey: publicData.skillKey, message: "Skill 任务已开始", job: nested } });
@@ -154,29 +209,64 @@ export class WorkflowJobRunner {
       }
       await this.partial(jobId, runToken, "creativeChatEvent", event);
     }
+    if (conversationId && this.conversationCompaction && await this.conversationCompaction.shouldCompact(conversationId, userId)) {
+      await this.jobs.create({
+        userId,
+        type: AiJobType.ConversationCompaction,
+        payload: { conversationId },
+        conversationId,
+        idempotencyKey: `conversation-compaction:${conversationId}:${Math.floor(Date.now() / 60_000)}`,
+      }).catch((error) => this.logger.debug(`Conversation compaction enqueue skipped: ${error instanceof Error ? error.message : String(error)}`));
+    }
     return { conversationId, messageId, content: text };
   }
 
+  private async runConversationCompaction(
+    jobId: string,
+    runToken: string,
+    payload: Record<string, unknown>,
+    userId: string,
+    signal?: AbortSignal
+  ) {
+    const cached = await this.loadCheckpoint(jobId, "workflow-result");
+    if (cached) return cached;
+    const conversationId = typeof payload.conversationId === "string" ? payload.conversationId : "";
+    if (!conversationId) {
+      throw new AppError({ code: "BAD_REQUEST", message: "conversationId is required", statusCode: 422, retryable: false });
+    }
+    await this.progress(jobId, runToken, 20, "压缩对话上下文", "正在整理长期创作上下文");
+    if (!this.conversationCompaction || !this.memory) {
+      throw new AppError({ code: "INTERNAL_ERROR", message: "Conversation compaction is not configured", retryable: false });
+    }
+    const release = await this.memory.acquireConversationLock(conversationId, signal);
+    try {
+      const summary = await this.conversationCompaction.compact({ conversationId, userId, aiJobId: jobId, signal });
+      const result = summary ? { conversationId, throughMessageId: summary.throughMessageId, coveredMessageCount: summary.coveredMessageCount } : { conversationId };
+      await this.saveCheckpoint(jobId, runToken, "workflow-result", result);
+      return result;
+    } finally {
+      await release();
+    }
+  }
+
   // 创建嵌套 Skill 任务
-  private async createNestedJob(userId: string, conversationId: string | undefined, assistantMessageId: string | undefined, request: { type?: AiJobType; payload?: Record<string, unknown>; contentId?: string }) {
+  private createNestedJob(parentJobId: string, userId: string, conversationId: string | undefined, assistantMessageId: string | undefined, request: { type?: AiJobType; payload?: Record<string, unknown>; contentId?: string }) {
     if (!request.type) throw new AppError({ code: "INVALID_TOOL_REQUEST", message: "Skill 任务类型无效", statusCode: 422, retryable: false });
-    const nestedId = randomUUID();
-    const job = await this.prisma.aiJob.create({
-      data: {
-        id: nestedId, userId, type: request.type, contentId: request.contentId,
-        conversationId, assistantMessageId, input: this.toJson(request.payload ?? {}),
-        status: DbAiJobStatus.queued,
-        dispatch: { create: { status: AiJobDispatchStatus.pending } },
-      },
+    return this.jobs.create({
+      userId,
+      type: request.type,
+      payload: request.payload ?? {},
+      contentId: request.contentId,
+      conversationId,
+      assistantMessageId,
+      idempotencyKey: `nested:${parentJobId}:${request.type}`,
     });
-    await this.dispatcher.dispatchJob(nestedId);
-    return toAiJobSnapshot(job);
   }
 
   // 运行一键生成任务
   private runCreativeDirectGenerate(jobId: string, runToken: string, input: DirectGenerateRequest, userId: string, signal?: AbortSignal) {
     const payload = input as DirectGenerateRequest & { conversationId?: string; source?: "button" | "conversation" };
-    return this.skillExecutor.runContentProductionLine(
+    return this.generateContent.execute(
       { ...payload, operationId: jobId },
       {
         userId,
@@ -196,6 +286,7 @@ export class WorkflowJobRunner {
     );
   }
 
+  // 运行图片生成任务
   private async runCreativeImageGenerate(
     jobId: string,
     runToken: string,
@@ -210,19 +301,22 @@ export class WorkflowJobRunner {
     if (!prompt.trim()) throw new AppError({ code: "BAD_REQUEST", message: "image prompt is required", statusCode: 422, retryable: false });
 
     await this.progress(jobId, runToken, 30, "生成图片", "AI 正在生成图片素材");
-    const asset = await this.productionCapability.generateSingleImage({
+    const asset = await this.imageGeneration.generateSingleImage({
       userId,
       contentId: typeof payload.contentId === "string" ? payload.contentId : contentId,
       position: typeof payload.position === "string" ? payload.position : "正文配图",
       prompt,
       signal,
       generationKey: `${jobId}:single-image`,
+      aiJobId: jobId,
+      conversationId: typeof payload.conversationId === "string" ? payload.conversationId : undefined,
     });
     await this.saveCheckpoint(jobId, runToken, "single-image", { asset });
     await this.partial(jobId, runToken, "imageAsset", { asset });
     return { asset };
   }
 
+  // 运行内容提交审核任务
   private async runContentSubmitReview(jobId: string, runToken: string, userId: string, contentId?: string, signal?: AbortSignal) {
     const cached = await this.loadCheckpoint(jobId, "workflow-result");
     if (cached) return cached;
@@ -235,6 +329,7 @@ export class WorkflowJobRunner {
     return result;
   }
 
+  // 运行内容质量评分任务
   private async runContentQualityScore(jobId: string, runToken: string, userId: string, contentId?: string, signal?: AbortSignal) {
     const cached = await this.loadCheckpoint(jobId, "workflow-result");
     if (cached) return cached;
@@ -258,6 +353,24 @@ export class WorkflowJobRunner {
     return result;
   }
 
+  private async runModerationTextAudit(
+    jobId: string,
+    runToken: string,
+    payload: Record<string, unknown>,
+    signal?: AbortSignal
+  ) {
+    const cached = await this.loadCheckpoint(jobId, "workflow-result");
+    if (cached) return cached;
+    const title = typeof payload.title === "string" ? payload.title : "";
+    const body = typeof payload.body === "string" ? payload.body : "";
+    await this.progress(jobId, runToken, 20, "文本安全审核", "AI 正在审核文本内容");
+    await this.assertActive(jobId, runToken, signal);
+    const result = await this.workflow.checkText({ title, body }, { signal, aiJobId: jobId });
+    await this.saveCheckpoint(jobId, runToken, "workflow-result", result);
+    await this.partial(jobId, runToken, "audit", result);
+    return result;
+  }
+
   private async runComplianceRewrite(jobId: string, runToken: string, payload: Record<string, unknown>, signal?: AbortSignal) {
     const cached = await this.loadCheckpoint(jobId, "workflow-result");
     if (cached) return cached;
@@ -266,7 +379,7 @@ export class WorkflowJobRunner {
     const reasons = Array.isArray(payload.reasons) ? payload.reasons.filter((item): item is string => typeof item === "string") : [];
     if (!title.trim() && !body.trim()) throw new AppError({ code: "BAD_REQUEST", message: "title or body is required", statusCode: 422, retryable: false });
     await this.progress(jobId, runToken, 30, "合规改写", "AI 正在生成合规替代内容");
-    const rewrite = await this.workflow.rewriteText({ title, body, reasons }, { signal });
+    const rewrite = await this.workflow.rewriteText({ title, body, reasons }, { signal, aiJobId: jobId });
     await this.saveCheckpoint(jobId, runToken, "workflow-result", rewrite);
     await this.partial(jobId, runToken, "rewrite", rewrite);
     return rewrite;
@@ -479,7 +592,8 @@ export class WorkflowJobRunner {
       role: "assistant",
       content,
       metadata: { jobId: job.id, jobType: job.type, contentId: job.contentId },
-    }).catch((error) => this.logger.debug(`AI job ${job.id} completion archive skipped: ${error instanceof Error ? error.message : String(error)}`));
+    }).then(() => this.conversationSessions?.invalidate(conversationId, "skill_completion"))
+      .catch((error) => this.logger.debug(`AI job ${job.id} completion archive skipped: ${error instanceof Error ? error.message : String(error)}`));
   }
 
   private async archiveSkillFailure(job: AiJobRecord, content: string, code: string) {
@@ -488,12 +602,25 @@ export class WorkflowJobRunner {
     await this.conversations.appendMessage({
       conversationId, userId: job.userId, role: "assistant", content,
       metadata: { jobId: job.id, jobType: job.type, code, terminal: "failed" },
-    }).catch(() => undefined);
+    }).then(() => this.conversationSessions?.invalidate(conversationId, "skill_failure")).catch(() => undefined);
   }
 
   private publicErrorMessage(error: AppError) {
+    if (error.code === "CONTENT_NOT_REVIEWED" || error.code === "AUDIT_REQUIRED_BEFORE_PUBLISH" || error.code === "AUDIT_REQUIRED_BEFORE_QUALITY_SCORE") {
+      return "请先完成并通过内容安全审核，再进行质量评估";
+    }
+    if (error.code === "CONTENT_REJECTED") return "内容安全审核未通过，请修改后重新审核";
+    if (error.code === "CONTENT_CHANGED_AFTER_REVIEW") return "内容在审核后发生了变化，请重新进行内容安全审核";
+    if (error.code === "CONTENT_STATUS_NOT_SCORABLE") return "当前内容状态不允许进行质量评估";
+    if (error.code === "AI_CONFIGURATION_ERROR" || error.code === "UPSTREAM_AUTH_FAILED") {
+      return "AI 服务配置异常，请联系管理员检查模型配置";
+    }
+    if (error.code === "UPSTREAM_TIMEOUT") return "AI 服务响应超时，系统将按策略自动重试";
     if (error.code === "JOB_CANCELLED") return "AI 任务已取消";
     if (error.code === "UPSTREAM_RATE_LIMITED") return "AI 服务请求过于频繁，请稍后重试";
+    if (error.code === "UPSTREAM_BAD_REQUEST" && error.details?.service === "image_generation") {
+      return "图片生成请求被模型服务拒绝，请检查文章或提示词中是否包含不支持或高风险内容";
+    }
     if (error.code === "BAD_REQUEST" || error.statusCode === 422) return "任务输入不符合要求";
     return error.retryable ? "AI 服务暂时不可用，系统将自动重试" : "AI 任务执行失败，请稍后重试";
   }

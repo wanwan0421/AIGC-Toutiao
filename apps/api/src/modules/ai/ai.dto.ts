@@ -27,6 +27,12 @@ export class StartAiJobDto {
   @IsString()
   @MaxLength(128)
   assistantMessageId?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(128)
+  idempotencyKey?: string;
 }
 
 export class CreativeImageJobDto {
@@ -35,6 +41,7 @@ export class CreativeImageJobDto {
   @IsString() @IsNotEmpty() @MaxLength(20_000) prompt!: string;
   @IsOptional() @IsString() @MaxLength(128) conversationId?: string;
   @IsOptional() @IsString() @MaxLength(128) assistantMessageId?: string;
+  @IsOptional() @IsString() @IsNotEmpty() @MaxLength(128) idempotencyKey?: string;
 }
 
 export class AttachConversationDto {

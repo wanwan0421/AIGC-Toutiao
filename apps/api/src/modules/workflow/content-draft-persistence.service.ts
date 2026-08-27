@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from "@nestjs/comm
 import { ContentStatus, ContentVisibility, Prisma } from "@prisma/client";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { RedisService } from "../../infra/redis/redis.service";
+import { sanitizeRichText, sanitizeRichTextPayload } from "../../common/rich-text-sanitizer";
 import { ContentReviewPolicyService } from "./content-review-policy.service";
 
 export type ContentDraftPersistenceInput = {
@@ -38,6 +39,8 @@ export class ContentDraftPersistenceService {
 
   async persistInTransaction(tx: Prisma.TransactionClient, userId: string, input: ContentDraftPersistenceInput) {
     const assetIds = this.uniqueStrings(input.assetIds ?? []);
+    const richText = sanitizeRichText({ html: input.bodyHtml, json: input.bodyJson });
+    const payload = input.payload === undefined ? undefined : sanitizeRichTextPayload(input.payload);
     await this.assertOwnedAssets(tx, userId, assetIds);
     const current = input.contentId
       ? await tx.content.findFirst({
@@ -55,22 +58,23 @@ export class ContentDraftPersistenceService {
       const safetySensitiveEdit =
         title !== current.title ||
         body !== current.body ||
-        input.bodyHtml !== undefined && input.bodyHtml !== current.bodyHtml ||
-        input.bodyJson !== undefined && JSON.stringify(input.bodyJson) !== JSON.stringify(current.bodyJson) ||
+        input.bodyHtml !== undefined && richText.html !== current.bodyHtml ||
+        input.bodyJson !== undefined && !this.jsonEqual(richText.json ?? null, current.bodyJson) ||
         input.tags !== undefined && JSON.stringify(input.tags) !== JSON.stringify(current.tags) ||
         input.assetIds !== undefined && JSON.stringify(assetIds) !== JSON.stringify(current.assets.map((item) => item.assetId));
-      await tx.content.update({
-        where: { id: contentId },
+      const updated = await tx.content.updateMany({
+        where: { id: contentId, authorId: userId },
         data: {
           title,
           body,
-          bodyHtml: input.bodyHtml === undefined ? undefined : input.bodyHtml,
-          bodyJson: this.jsonNullable(input.bodyJson),
+          bodyHtml: richText.html,
+          bodyJson: this.jsonNullable(richText.json),
           tags: input.tags,
           excerpt: body.slice(0, 72),
           ...(safetySensitiveEdit ? this.reviewPolicy.statusDataForSafetySensitiveEdit(current.status) : {}),
         },
       });
+      if (updated.count === 0) throw new NotFoundException("content not found");
       resolvedContentId = contentId;
     } else {
       const created = await tx.content.create({
@@ -78,8 +82,8 @@ export class ContentDraftPersistenceService {
           authorId: userId,
           title,
           body,
-          bodyHtml: input.bodyHtml ?? null,
-          bodyJson: this.jsonNullable(input.bodyJson),
+          bodyHtml: richText.html ?? null,
+          bodyJson: this.jsonNullable(richText.json),
           excerpt: body.slice(0, 72),
           status: ContentStatus.draft,
           visibility: ContentVisibility.public,
@@ -106,14 +110,14 @@ export class ContentDraftPersistenceService {
         authorId: userId,
         title,
         body,
-        payload: input.payload ? (input.payload as Prisma.InputJsonValue) : undefined,
+        payload: payload ? (payload as Prisma.InputJsonValue) : undefined,
         clientHash: input.clientHash,
       },
       update: {
         authorId: userId,
         title,
         body,
-        payload: input.payload ? (input.payload as Prisma.InputJsonValue) : undefined,
+        payload: payload ? (payload as Prisma.InputJsonValue) : undefined,
         clientHash: input.clientHash,
       },
     });
@@ -152,7 +156,7 @@ export class ContentDraftPersistenceService {
       authorId: draft.authorId,
       title: draft.title ?? undefined,
       body: draft.body ?? undefined,
-      payload: draft.payload,
+      payload: sanitizeRichTextPayload(draft.payload),
       clientHash: draft.clientHash ?? undefined,
       savedAt: draft.savedAt.toISOString(),
     };
@@ -175,5 +179,21 @@ export class ContentDraftPersistenceService {
   private jsonNullable(value: Record<string, unknown> | null | undefined) {
     if (value === undefined) return undefined;
     return value === null ? Prisma.JsonNull : (value as Prisma.InputJsonValue);
+  }
+
+  private jsonEqual(left: unknown, right: unknown) {
+    return JSON.stringify(this.normalizeJson(left)) === JSON.stringify(this.normalizeJson(right));
+  }
+
+  private normalizeJson(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map((item) => this.normalizeJson(item));
+    if (value && typeof value === "object" && !(value instanceof Date)) {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+          .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+          .map(([key, item]) => [key, this.normalizeJson(item)])
+      );
+    }
+    return value;
   }
 }

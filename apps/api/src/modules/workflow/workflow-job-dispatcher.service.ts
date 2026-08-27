@@ -33,6 +33,7 @@ export class WorkflowJobDispatcherService implements OnModuleInit, OnModuleDestr
    */
   async dispatchJob(jobId: string) {
     try {
+      // 将任务加入队列，等待调度器处理
       await this.jobs.enqueue(jobId);
       await this.prisma.aiJobDispatch.updateMany({
         where: { jobId, status: { not: AiJobDispatchStatus.cancelled } },

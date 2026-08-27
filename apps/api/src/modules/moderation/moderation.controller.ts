@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Headers, Param, Post, UseGuards } from "@nestjs/common";
 import { AiJobType, type UserProfileSummary } from "@aicp/shared";
 import { AuthGuard } from "../auth/auth.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
@@ -19,22 +19,44 @@ export class ModerationController {
   }
 
   @Post("contents/:contentId/run")
-  runContentAudit(@CurrentUser() user: UserProfileSummary, @Param("contentId") contentId: string) {
-    return this.moderationService.runContentAudit(user.id, contentId);
+  runContentAudit(
+    @CurrentUser() user: UserProfileSummary,
+    @Param("contentId") contentId: string,
+    @Headers("idempotency-key") idempotencyKey?: string,
+  ) {
+    return this.createContentAuditJob(user.id, contentId, idempotencyKey);
   }
 
   @Post("contents/:contentId/run/jobs")
-  runContentAuditJob(@CurrentUser() user: UserProfileSummary, @Param("contentId") contentId: string) {
-    return this.jobs.create({
-      userId: user.id,
-      type: AiJobType.ModerationContentRun,
-      payload: { contentId },
-      contentId,
-    });
+  runContentAuditJob(
+    @CurrentUser() user: UserProfileSummary,
+    @Param("contentId") contentId: string,
+    @Headers("idempotency-key") idempotencyKey?: string,
+  ) {
+    return this.createContentAuditJob(user.id, contentId, idempotencyKey);
   }
 
   @Post("text")
-  checkText(@Body() body: { title: string; body: string }) {
-    return this.moderationService.checkText(body);
+  checkText(
+    @CurrentUser() user: UserProfileSummary,
+    @Body() body: { title: string; body: string },
+    @Headers("idempotency-key") idempotencyKey?: string,
+  ) {
+    return this.jobs.create({
+      userId: user.id,
+      type: AiJobType.ModerationTextRun,
+      payload: body,
+      idempotencyKey: idempotencyKey?.slice(0, 128),
+    });
+  }
+
+  private createContentAuditJob(userId: string, contentId: string, idempotencyKey?: string) {
+    return this.jobs.create({
+      userId,
+      type: AiJobType.ModerationContentRun,
+      payload: { contentId },
+      contentId,
+      idempotencyKey: idempotencyKey?.slice(0, 128),
+    });
   }
 }

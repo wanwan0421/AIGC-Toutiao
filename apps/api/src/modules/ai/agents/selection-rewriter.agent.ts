@@ -1,27 +1,25 @@
 import { BadGatewayException, BadRequestException, HttpException, Injectable, ServiceUnavailableException } from "@nestjs/common";
 import type { SelectionRewriteRequest, SelectionRewriteResult } from "@aicp/shared";
-import { AiCallLogService } from "../ai-call-log.service";
 import { ModelClientService } from "../model-client.service";
 import { PromptTemplateService } from "../prompt-template.service";
 import { selectionPromptName } from "../prompt-names";
 import { promptTemperature } from "../prompt-model-options";
-import { parseJsonObject } from "../structured-output";
+import { completeStructured } from "../structured-output";
+import { selectionRewriteSchema } from "./structured-agent.schemas";
 
 @Injectable()
 export class SelectionRewriterAgent {
   constructor(
     private readonly modelClient: ModelClientService,
-    private readonly prompts: PromptTemplateService,
-    private readonly logs: AiCallLogService
+    private readonly prompts: PromptTemplateService
   ) {}
 
-  async run(input: SelectionRewriteRequest): Promise<SelectionRewriteResult> {
+  async run(input: SelectionRewriteRequest, options: { signal?: AbortSignal; aiJobId?: string; contentId?: string; conversationId?: string } = {}): Promise<SelectionRewriteResult> {
     const selectedText = input.selectedText?.trim();
     if (!selectedText) {
       throw new BadRequestException("selectedText is required");
     }
 
-    const startedAt = Date.now();
     const rendered = await this.prompts.render(
       selectionPromptName(input.action),
       input as unknown as Record<string, unknown>,
@@ -35,9 +33,23 @@ export class SelectionRewriterAgent {
     }
 
     try {
-      const content = await this.modelClient.complete({
+      const result = await completeStructured({
+        modelClient: this.modelClient,
+        name: "selection_rewrite",
+        schema: selectionRewriteSchema,
         model,
+        telemetry: {
+          scene: selectionPromptName(input.action),
+          promptKey: rendered.promptKey,
+          promptVersionId: rendered.promptVersionId,
+          inputSummary: selectedText.slice(0, 120),
+          aiJobId: options.aiJobId,
+          contentId: options.contentId,
+          conversationId: options.conversationId,
+        },
         temperature: promptTemperature(rendered.modelOptions, 0.55),
+        thinking: "disabled",
+        signal: options.signal,
         messages: [
           {
             role: "system",
@@ -47,32 +59,8 @@ export class SelectionRewriterAgent {
         ],
       });
 
-      const result = this.normalizeResult(content);
-
-      await this.logs.log({
-        scene: selectionPromptName(input.action),
-        model: this.modelClient.modelName(model),
-        promptKey: rendered.promptKey,
-        promptVersionId: rendered.promptVersionId,
-        inputSummary: selectedText.slice(0, 120),
-        output: result,
-        latencyMs: Date.now() - startedAt,
-        success: true,
-      }).catch(() => undefined);
-
       return result;
     } catch (error) {
-      await this.logs.log({
-        scene: selectionPromptName(input.action),
-        model: this.modelClient.modelName(model),
-        promptKey: rendered.promptKey,
-        promptVersionId: rendered.promptVersionId,
-        inputSummary: selectedText.slice(0, 120),
-        latencyMs: Date.now() - startedAt,
-        success: false,
-        errorMessage: error instanceof Error ? error.message : "unknown selection rewrite error",
-      }).catch(() => undefined);
-
       if (error instanceof HttpException) {
         throw error;
       }
@@ -107,36 +95,4 @@ export class SelectionRewriterAgent {
     return template.replace(/\{\{\s*(selectedText|surroundingContext|tone)\s*\}\}/g, (_, key: string) => values[key] ?? "");
   }
 
-  private normalizeResult(content: string): SelectionRewriteResult {
-    const parsed = parseJsonObject<SelectionRewriteResult>(content);
-    if (typeof parsed?.replacement === "string" && parsed.replacement.trim()) {
-      return { replacement: parsed.replacement.trim() };
-    }
-
-    const parsedString = this.tryParseJsonString(content.trim());
-    const fallback = this.cleanPlainTextReplacement(parsedString ?? content);
-    if (!fallback) {
-      throw new BadGatewayException("selection rewrite returned empty replacement");
-    }
-
-    return { replacement: fallback };
-  }
-
-  private tryParseJsonString(value: string) {
-    try {
-      const parsed = JSON.parse(value) as unknown;
-      return typeof parsed === "string" ? parsed : null;
-    } catch {
-      return null;
-    }
-  }
-
-  private cleanPlainTextReplacement(value: string) {
-    return value
-      .trim()
-      .replace(/^```(?:json|markdown|md|text)?\s*/i, "")
-      .replace(/\s*```$/i, "")
-      .replace(/^(?:replacement|替换后|改写后|润色后|扩写后|调整后|结果|输出)\s*[:：]\s*/i, "")
-      .trim();
-  }
 }

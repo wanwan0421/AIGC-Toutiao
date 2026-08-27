@@ -14,13 +14,13 @@ import { toContentSummary, toDbAuditRiskLevel } from "../../common/prisma-mapper
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { ContextBuilderService } from "../ai/context-builder.service";
 import { ConversationArchiveService } from "../ai/conversation-archive.service";
-import { SkillExecutorService } from "../ai/skills-runtime/skill-executor.service";
-import { ContentQualityCapability } from "../ai/capabilities/content-quality.capability";
-import { CreativeAssistantCapability } from "../ai/capabilities/creative-assistant.capability";
-import { CreativeProductionCapability } from "../ai/capabilities/creative-production.capability";
-import { SafetyReviewCapability } from "../ai/capabilities/safety-review.capability";
+import { CreativeAssistantUseCase } from "../ai/application/creative-assistant.use-case";
+import { ContentSafetyUseCase } from "../ai/application/content-safety.use-case";
+import { ImageGenerationService } from "../ai/image-generation.service";
+import { QualityScoringAgent } from "../ai/agents/quality-scoring.agent";
 import { ContentHeatScoreService } from "../content-metrics/content-heat-score.service";
 import { ContentReviewPolicyService } from "./content-review-policy.service";
+import { AppError } from "../../common/app-error";
 
 const contentInclude = {
   author: true,
@@ -34,19 +34,18 @@ const contentInclude = {
 export class ContentWorkflowEngine {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly productionSkill: CreativeProductionCapability,
-    private readonly assistantSkill: CreativeAssistantCapability,
+    private readonly imageGeneration: ImageGenerationService,
+    private readonly assistant: CreativeAssistantUseCase,
     private readonly contextBuilder: ContextBuilderService,
     private readonly conversations: ConversationArchiveService,
-    private readonly skillExecutor: SkillExecutorService,
-    private readonly safetyReviewSkill: SafetyReviewCapability,
-    private readonly contentQualitySkill: ContentQualityCapability,
+    private readonly contentSafety: ContentSafetyUseCase,
+    private readonly qualityScoring: QualityScoringAgent,
     private readonly reviewPolicy: ContentReviewPolicyService,
     private readonly heatScores: ContentHeatScoreService
   ) {}
 
-  rewriteText(body: { title: string; body: string; reasons?: string[] }, options: { signal?: AbortSignal } = {}) {
-    return this.safetyReviewSkill.rewrite(body, options);
+  rewriteText(body: { title: string; body: string; reasons?: string[] }, options: { signal?: AbortSignal; aiJobId?: string; contentId?: string; conversationId?: string } = {}) {
+    return this.contentSafety.rewrite(body, options);
   }
 
   logs() {
@@ -56,20 +55,20 @@ export class ContentWorkflowEngine {
     });
   }
 
-  streamCreativeChat(body: CreativeChatRequest, options: { signal?: AbortSignal } = {}) {
-    return this.assistantSkill.streamChat(body, options);
+  streamCreativeChat(body: CreativeChatRequest, options: { signal?: AbortSignal; aiJobId?: string; assistantMessageId?: string } = {}) {
+    return this.assistant.streamChat(body, options);
   }
 
-  generateTitles(body: TitleGenerateRequest) {
-    return this.assistantSkill.generateTitles(body);
+  generateTitles(body: TitleGenerateRequest, options: { signal?: AbortSignal; aiJobId?: string; contentId?: string; conversationId?: string } = {}) {
+    return this.assistant.generateTitles(body, options);
   }
 
-  rewriteSelection(body: SelectionRewriteRequest) {
-    return this.assistantSkill.rewriteSelection(body);
+  rewriteSelection(body: SelectionRewriteRequest, options: { signal?: AbortSignal; aiJobId?: string; contentId?: string; conversationId?: string } = {}) {
+    return this.assistant.rewriteSelection(body, options);
   }
 
   creativeImageConfigStatus() {
-    return this.productionSkill.imageConfigStatus();
+    return this.imageGeneration.configStatus();
   }
 
   async creativeConversations(contentId: string, userId?: string) {
@@ -134,8 +133,8 @@ export class ContentWorkflowEngine {
     };
   }
 
-  async checkText(body: { title: string; body: string }) {
-    const { audit, rewrite } = await this.skillExecutor.runContentSafetyReviewer(body);
+  async checkText(body: { title: string; body: string }, options: { signal?: AbortSignal; aiJobId?: string; contentId?: string; conversationId?: string } = {}) {
+    const { audit, rewrite } = await this.contentSafety.reviewWithRewrite(body, options);
     return {
       audit,
       quality: null,
@@ -149,17 +148,52 @@ export class ContentWorkflowEngine {
   }
 
   async scoreQuality(userId: string, id: string, options: { signal?: AbortSignal; aiJobId?: string } = {}): Promise<ContentApprovalResult> {
-    const content = await this.getOwnedContent(userId, id);
+    let content = await this.getOwnedContent(userId, id);
     const allowed = new Set<DbContentStatus>([
       DbContentStatus.approved,
       DbContentStatus.updated,
       DbContentStatus.published,
       DbContentStatus.scheduled,
     ]);
-    if (!allowed.has(content.status)) {
-      throw new BadRequestException("content must pass safety review before quality scoring");
+
+    const auditState = await this.reviewPolicy.getCurrentAuditState(content);
+    if (!auditState.valid) {
+      throw this.qualityAuditRequiredError(auditState.reason);
     }
-    await this.reviewPolicy.assertCurrentContentAuditPassed(content);
+
+    if (!allowed.has(content.status)) {
+      const recoverableStatus = content.status === DbContentStatus.draft || content.status === DbContentStatus.pending_review;
+      if (!recoverableStatus) {
+        throw new AppError({
+          code: "CONTENT_STATUS_NOT_SCORABLE",
+          message: "当前内容状态不允许进行质量评估",
+          statusCode: 409,
+          retryable: false,
+          details: { contentId: id, status: content.status },
+        });
+      }
+
+      const restored = await this.prisma.content.updateMany({
+        where: {
+          id,
+          authorId: userId,
+          status: content.status,
+          updatedAt: content.updatedAt,
+        },
+        data: { status: DbContentStatus.approved },
+      });
+      if (restored.count === 0) {
+        throw new AppError({
+          code: "CONTENT_CHANGED_AFTER_REVIEW",
+          message: "内容状态已发生变化，请重新进行内容安全审核",
+          statusCode: 409,
+          retryable: false,
+          details: { contentId: id },
+        });
+      }
+      content = await this.getOwnedContent(userId, id);
+      await this.reviewPolicy.assertCurrentContentAuditPassed(content);
+    }
 
     const existing = options.aiJobId
       ? await this.prisma.qualityScore.findUnique({ where: { aiJobId: options.aiJobId } })
@@ -170,7 +204,10 @@ export class ContentWorkflowEngine {
         quality: this.qualityResultFromRecord(existing),
       };
     }
-    const quality = await this.contentQualitySkill.score({ title: content.title, body: content.body }, { signal: options.signal });
+    const quality = await this.qualityScoring.run(
+      { title: content.title, body: content.body },
+      { signal: options.signal, aiJobId: options.aiJobId, contentId: id }
+    );
 
     const [, updated] = await this.prisma.$transaction([
       this.createQualityScoreRecord(id, quality, options.aiJobId),
@@ -187,6 +224,32 @@ export class ContentWorkflowEngine {
       content: await this.toNormalizedContentSummary(updated),
       quality,
     };
+  }
+
+  // 根据审核结果和改写建议创建审核记录
+  private qualityAuditRequiredError(reason?: string) {
+    if (reason === "CONTENT_REJECTED") {
+      return new AppError({
+        code: reason,
+        message: "内容安全审核未通过，请修改后重新审核",
+        statusCode: 409,
+        retryable: false,
+      });
+    }
+    if (reason === "CONTENT_CHANGED_AFTER_REVIEW") {
+      return new AppError({
+        code: reason,
+        message: "内容在审核后发生了变化，请重新进行内容安全审核",
+        statusCode: 409,
+        retryable: false,
+      });
+    }
+    return new AppError({
+      code: reason ?? "AUDIT_REQUIRED_BEFORE_QUALITY_SCORE",
+      message: "请先完成并通过内容安全审核，再进行质量评估",
+      statusCode: 409,
+      retryable: false,
+    });
   }
 
   async publish(userId: string, id: string, options: { scheduledAt?: string | null; visibility?: ContentVisibility } = {}) {
@@ -257,7 +320,7 @@ export class ContentWorkflowEngine {
     return this.toNormalizedContentSummary(updated);
   }
 
-  // Workflow 负责业务状态和持久化；安全审核能力本身由 SafetyReviewCapability 提供。
+  // Workflow 负责业务状态和持久化；安全审核由 ContentSafetyUseCase 提供。
   private async reviewAndPersist(input: {
     contentId: string;
     title: string;
@@ -283,10 +346,10 @@ export class ContentWorkflowEngine {
         };
       }
     }
-    const { audit, rewrite } = await this.skillExecutor.runContentSafetyReviewer({
+    const { audit, rewrite } = await this.contentSafety.reviewWithRewrite({
       title: input.title,
       body: input.body,
-    }, { signal: input.signal });
+    }, { signal: input.signal, aiJobId: input.aiJobId, contentId: input.contentId });
     const createAuditRecord = () => this.createAuditRecord(input.contentId, input.contentHash, audit, rewrite, input.aiJobId);
 
     const contentUpdateData = !audit.passed

@@ -14,12 +14,9 @@ import type {
   ContentSummary,
   ContentWorkflowState,
   CreateContentCommentRequest,
-  CreativeChatDone,
   DashboardAnalyticsResponse,
   DashboardMetric,
-  CreativeChatSkillEvent,
   CreativeConversationSummary,
-  CreativeChatRequest,
   DirectGenerateRequest,
   AssetSummary,
   OfficialTopicListResponse,
@@ -36,10 +33,8 @@ import type {
   RankingListResponse,
   RankingQuery,
   SelectionRewriteRequest,
-  SelectionRewriteResult,
   TopicDetail,
   TitleGenerateRequest,
-  TitleGenerateResult,
   UpdateUserProfileRequest,
   UserFollowToggleResult,
   UserContentListResponse,
@@ -651,12 +646,14 @@ export async function autosaveDraft(
 }
 
 export async function startAiJob(body: AiJobStartRequest, idempotencyKey = crypto.randomUUID()) {
+  const request = { ...body, idempotencyKey };
+  console.log("Starting AI job with idempotency key:", idempotencyKey, "request:", request);
   return apiRequest<AiJobSnapshot>(
     "/ai/jobs",
     {
       method: "POST",
       headers: { "Idempotency-Key": idempotencyKey },
-      body: JSON.stringify(body)
+      body: JSON.stringify(request)
     },
     true
   );
@@ -687,29 +684,20 @@ export async function commitAiJobResult(id: string, body: AiJobResultCommitReque
 }
 
 export async function startCreativeDraftJob(body: DirectGenerateRequest) {
-  return apiRequest<AiJobSnapshot>(
-    "/ai/creative/direct-generate/jobs",
-    {
-      method: "POST",
-      body: JSON.stringify(body)
-    },
-    true
-  );
+  const { userId: _ignoredUserId, ...payload } = body;
+  return startAiJob({
+    type: AiJobType.CreativeDirectGenerate,
+    payload,
+    contentId: body.contentId,
+  });
 }
 
 export async function startCreativeImageJob(body: { contentId?: string; position?: string; prompt: string }) {
-  return apiRequest<AiJobSnapshot>(
-    "/ai/creative/image/jobs",
-    {
-      method: "POST",
-      body: JSON.stringify(body)
-    },
-    true
-  );
+  return startAiJob({ type: AiJobType.CreativeImageGenerate, payload: body, contentId: body.contentId });
 }
 
 export async function startSubmitReviewJob(id: string) {
-  return apiRequest<AiJobSnapshot>(`/contents/${id}/submit-review/jobs`, { method: "POST" }, true);
+  return startAiJob({ type: AiJobType.ContentSubmitReview, payload: { contentId: id }, contentId: id });
 }
 
 export async function startApproveContentJob(id: string) {
@@ -717,11 +705,11 @@ export async function startApproveContentJob(id: string) {
 }
 
 export async function startQualityScoreJob(id: string) {
-  return apiRequest<AiJobSnapshot>(`/contents/${id}/quality-score/jobs`, { method: "POST" }, true);
+  return startAiJob({ type: AiJobType.ContentApprove, payload: { contentId: id }, contentId: id });
 }
 
 export async function startModerationRunJob(contentId: string) {
-  return apiRequest<AiJobSnapshot>(`/moderation/contents/${contentId}/run/jobs`, { method: "POST" }, true);
+  return startAiJob({ type: AiJobType.ModerationContentRun, payload: { contentId }, contentId });
 }
 
 export async function startComplianceRewriteJob(body: { title: string; body: string; reasons?: string[] }) {
@@ -732,25 +720,11 @@ export async function startComplianceRewriteJob(body: { title: string; body: str
 }
 
 export async function generateCreativeTitles(body: TitleGenerateRequest) {
-  return apiRequest<TitleGenerateResult>(
-    "/ai/creative/titles",
-    {
-      method: "POST",
-      body: JSON.stringify(body)
-    },
-    true
-  );
+  return startAiJob({ type: AiJobType.CreativeTitleGenerate, payload: { ...body } });
 }
 
 export async function rewriteSelection(body: SelectionRewriteRequest) {
-  return apiRequest<SelectionRewriteResult>(
-    "/ai/creative/selection/rewrite",
-    {
-      method: "POST",
-      body: JSON.stringify(body)
-    },
-    true
-  );
+  return startAiJob({ type: AiJobType.CreativeSelectionRewrite, payload: { ...body } });
 }
 
 export async function getCreativeImageConfigStatus() {
@@ -763,19 +737,6 @@ export async function getCreativeImageConfigStatus() {
     hasApiKey: boolean;
     missing: string[];
   }>("/ai/creative/image/config", {}, true);
-}
-
-export async function streamCreativeChat(
-  body: CreativeChatRequest,
-  handlers: {
-    onMeta?: (event: CreativeChatDone) => void;
-    onDelta: (text: string) => void;
-    onDone?: (event: CreativeChatDone) => void;
-    onSkill?: (event: CreativeChatSkillEvent) => void;
-    onError?: (message: string) => void;
-  }
-) {
-  return streamCreativeChatOnce(body, handlers, true);
 }
 
 export type AiJobStreamHandlers = {
@@ -882,71 +843,6 @@ async function streamAiJobEventsOnce(
         await handlers.onError?.(typeof data.message === "string" ? data.message : "AI 任务失败", job);
       }
       await handlers.onEventProcessed?.(event);
-    }
-  }
-}
-
-async function streamCreativeChatOnce(
-  body: CreativeChatRequest,
-  handlers: {
-    onMeta?: (event: CreativeChatDone) => void;
-    onDelta: (text: string) => void;
-    onDone?: (event: CreativeChatDone) => void;
-    onSkill?: (event: CreativeChatSkillEvent) => void;
-    onError?: (message: string) => void;
-  },
-  allowRefresh: boolean
-) {
-  if (allowRefresh && !hasUsableAccessToken()) {
-    await refreshAccessTokenOnce();
-  }
-  const requestAccessToken = getAccessToken();
-  const headers = buildHeaders(undefined, JSON.stringify(body));
-  if (requestAccessToken) headers.set("Authorization", `Bearer ${requestAccessToken}`);
-  const response = await fetch(resolveApiUrl("/ai/creative/chat/stream"), {
-    method: "POST",
-    headers,
-    credentials: "omit",
-    body: JSON.stringify(body)
-  });
-
-  if (response.status === 401 && allowRefresh) {
-    if (getAccessToken() === requestAccessToken) clearAccessTokenMemory();
-    await refreshAccessTokenOnce(requestAccessToken);
-    return streamCreativeChatOnce(body, handlers, false);
-  }
-
-  if (!response.ok || !response.body) {
-    throw new Error(`Creative chat stream failed: ${response.status}`);
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const events = buffer.split("\n\n");
-    buffer = events.pop() ?? "";
-
-    for (const eventBlock of events) {
-      const event = parseSseEvent(eventBlock);
-      if (!event) continue;
-
-      if (event.type === "delta") {
-        handlers.onDelta((event.data as { text?: string }).text ?? "");
-      } else if (event.type === "meta") {
-        handlers.onMeta?.(event.data as CreativeChatDone);
-      } else if (event.type === "done") {
-        handlers.onDone?.(event.data as CreativeChatDone);
-      } else if (event.type === "skill") {
-        handlers.onSkill?.(event.data as CreativeChatSkillEvent);
-      } else if (event.type === "error") {
-        handlers.onError?.((event.data as { message?: string }).message ?? "AI 对话流失败");
-      }
     }
   }
 }

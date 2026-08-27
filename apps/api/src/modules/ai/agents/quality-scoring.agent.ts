@@ -1,11 +1,11 @@
 import { Injectable } from "@nestjs/common";
 import type { QualityScoreResult } from "@aicp/shared";
-import { AiCallLogService } from "../ai-call-log.service";
 import { ModelClientService } from "../model-client.service";
 import { AI_PROMPT_NAMES } from "../prompt-names";
 import { PromptTemplateService } from "../prompt-template.service";
 import { promptTemperature } from "../prompt-model-options";
-import { parseJsonObject } from "../structured-output";
+import { completeStructured } from "../structured-output";
+import { qualityScoreSchema } from "./structured-agent.schemas";
 
 const QUALITY_SCORE_FALLBACK_PROMPT = `你是中文图文内容质量评估专家，只负责多维质量评分，不做安全审核，也不做改写。
 
@@ -36,18 +36,28 @@ const QUALITY_SCORE_FALLBACK_PROMPT = `你是中文图文内容质量评估专�
 export class QualityScoringAgent {
   constructor(
     private readonly modelClient: ModelClientService,
-    private readonly prompts: PromptTemplateService,
-    private readonly logs: AiCallLogService
+    private readonly prompts: PromptTemplateService
   ) {}
 
-  async run(input: { title: string; body: string }, options: { signal?: AbortSignal } = {}): Promise<QualityScoreResult> {
-    const startedAt = Date.now();
+  async run(input: { title: string; body: string }, options: { signal?: AbortSignal; aiJobId?: string; contentId?: string; conversationId?: string } = {}): Promise<QualityScoreResult> {
     const rendered = await this.prompts.render(AI_PROMPT_NAMES.qualityScore, input, QUALITY_SCORE_FALLBACK_PROMPT);
     const { prompt, model } = rendered;
 
     try {
-      const content = await this.modelClient.complete({
+      const result = await completeStructured({
+        modelClient: this.modelClient,
+        name: "quality_score",
+        schema: qualityScoreSchema,
         model,
+        telemetry: {
+          scene: AI_PROMPT_NAMES.qualityScore,
+          promptKey: rendered.promptKey,
+          promptVersionId: rendered.promptVersionId,
+          inputSummary: `${input.title} / ${input.body.slice(0, 120)}`,
+          aiJobId: options.aiJobId,
+          contentId: options.contentId,
+          conversationId: options.conversationId,
+        },
         temperature: promptTemperature(rendered.modelOptions, 0.25),
         messages: [
           {
@@ -58,34 +68,8 @@ export class QualityScoringAgent {
         ],
         signal: options.signal,
       });
-      const parsed = parseJsonObject<Partial<QualityScoreResult>>(content);
-      if (!parsed) {
-        throw new Error("quality_score returned invalid JSON");
-      }
-
-      const result = this.normalize(parsed);
-      await this.logs.log({
-        scene: AI_PROMPT_NAMES.qualityScore,
-        model: this.modelClient.modelName(model),
-        promptKey: rendered.promptKey,
-        promptVersionId: rendered.promptVersionId,
-        inputSummary: `${input.title} / ${input.body.slice(0, 120)}`,
-        output: result,
-        latencyMs: Date.now() - startedAt,
-        success: true,
-      });
       return result;
     } catch (error) {
-      await this.logs.log({
-        scene: AI_PROMPT_NAMES.qualityScore,
-        model: this.modelClient.modelName(model),
-        promptKey: rendered.promptKey,
-        promptVersionId: rendered.promptVersionId,
-        inputSummary: `${input.title} / ${input.body.slice(0, 120)}`,
-        latencyMs: Date.now() - startedAt,
-        success: false,
-        errorMessage: error instanceof Error ? error.message : "unknown quality score error",
-      });
       throw error;
     }
   }

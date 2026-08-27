@@ -17,6 +17,7 @@ import {
   Prisma,
 } from "@prisma/client";
 import { toContentCommentSummary, toContentDetail, toContentSummary, toDbContentStatus } from "../../common/prisma-mappers";
+import { sanitizeRichText } from "../../common/rich-text-sanitizer";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { ContentHeatScoreService } from "../content-metrics/content-heat-score.service";
 import { ContentReviewPolicyService } from "../workflow/content-review-policy.service";
@@ -109,14 +110,15 @@ export class ContentsService {
 
   async create(userId: string, body: ContentWriteBody) {
     const contentBody = body.body?.trim() ?? "";
+    const richText = sanitizeRichText({ html: body.bodyHtml, json: body.bodyJson });
     const assetIds = await this.ownedAssetIds(userId, body.assetIds);
     const content = await this.prisma.content.create({
       data: {
         authorId: userId,
         title: body.title?.trim() || "未命名草稿",
         body: contentBody,
-        bodyHtml: body.bodyHtml ?? null,
-        bodyJson: toJsonInput(body.bodyJson),
+        bodyHtml: richText.html ?? null,
+        bodyJson: toJsonInput(richText.json),
         excerpt: contentBody.slice(0, 72),
         status: DbContentStatus.draft,
         visibility: toDbContentVisibility(body.visibility) ?? DbContentVisibility.public,
@@ -195,6 +197,16 @@ export class ContentsService {
       }),
     ]);
     const publishState = this.reviewPolicy.evaluatePublishState(content, auditRecord);
+    const auditState = this.reviewPolicy.evaluateCurrentAudit(content, auditRecord);
+    const qualityStatusAllowed = new Set<DbContentStatus>([
+      DbContentStatus.draft,
+      DbContentStatus.pending_review,
+      DbContentStatus.approved,
+      DbContentStatus.updated,
+      DbContentStatus.published,
+      DbContentStatus.scheduled,
+    ]).has(content.status);
+    const canScoreQuality = auditState.valid && qualityStatusAllowed;
 
     return {
       content: summary,
@@ -207,6 +219,10 @@ export class ContentsService {
           }
         : undefined,
       latestQuality: qualityRecord ? this.qualityResultFromRecord(qualityRecord) : undefined,
+      canScoreQuality,
+      qualityBlockReason: canScoreQuality
+        ? undefined
+        : auditState.reason ?? "CONTENT_STATUS_NOT_SCORABLE",
       canPublish: publishState.canPublish,
       publishBlockReason: publishState.canPublish ? undefined : publishState.reason,
     };
@@ -313,9 +329,18 @@ export class ContentsService {
 
   async versions(userId: string, id: string) {
     await this.assertContentExists(userId, id);
-    return this.prisma.contentVersion.findMany({
+    const versions = await this.prisma.contentVersion.findMany({
       where: { contentId: id },
       orderBy: { version: "desc" },
+    });
+    return versions.map((version) => {
+      const richText = sanitizeRichText({
+        html: version.bodyHtml,
+        json: version.bodyJson && typeof version.bodyJson === "object" && !Array.isArray(version.bodyJson)
+          ? (version.bodyJson as Record<string, unknown>)
+          : null,
+      });
+      return { ...version, bodyHtml: richText.html ?? null, bodyJson: richText.json ?? null };
     });
   }
 
@@ -325,20 +350,21 @@ export class ContentsService {
 
     const nextTitle = body.title !== undefined ? body.title.trim() || current.title : current.title;
     const nextBody = body.body ?? current.body;
+    const richText = sanitizeRichText({ html: body.bodyHtml, json: body.bodyJson });
     const nextAssetIds = body.assetIds !== undefined ? ((await this.ownedAssetIds(userId, body.assetIds)) ?? []) : undefined;
     const safetySensitiveEdit =
       (body.title !== undefined && nextTitle !== current.title) ||
       (body.body !== undefined && body.body !== current.body) ||
-      (body.bodyHtml !== undefined && body.bodyHtml !== current.bodyHtml) ||
-      (body.bodyJson !== undefined && !this.sameJson(body.bodyJson ?? null, current.bodyJson ?? null)) ||
+      (body.bodyHtml !== undefined && richText.html !== current.bodyHtml) ||
+      (body.bodyJson !== undefined && !this.sameJson(richText.json ?? null, current.bodyJson ?? null)) ||
       (body.tags !== undefined && !this.sameStringArray(body.tags, current.tags)) ||
       (nextAssetIds !== undefined && !this.sameStringArray(nextAssetIds, current.assets.map((item) => item.assetId)));
     const reviewStatusData = safetySensitiveEdit ? this.reviewPolicy.statusDataForSafetySensitiveEdit(current.status) : {};
     const data: Prisma.ContentUpdateInput = {
       title: body.title !== undefined ? nextTitle : undefined,
       body: body.body,
-      bodyHtml: body.bodyHtml === undefined ? undefined : body.bodyHtml,
-      bodyJson: toJsonInput(body.bodyJson),
+      bodyHtml: richText.html,
+      bodyJson: toJsonInput(richText.json),
       excerpt: body.body !== undefined ? nextBody.slice(0, 72) : undefined,
       tags: body.tags,
       visibility: toDbContentVisibility(body.visibility),
@@ -428,17 +454,19 @@ export class ContentsService {
     }
 
     await this.createVersion(current.id, current.title, current.body, current.bodyHtml, current.bodyJson);
+    const targetRichText = sanitizeRichText({
+      html: target.bodyHtml,
+      json: target.bodyJson && typeof target.bodyJson === "object" && !Array.isArray(target.bodyJson)
+        ? (target.bodyJson as Record<string, unknown>)
+        : null,
+    });
     const updated = await this.prisma.content.update({
       where: { id },
       data: {
         title: target.title,
         body: target.body,
-        bodyHtml: target.bodyHtml,
-        bodyJson: toJsonInput(
-          target.bodyJson && typeof target.bodyJson === "object" && !Array.isArray(target.bodyJson)
-            ? (target.bodyJson as Record<string, unknown>)
-            : null
-        ),
+        bodyHtml: targetRichText.html ?? null,
+        bodyJson: toJsonInput(targetRichText.json),
         excerpt: target.body.slice(0, 72),
         ...this.reviewPolicy.statusDataForSafetySensitiveEdit(current.status),
       },
@@ -668,6 +696,12 @@ export class ContentsService {
     bodyHtml?: string | null,
     bodyJson?: Prisma.JsonValue | null
   ) {
+    const richText = sanitizeRichText({
+      html: bodyHtml,
+      json: bodyJson && typeof bodyJson === "object" && !Array.isArray(bodyJson)
+        ? (bodyJson as Record<string, unknown>)
+        : null,
+    });
     const aggregate = await this.prisma.contentVersion.aggregate({
       where: { contentId },
       _max: { version: true },
@@ -680,13 +714,14 @@ export class ContentsService {
         version,
         title,
         body,
-        bodyHtml,
-        bodyJson: toJsonInput(
-          bodyJson && typeof bodyJson === "object" && !Array.isArray(bodyJson)
-            ? (bodyJson as Record<string, unknown>)
-            : null
-        ),
-        snapshot: { title, body, bodyHtml, bodyJson },
+        bodyHtml: richText.html ?? null,
+        bodyJson: toJsonInput(richText.json),
+        snapshot: {
+          title,
+          body,
+          bodyHtml: richText.html ?? null,
+          bodyJson: richText.json ?? null,
+        } as Prisma.InputJsonObject,
       },
     });
   }

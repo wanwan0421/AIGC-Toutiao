@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { RedisService } from "../../infra/redis/redis.service";
+import { sanitizeRichText, sanitizeRichTextPayload } from "../../common/rich-text-sanitizer";
 import { ContentDraftPersistenceService } from "../workflow/content-draft-persistence.service";
 
 @Injectable()
@@ -13,7 +14,14 @@ export class DraftsService {
 
   async getDraft(userId: string, contentId: string) {
     const cached = await this.redisService.getClient().get(this.persistence.cacheKey(userId, contentId)).catch(() => null);
-    if (cached) return { source: "redis", ...(JSON.parse(cached) as Record<string, unknown>) };
+    if (cached) {
+      const parsed = JSON.parse(cached) as Record<string, unknown>;
+      return {
+        source: "redis",
+        ...parsed,
+        payload: sanitizeRichTextPayload(parsed.payload),
+      };
+    }
 
     const draft = await this.prisma.draft.findUnique({ where: { contentId } });
     if (draft && draft.authorId === userId) {
@@ -25,6 +33,12 @@ export class DraftsService {
       include: { assets: { include: { asset: true }, orderBy: { sortOrder: "asc" } } },
     });
     if (!content) throw new NotFoundException("content not found");
+    const richText = sanitizeRichText({
+      html: content.bodyHtml,
+      json: content.bodyJson && typeof content.bodyJson === "object" && !Array.isArray(content.bodyJson)
+        ? (content.bodyJson as Record<string, unknown>)
+        : null,
+    });
     return {
       source: "empty",
       contentId,
@@ -32,8 +46,8 @@ export class DraftsService {
       title: content.title,
       body: content.body,
       payload: {
-        html: content.bodyHtml,
-        json: content.bodyJson,
+        html: richText.html ?? null,
+        json: richText.json ?? null,
         tags: content.tags,
         generatedAssetIds: content.assets.map((item) => item.assetId),
         assetIds: content.assets.map((item) => item.assetId),

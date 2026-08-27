@@ -15,6 +15,7 @@ import {
   type ContentSummary
 } from "@aicp/shared";
 import { getUploadPublicBase } from "../modules/storage/storage.config";
+import { sanitizeRichText } from "./rich-text-sanitizer";
 
 type UserLike = {
   id: string;
@@ -154,12 +155,13 @@ export function toContentDetail(content: ContentLike & { assets: ContentAssetLik
     content.bodyJson && typeof content.bodyJson === "object" && !Array.isArray(content.bodyJson)
       ? (content.bodyJson as Record<string, unknown>)
       : null;
+  const richText = sanitizeRichText({ html: content.bodyHtml ?? null, json: bodyJson });
 
   return {
     ...toContentSummary(content),
     body: content.body,
-    bodyHtml: content.bodyHtml ?? null,
-    bodyJson,
+    bodyHtml: richText.html ?? null,
+    bodyJson: richText.json ?? null,
     tags: content.tags,
     assets: content.assets.map((item) => toAssetSummary(item.asset))
   };

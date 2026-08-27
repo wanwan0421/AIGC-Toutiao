@@ -80,11 +80,13 @@ export class ContentReviewPolicyService {
     });
   }
 
+  // 获取当前内容的审核状态
   async getCurrentAuditState(content: ReviewableContent): Promise<CurrentAuditState> {
     const audit = await this.getLatestAuditForContent(content.id);
     return this.evaluateCurrentAudit(content, audit);
   }
 
+  // 评估当前内容的审核状态
   evaluateCurrentAudit(content: ReviewableContent, audit: AuditLike | null): CurrentAuditState {
     const currentHash = this.computeContentReviewHash(content);
     if (!audit) {

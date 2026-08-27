@@ -14,9 +14,6 @@ export class WorkflowJobQueueService implements OnModuleDestroy {
     lazyConnect: true,
     maxRetriesPerRequest: 1,
     connectTimeout: 2_000,
-    // Commands still fail fast while Redis is unavailable, but the shared
-    // connection keeps probing so a pending Outbox record can recover without
-    // restarting the API process.
     retryStrategy: (attempt) => Math.min(250 * attempt, 5_000),
   });
   readonly queue = new Queue<AiJobQueueData>(this.config.queueName, { connection: this.connection });

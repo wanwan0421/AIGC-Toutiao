@@ -163,11 +163,15 @@ export enum AiJobStatus {
 
 export enum AiJobType {
   CreativeChat = "creative_chat",
+  ConversationCompaction = "conversation_compaction",
+  CreativeTitleGenerate = "creative_title_generate",
+  CreativeSelectionRewrite = "creative_selection_rewrite",
   CreativeDirectGenerate = "creative_direct_generate",
   CreativeImageGenerate = "creative_image_generate",
   ContentSubmitReview = "content_submit_review",
   ContentApprove = "content_approve",
   ModerationContentRun = "moderation_content_run",
+  ModerationTextRun = "moderation_text_run",
   ComplianceRewrite = "compliance_rewrite",
   PromptEvalRun = "prompt_eval_run"
 }
@@ -637,6 +641,8 @@ export interface ContentWorkflowState {
   content: ContentSummary;
   latestAudit?: ContentWorkflowAuditState;
   latestQuality?: ContentWorkflowQualityState;
+  canScoreQuality: boolean;
+  qualityBlockReason?: string;
   canPublish: boolean;
   publishBlockReason?: string;
 }
@@ -687,6 +693,11 @@ export interface AiJobStartRequest {
   contentId?: string;
   conversationId?: string;
   assistantMessageId?: string;
+  /**
+   * Mirrors the Idempotency-Key header so proxies that drop custom headers do
+   * not turn a retry-safe job submission into an invalid request.
+   */
+  idempotencyKey?: string;
 }
 
 export interface AiJobEvent {

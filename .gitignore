@@ -13,3 +13,6 @@ tmp
 
 *.tsbuildinfo
 .docs
+
+.agents/
+.codex/

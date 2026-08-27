@@ -133,47 +133,71 @@ export class ContentsController {
 
   @UseGuards(AuthGuard)
   @Post(":id/submit-review")
-  submitReview(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
-    return this.workflow.submitReview(user.id, id);
+  submitReview(
+    @CurrentUser() user: UserProfileSummary,
+    @Param("id") id: string,
+    @Headers("idempotency-key") idempotencyKey?: string,
+  ) {
+    return this.createContentAiJob(user.id, id, AiJobType.ContentSubmitReview, idempotencyKey);
   }
 
   @UseGuards(AuthGuard)
   @Post(":id/submit-review/jobs")
-  submitReviewJob(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
-    return this.jobs.create({
-      userId: user.id,
-      type: AiJobType.ContentSubmitReview,
-      payload: { contentId: id },
-      contentId: id,
-    });
+  submitReviewJob(
+    @CurrentUser() user: UserProfileSummary,
+    @Param("id") id: string,
+    @Headers("idempotency-key") idempotencyKey?: string,
+  ) {
+    return this.createContentAiJob(user.id, id, AiJobType.ContentSubmitReview, idempotencyKey);
   }
 
   @UseGuards(AuthGuard)
   @Post(":id/approve")
-  approve(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
-    return this.workflow.scoreQuality(user.id, id);
+  approve(
+    @CurrentUser() user: UserProfileSummary,
+    @Param("id") id: string,
+    @Headers("idempotency-key") idempotencyKey?: string,
+  ) {
+    return this.createContentAiJob(user.id, id, AiJobType.ContentApprove, idempotencyKey);
   }
 
   @UseGuards(AuthGuard)
   @Post(":id/approve/jobs")
-  approveJob(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
-    return this.qualityScoreJob(user, id);
+  approveJob(
+    @CurrentUser() user: UserProfileSummary,
+    @Param("id") id: string,
+    @Headers("idempotency-key") idempotencyKey?: string,
+  ) {
+    return this.createContentAiJob(user.id, id, AiJobType.ContentApprove, idempotencyKey);
   }
 
   @UseGuards(AuthGuard)
   @Post(":id/quality-score")
-  qualityScore(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
-    return this.workflow.scoreQuality(user.id, id);
+  qualityScore(
+    @CurrentUser() user: UserProfileSummary,
+    @Param("id") id: string,
+    @Headers("idempotency-key") idempotencyKey?: string,
+  ) {
+    return this.createContentAiJob(user.id, id, AiJobType.ContentApprove, idempotencyKey);
   }
 
   @UseGuards(AuthGuard)
   @Post(":id/quality-score/jobs")
-  qualityScoreJob(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
+  qualityScoreJob(
+    @CurrentUser() user: UserProfileSummary,
+    @Param("id") id: string,
+    @Headers("idempotency-key") idempotencyKey?: string,
+  ) {
+    return this.createContentAiJob(user.id, id, AiJobType.ContentApprove, idempotencyKey);
+  }
+
+  private createContentAiJob(userId: string, contentId: string, type: AiJobType, idempotencyKey?: string) {
     return this.jobs.create({
-      userId: user.id,
-      type: AiJobType.ContentApprove,
-      payload: { contentId: id },
-      contentId: id,
+      userId,
+      type,
+      payload: { contentId },
+      contentId,
+      idempotencyKey: idempotencyKey?.slice(0, 128),
     });
   }
 

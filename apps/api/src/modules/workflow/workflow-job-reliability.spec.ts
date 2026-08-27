@@ -143,7 +143,8 @@ describe("AI job reliability primitives", () => {
       {} as never,
       {} as never,
       {} as never,
-      {} as never
+      {} as never,
+      { register: vi.fn() } as never
     );
     const result = await (runner as unknown as {
       terminalUpdate: (...args: unknown[]) => Promise<unknown>;
@@ -167,7 +168,8 @@ describe("AI job reliability primitives", () => {
       {} as never,
       {} as never,
       {} as never,
-      {} as never
+      {} as never,
+      { register: vi.fn() } as never
     );
     await expect((runner as unknown as {
       activeEvent: (...args: unknown[]) => Promise<unknown>;

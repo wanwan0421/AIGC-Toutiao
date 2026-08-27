@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ModelClientService } from "../model-client.service";
-import { parseJsonObject } from "../structured-output";
+import { completeStructured } from "../structured-output";
+import { skillRouterSchema } from "./structured-agent.schemas";
 import { SkillRegistryService } from "../skills-runtime/skill-registry.service";
 import type { SkillRouterDecision } from "../skills-runtime/skill-runtime.types";
 
@@ -24,14 +25,26 @@ export class SkillRouterAgent {
     private readonly registry: SkillRegistryService
   ) {}
 
-  async decide(input: RouterInput, options: { signal?: AbortSignal } = {}): Promise<SkillRouterDecision> {
+  async decide(input: RouterInput, options: { signal?: AbortSignal; aiJobId?: string; contentId?: string; conversationId?: string } = {}): Promise<SkillRouterDecision> {
     if (!this.modelClient.hasRemoteProvider()) {
       return this.routeUnavailableDecision();
     }
 
     try {
-      const content = await this.modelClient.complete({
+      const structured = await completeStructured({
+        modelClient: this.modelClient, name: "skill_router", schema: skillRouterSchema,
+        telemetry: {
+          scene: "skill_router",
+          inputSummary: input.message.slice(0, 160),
+          aiJobId: options.aiJobId,
+          contentId: options.contentId,
+          conversationId: options.conversationId,
+        },
+        apiStyle: this.apiStyle(),
+        cacheStrategy: this.cacheEnabled() ? "prefix" : "off",
+        store: false,
         temperature: 0.05,
+        thinking: "disabled",
         messages: [
           {
             role: "system",
@@ -44,12 +57,27 @@ export class SkillRouterAgent {
         ],
         signal: options.signal,
       });
-      const parsed = parseJsonObject<Partial<SkillRouterDecision>>(content);
+      const parsed: Partial<SkillRouterDecision> = {
+        ...structured,
+        skillKey: structured.skillKey ?? undefined,
+        message: structured.message ?? undefined,
+        input: Object.fromEntries(Object.entries(structured.input).filter(([, value]) => value !== null)),
+      };
       return this.normalize(parsed) ?? this.routeUnavailableDecision();
     } catch (error) {
       this.logger.debug(`Skill router unavailable: ${(error as Error).message}`);
       return this.routeUnavailableDecision();
     }
+  }
+
+  private apiStyle() {
+    return process.env.AI_SKILL_ROUTER_API_STYLE?.trim().toLowerCase() === "chat_completions"
+      ? "chat_completions" as const
+      : "responses" as const;
+  }
+
+  private cacheEnabled() {
+    return process.env.AI_SKILL_ROUTER_CACHE_ENABLED?.trim().toLowerCase() !== "false";
   }
 
   private systemPrompt() {

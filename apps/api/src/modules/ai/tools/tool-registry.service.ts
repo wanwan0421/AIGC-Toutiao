@@ -2,7 +2,7 @@ import { Injectable } from "@nestjs/common";
 import { z } from "zod";
 import { AppError } from "../../../common/app-error";
 
-export type ToolContext = { userId: string; conversationId?: string; contentId?: string; signal?: AbortSignal };
+export type ToolContext = { userId: string; aiJobId?: string; conversationId?: string; contentId?: string; signal?: AbortSignal };
 export type ToolDefinition<T extends z.ZodTypeAny = z.ZodTypeAny> = {
   name: string;
   description: string;

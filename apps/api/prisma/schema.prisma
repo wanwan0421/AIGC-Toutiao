@@ -273,15 +273,17 @@ model Asset {
 }
 
 model AiConversation {
-  id        String      @id @default(cuid())
-  userId    String
-  contentId String?
-  title     String?
-  createdAt DateTime    @default(now())
-  updatedAt DateTime    @updatedAt
-  user      User        @relation(fields: [userId], references: [id])
-  content   Content?    @relation(fields: [contentId], references: [id])
-  messages  AiMessage[]
+  id              String                         @id @default(cuid())
+  userId          String
+  contentId       String?
+  title           String?
+  createdAt       DateTime                       @default(now())
+  updatedAt       DateTime                       @updatedAt
+  user            User                           @relation(fields: [userId], references: [id])
+  content         Content?                       @relation(fields: [contentId], references: [id])
+  messages        AiMessage[]
+  providerSession AiConversationProviderSession?
+  summary         AiConversationSummary?
 
   @@index([userId, contentId, updatedAt])
 }
@@ -289,6 +291,7 @@ model AiConversation {
 model AiMessage {
   id             String         @id @default(cuid())
   conversationId String
+  dedupeKey      String?        @unique
   role           AiMessageRole
   content        String
   metadata       Json?
@@ -296,6 +299,45 @@ model AiMessage {
   conversation   AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@index([conversationId, createdAt])
+}
+
+model AiConversationProviderSession {
+  conversationId      String         @id
+  provider            String         @default("volcengine_ark")
+  apiStyle            String         @default("responses")
+  model               String
+  responseId          String?
+  pendingResponseId   String?
+  pendingRequestKey   String?
+  responseExpiresAt   DateTime?
+  promptVersionId     String?
+  syncedMessageId     String?
+  editorContextHash   String?
+  chainTurnCount      Int            @default(0)
+  status              String         @default("active")
+  invalidReason       String?
+  version             Int            @default(0)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  conversation        AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([responseId])
+  @@index([pendingResponseId])
+  @@index([status, responseExpiresAt])
+}
+
+model AiConversationSummary {
+  conversationId      String         @id
+  summary             String
+  facts               String[]       @default([])
+  preferences         String[]       @default([])
+  decisions           String[]       @default([])
+  openThreads         String[]       @default([])
+  throughMessageId    String?
+  coveredMessageCount Int            @default(0)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  conversation        AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 }
 
 model ContentAsset {
@@ -340,14 +382,38 @@ model AiCallLog {
   id           String   @id @default(cuid())
   scene        String
   model        String?
+  provider     String?
+  apiStyle     String?
+  responseId   String?
+  previousResponseId String?
+  responseExpiresAt DateTime?
+  aiJobId      String?
+  contentId    String?
+  conversationId String?
   promptKey    String?
   promptVersionId String?
   inputSummary String?
   output       Json?
   latencyMs    Int?
+  inputTokens  Int?
+  cachedInputTokens Int?
+  outputTokens Int?
+  reasoningTokens Int?
+  totalTokens  Int?
+  cacheStrategy String?
+  firstTokenLatencyMs Int?
+  sessionRebuilt Boolean?
+  rebuildReason String?
+  traceEnabled Boolean?
   success      Boolean
   errorMessage String?
   createdAt    DateTime @default(now())
+
+  @@index([scene, createdAt])
+  @@index([responseId])
+  @@index([conversationId, createdAt])
+  @@index([contentId, createdAt])
+  @@index([aiJobId, createdAt])
 }
 
 model AiJob {
@@ -513,11 +579,15 @@ enum AiJobDispatchStatus {
 
 enum AiJobType {
   creative_chat
+  conversation_compaction
+  creative_title_generate
+  creative_selection_rewrite
   creative_direct_generate
   creative_image_generate
   content_submit_review
   content_approve
   moderation_content_run
+  moderation_text_run
   compliance_rewrite
   prompt_eval_run
 }

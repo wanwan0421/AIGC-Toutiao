@@ -16,8 +16,15 @@ type RewriteInput = ReviewInput & {
   riskItems?: AuditRiskItem[];
 };
 
+type SafetyExecutionOptions = {
+  signal?: AbortSignal;
+  aiJobId?: string;
+  contentId?: string;
+  conversationId?: string;
+};
+
 @Injectable()
-export class SafetyReviewCapability {
+export class ContentSafetyUseCase {
   constructor(
     private readonly safetyRules: SafetyRuleEngine,
     private readonly safetyReview: SafetyReviewAgent,
@@ -25,9 +32,12 @@ export class SafetyReviewCapability {
     private readonly complianceRewrite: ComplianceRewriteAgent
   ) {}
 
-  async review(input: ReviewInput, options: { trustedContext?: string; signal?: AbortSignal } = {}): Promise<AuditResult> {
+  // 执行内容安全审核，返回审核结果
+  async review(input: ReviewInput, options: SafetyExecutionOptions = {}): Promise<AuditResult> {
     throwIfAborted(options.signal);
+    // 规则预检
     const ruleResult = this.safetyRules.scan(input);
+    // LLM审核
     const llmResult = await this.safetyReview.run(
       {
         ...input,
@@ -38,13 +48,15 @@ export class SafetyReviewCapability {
     return this.resultMerger.merge(ruleResult, llmResult, input);
   }
 
-  rewrite(input: RewriteInput, options: { trustedContext?: string; signal?: AbortSignal } = {}): Promise<ComplianceRewriteResult> {
+  // 执行合规改写
+  rewrite(input: RewriteInput, options: SafetyExecutionOptions = {}): Promise<ComplianceRewriteResult> {
     return this.complianceRewrite.run(input, options);
   }
 
+  // 执行内容安全审核，并在不通过时尝试进行合规改写
   async reviewWithRewrite(
     input: ReviewInput,
-    options: { trustedContext?: string; signal?: AbortSignal } = {}
+    options: SafetyExecutionOptions = {}
   ): Promise<{
     audit: AuditResult;
     rewrite: ComplianceRewriteResult | null;
@@ -62,7 +74,7 @@ export class SafetyReviewCapability {
 
   private async tryRewrite(
     input: RewriteInput,
-    options: { trustedContext?: string; signal?: AbortSignal } = {}
+    options: SafetyExecutionOptions = {}
   ): Promise<ComplianceRewriteResult | null> {
     try {
       return await this.rewrite(input, options);
@@ -71,4 +83,5 @@ export class SafetyReviewCapability {
       return null;
     }
   }
+
 }

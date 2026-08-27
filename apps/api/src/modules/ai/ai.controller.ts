@@ -44,7 +44,7 @@ export class AiController {
       contentId: body.contentId,
       conversationId: body.conversationId,
       assistantMessageId: body.assistantMessageId,
-      idempotencyKey: idempotencyKey?.slice(0, 128),
+      idempotencyKey: (idempotencyKey?.trim() || body.idempotencyKey)?.slice(0, 128),
     });
   }
 
@@ -105,40 +105,36 @@ export class AiController {
     return this.jobResultCommit.commit(user.id, id, body);
   }
 
-  @Post("creative/chat/stream")
-  async streamCreativeChat(
+  @Post("creative/chat/jobs")
+  startCreativeChatJob(
     @CurrentUser() user: UserProfileSummary,
     @Body() body: CreativeChatRequest,
-    @Res() response: Response
+    @Headers("idempotency-key") idempotencyKey?: string,
   ) {
-    response.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-    response.setHeader("Cache-Control", "no-cache, no-transform");
-    response.setHeader("Connection", "keep-alive");
-    response.flushHeaders?.();
-
-    try {
-      for await (const event of this.workflow.streamCreativeChat({ ...body, userId: user.id })) {
-        if (event.type === "skill") {
-          await this.writeSkillEvent(response, user.id, event.data as Record<string, unknown>);
-          continue;
-        }
-        this.writeSse(response, event);
-      }
-    } catch (error) {
-      this.writeSse(response, { type: "error", data: { message: "AI 对话暂时失败，请稍后重试", code: "AI_STREAM_FAILED", retryable: true } });
-    } finally {
-      response.end();
-    }
+    const { userId: _ignoredUserId, ...payload } = body;
+    return this.jobs.create({
+      userId: user.id,
+      type: AiJobType.CreativeChat,
+      payload,
+      contentId: body.contentId,
+      conversationId: body.conversationId,
+      idempotencyKey: idempotencyKey?.slice(0, 128),
+    });
   }
 
   @Post("creative/direct-generate/jobs")
-  startDirectGenerateJob(@CurrentUser() user: UserProfileSummary, @Body() body: DirectGenerateRequest) {
+  startDirectGenerateJob(
+    @CurrentUser() user: UserProfileSummary,
+    @Body() body: DirectGenerateRequest,
+    @Headers("idempotency-key") idempotencyKey?: string,
+  ) {
     const { userId: _ignoredUserId, ...payload } = body;
     return this.jobs.create({
       userId: user.id,
       type: AiJobType.CreativeDirectGenerate,
       payload,
       contentId: body.contentId,
+      idempotencyKey: idempotencyKey?.slice(0, 128),
     });
   }
 
@@ -148,25 +144,44 @@ export class AiController {
     @Body() body: CreativeImageJobDto,
     @Headers("idempotency-key") idempotencyKey?: string,
   ) {
+    const { idempotencyKey: bodyIdempotencyKey, ...payload } = body;
     return this.jobs.create({
       userId: user.id,
       type: AiJobType.CreativeImageGenerate,
-      payload: { ...body },
+      payload,
       contentId: body.contentId,
       conversationId: body.conversationId,
       assistantMessageId: body.assistantMessageId,
-      idempotencyKey: idempotencyKey?.slice(0, 128),
+      idempotencyKey: (idempotencyKey?.trim() || bodyIdempotencyKey)?.slice(0, 128),
     });
   }
 
   @Post("creative/titles")
-  generateTitles(@Body() body: TitleGenerateRequest) {
-    return this.workflow.generateTitles(body);
+  generateTitles(
+    @CurrentUser() user: UserProfileSummary,
+    @Body() body: TitleGenerateRequest,
+    @Headers("idempotency-key") idempotencyKey?: string,
+  ) {
+    return this.jobs.create({
+      userId: user.id,
+      type: AiJobType.CreativeTitleGenerate,
+      payload: { ...body },
+      idempotencyKey: idempotencyKey?.slice(0, 128),
+    });
   }
 
   @Post("creative/selection/rewrite")
-  rewriteSelection(@Body() body: SelectionRewriteRequest) {
-    return this.workflow.rewriteSelection(body);
+  rewriteSelection(
+    @CurrentUser() user: UserProfileSummary,
+    @Body() body: SelectionRewriteRequest,
+    @Headers("idempotency-key") idempotencyKey?: string,
+  ) {
+    return this.jobs.create({
+      userId: user.id,
+      type: AiJobType.CreativeSelectionRewrite,
+      payload: { ...body },
+      idempotencyKey: idempotencyKey?.slice(0, 128),
+    });
   }
 
   @Get("creative/image/config")
@@ -187,51 +202,6 @@ export class AiController {
     @Body() body: AttachConversationDto
   ) {
     return this.workflow.attachCreativeConversation(id, { ...body, userId: user.id });
-  }
-
-  // 处理 Skill 事件，尝试从事件数据中提取 AiJob 创建请求
-  // 如果存在有效的请求，则创建 AiJob 并发送相应的 SSE 事件通知前端
-  // 如果请求无效，则直接发送原始事件数据
-  private async writeSkillEvent(response: Response, userId: string, data: Record<string, unknown>) {
-    const { jobRequest, ...publicData } = data;
-    const request = jobRequest as
-      | { type?: AiJobType; payload?: Record<string, unknown>; contentId?: string }
-      | undefined;
-
-    if (!request?.type) {
-      this.writeSse(response, { type: "skill", data: publicData });
-      return;
-    }
-
-    const skillKey = typeof publicData.skillKey === "string" ? publicData.skillKey : undefined;
-    try {
-      const job = await this.jobs.create({
-        userId,
-        type: request.type,
-        payload: request.payload ?? {},
-        contentId: request.contentId,
-      });
-
-      this.writeSse(response, { type: "skill", data: publicData });
-      this.writeSse(response, {
-        type: "skill",
-        data: {
-          type: "job_started",
-          skillKey,
-          message: "Skill 任务已开始",
-          job,
-        },
-      });
-    } catch (error) {
-      this.writeSse(response, {
-        type: "skill",
-        data: {
-          type: "skill_error",
-          skillKey,
-          message: "Skill 任务创建失败，请稍后重试",
-        },
-      });
-    }
   }
 
   private writeSse(response: Response, event: AiJobEvent | { type: string; data: unknown }) {

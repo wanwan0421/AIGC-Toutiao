@@ -34,6 +34,7 @@ const nextConfig = {
     keepAlive: true,
   },
   experimental: {
+    proxyTimeout: 300_000,
     optimizePackageImports: ["lucide-react", "lodash-es", "date-fns"],
     optimizeCss: true,
     turbo: {

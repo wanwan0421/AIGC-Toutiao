@@ -1,4 +1,4 @@
-import { HttpStatus } from "@nestjs/common";
+import { HttpException, HttpStatus } from "@nestjs/common";
 
 export type AppErrorOptions = {
   code: string;
@@ -45,6 +45,23 @@ export function throwIfAborted(signal?: AbortSignal) {
 
 export function asAppError(error: unknown, fallback: Partial<AppErrorOptions> = {}) {
   if (error instanceof AppError) return error;
+  if (error instanceof HttpException) {
+    const statusCode = error.getStatus();
+    const response = error.getResponse();
+    const record = response && typeof response === "object" ? response as Record<string, unknown> : {};
+    const rawMessage = record.message ?? error.message;
+    const message = Array.isArray(rawMessage) ? rawMessage.map(String).join("; ") : String(rawMessage);
+    return new AppError({
+      code: typeof record.code === "string" ? record.code : httpErrorCode(statusCode),
+      message,
+      statusCode,
+      retryable: statusCode === 429 || statusCode === 502 || statusCode === 503 || statusCode === 504,
+      details: record.details && typeof record.details === "object"
+        ? record.details as Record<string, unknown>
+        : undefined,
+      cause: error,
+    });
+  }
   if (error instanceof Error && (error.name === "AbortError" || /aborted/i.test(error.message))) {
     return new AppError({
       code: fallback.code ?? "UPSTREAM_ABORTED",
@@ -63,6 +80,20 @@ export function asAppError(error: unknown, fallback: Partial<AppErrorOptions> = 
     details: fallback.details,
     cause: error,
   });
+}
+
+function httpErrorCode(status: number) {
+  if (status === 400) return "BAD_REQUEST";
+  if (status === 401) return "AUTH_REQUIRED";
+  if (status === 403) return "FORBIDDEN";
+  if (status === 404) return "NOT_FOUND";
+  if (status === 409) return "CONFLICT";
+  if (status === 422) return "VALIDATION_FAILED";
+  if (status === 429) return "RATE_LIMITED";
+  if (status === 502) return "UPSTREAM_INVALID_RESPONSE";
+  if (status === 503) return "SERVICE_UNAVAILABLE";
+  if (status === 504) return "UPSTREAM_TIMEOUT";
+  return `HTTP_${status}`;
 }
 
 export function combineAbortSignals(signals: Array<AbortSignal | undefined>) {

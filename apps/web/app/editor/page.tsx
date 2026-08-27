@@ -22,6 +22,8 @@ import {
   type LocationCandidate,
   type OfficialTopicSummary,
   type QualityScoreResult,
+  type SelectionRewriteResult,
+  type TitleGenerateResult,
 } from "@aicp/shared";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -60,6 +62,7 @@ import {
 } from "../../lib/ai-job-session";
 import { useAiJob } from "../../lib/use-ai-job";
 import { useDraftAutosave, type EditorDraftCache } from "./use-draft-autosave";
+import { isAiJobInEditorScope } from "../../lib/editor-ai-job-scope";
 import {
   RichTextEditor,
   RichTextRenderer,
@@ -838,6 +841,7 @@ export default function EditorPage() {
   const publishRedirectTimerRef = useRef<number | null>(null);
   const restoredAiJobIdsRef = useRef(new Set<string>());
   const appliedRestoredAiJobIdsRef = useRef(new Set<string>());
+  const editorInitializationOwnerRef = useRef(0);
 
   const [contentId, setContentId] = useState<string | null>(editingContentId);
   const [editingStatus, setEditingStatus] = useState<ContentStatus | null>(
@@ -861,6 +865,8 @@ export default function EditorPage() {
   const [statusMessage, setStatusMessage] = useState("编辑器已准备好");
   const [isLoadingInitial, setIsLoadingInitial] = useState(true);
   const [activeOperation, setActiveOperation] = useState<EditorOperation | null>(null);
+  const [restoringOperation, setRestoringOperation] = useState<EditorOperation | null>(null);
+  const restoringOperationOwnerRef = useRef<string | null>(null);
   const [drafts, setDrafts] = useState<DraftCard[]>([]);
   const [hotTopics, setHotTopics] = useState<OfficialTopicSummary[]>([]);
   const [quickMenu, setQuickMenu] = useState<QuickMenu>(null);
@@ -906,8 +912,9 @@ export default function EditorPage() {
   } | null>(null);
   const [searchKeyword, setSearchKeyword] = useState("");
   const [isSearchingLocation, setIsSearchingLocation] = useState(false);
-  const isBusy = activeOperation !== null;
-  const isOperation = (operation: EditorOperation) => activeOperation === operation;
+  const busyOperation = activeOperation ?? restoringOperation;
+  const isBusy = busyOperation !== null;
+  const isOperation = (operation: EditorOperation) => busyOperation === operation;
 
   const imageAssets = useMemo(() => assets.filter(isImageAsset), [assets]);
   const textAssets = useMemo(() => assets.filter(isTextAsset), [assets]);
@@ -971,7 +978,8 @@ export default function EditorPage() {
     ContentStatus.PendingReview,
     ContentStatus.Scheduled,
   ]);
-  const canRunQualityReview = Boolean(editingStatus && qualityReadyStatuses.has(editingStatus));
+  const canRunQualityReview =
+    workflowState?.canScoreQuality ?? Boolean(editingStatus && qualityReadyStatuses.has(editingStatus));
   const localCanPublishContent =
     editingStatus === ContentStatus.Approved ||
     editingStatus === ContentStatus.Updated ||
@@ -1026,10 +1034,18 @@ export default function EditorPage() {
     // Switching works detaches local subscriptions only. Durable jobs remain
     // active and are discoverable from the server when the user returns.
     stopStreaming();
+    contentIdRef.current = editingContentId;
     setContentId(editingContentId);
+    setLastContentSummary(null);
+    setWorkflowState(null);
+    setReviewResult(null);
+    setReviewRewrite(null);
+    setQualityResult(null);
   }, [editingContentId, stopStreaming]);
 
   useEffect(() => {
+    const initializationOwner = editorInitializationOwnerRef.current + 1;
+    editorInitializationOwnerRef.current = initializationOwner;
     if (editingContentId && skipNextEditorInitRef.current === editingContentId) {
       skipNextEditorInitRef.current = null;
       void loadDraftCards();
@@ -1037,16 +1053,19 @@ export default function EditorPage() {
       return;
     }
 
-    void initializeEditor();
+    void initializeEditor(editingContentId, initializationOwner);
     void loadDraftCards();
     void loadAssets();
     void loadTopics();
     void loadImageConfig();
   }, [editingContentId]);
 
+  // 恢复 AI 任务状态：先尝试本地缓存，再尝试从服务器恢复。恢复成功后，继续监听任务进度。
   useEffect(() => {
-    if (isLoadingInitial || isBusy) return;
+    // 正常用户操作和刷新恢复分别持有状态。恢复流程只观察正常操作
+    if (isLoadingInitial || activeOperation !== null) return;
     let disposed = false;
+    let restoreOwnerId: string | null = null;
     const expectedContentId = contentIdRef.current ?? editingContentId;
     void (async () => {
       const local = listStoredAiJobs().find(
@@ -1054,16 +1073,21 @@ export default function EditorPage() {
       );
       const serverJobs = !local && expectedContentId ? await recoverAiJobs({ contentId: expectedContentId, limit: 20 }).catch(() => []) : [];
       const restorableServerJobs = serverJobs.filter((item) => RESTORABLE_EDITOR_JOB_TYPES.has(item.type));
-      const server = restorableServerJobs.find((item) => !["succeeded", "failed", "cancelled"].includes(item.status)) ?? restorableServerJobs[0];
+      // 服务端自动恢复只接管非终态任务。终态任务只有在当前标签页仍保留
+      // sessionStorage 指针时才恢复一次，避免每次刷新都重放最近的已完成任务。
+      const server = restorableServerJobs.find((item) => !["succeeded", "failed", "cancelled"].includes(item.status));
       const candidate = local ? { id: local.jobId, type: local.type } : server ? { id: server.id, type: server.type } : undefined;
       if (!candidate || disposed || restoredAiJobIdsRef.current.has(candidate.id)) return;
       restoredAiJobIdsRef.current.add(candidate.id);
+
+      // 恢复 AI 任务时，先把编辑器状态切换到对应的操作模式，避免用户在恢复过程中修改正文导致恢复失败。
       if (candidate.type === AiJobType.CreativeChat) {
         setIsChatStreaming(true);
         chatJobIdRef.current = candidate.id;
         await resumeJob(candidate.id, {
-          onSnapshot: (snapshot) => { chatJobIdRef.current = snapshot.id; },
+          onSnapshot: (snapshot) => { if (!disposed) chatJobIdRef.current = snapshot.id; },
           onPartial: (data) => {
+            if (disposed) return;
             if (data.kind !== "creativeChatEvent" || !data.value || typeof data.value !== "object") return;
             const event = data.value as { type?: string; data?: Record<string, unknown> };
             if (event.type === "meta" && typeof event.data?.conversationId === "string") setConversationId(event.data.conversationId);
@@ -1078,32 +1102,50 @@ export default function EditorPage() {
             });
           },
           onDone: async () => {
+            if (disposed) return;
             if (expectedContentId) {
               const conversations = await getCreativeConversations(expectedContentId).catch(() => []);
               const latest = conversations[0];
               if (latest) setChatMessages(latest.messages.map((item, index) => ({ id: item.id ?? `${latest.id}-${index}`, role: item.role, kind: "chat", content: item.content })));
             }
           },
-          onError: (message) => setStatusMessage(message),
+          onError: (message) => { if (!disposed) setStatusMessage(message); },
         });
-        chatJobIdRef.current = null;
-        setIsChatStreaming(false);
+        if (!disposed) {
+          chatJobIdRef.current = null;
+          setIsChatStreaming(false);
+        }
         return;
       }
-      setActiveOperation(editorOperationForJobType(candidate.type));
+
+      restoreOwnerId = crypto.randomUUID();
+      restoringOperationOwnerRef.current = restoreOwnerId;
+      setRestoringOperation(editorOperationForJobType(candidate.type));
       setStatusMessage("检测到 AI 任务，正在从服务器恢复状态...");
       await resumeJob(candidate.id, {
-        onProgress: (data) => { if (typeof data.message === "string") setStatusMessage(data.message); },
-        onWarning: (message) => setStatusMessage(message),
-        onResultReady: (restoredJob, result, event) => commitCreativeJobResult(restoredJob, result, event),
-        onDone: (restoredJob, result) => handleEditorJobDone(restoredJob, result),
-        onError: (message) => setStatusMessage(`AI 任务恢复失败：${message}`),
+        onProgress: (data) => { if (!disposed && typeof data.message === "string") setStatusMessage(data.message); },
+        onWarning: (message) => { if (!disposed) setStatusMessage(message); },
+        onResultReady: (restoredJob, result, event) => disposed ? undefined : commitCreativeJobResult(restoredJob, result, event),
+        onDone: (restoredJob, result) => disposed ? undefined : handleEditorJobDone(restoredJob, result),
+        onError: (message) => { if (!disposed) setStatusMessage(`AI 任务恢复失败：${message}`); },
       });
     })().catch((error) => {
       if (!disposed) setStatusMessage(error instanceof Error ? `AI 任务恢复失败：${error.message}` : "AI 任务恢复失败");
-    }).finally(() => { if (!disposed) setActiveOperation(null); });
-    return () => { disposed = true; };
-  }, [editingContentId, isBusy, isLoadingInitial, resumeJob]);
+    }).finally(() => {
+      // 资源释放不受 disposed 限制；owner 校验可防止旧恢复流程解锁新任务。
+      if (restoreOwnerId && restoringOperationOwnerRef.current === restoreOwnerId) {
+        restoringOperationOwnerRef.current = null;
+        setRestoringOperation(null);
+      }
+    });
+    return () => {
+      disposed = true;
+      if (restoreOwnerId && restoringOperationOwnerRef.current === restoreOwnerId) {
+        restoringOperationOwnerRef.current = null;
+        setRestoringOperation(null);
+      }
+    };
+  }, [activeOperation, editingContentId, isLoadingInitial, resumeJob]);
 
   useEffect(() => {
     if (localSaveError) setStatusMessage(localSaveError);
@@ -1381,13 +1423,16 @@ export default function EditorPage() {
   }
 
   // 首次进入空白编辑页
-  async function initializeEditor() {
+  async function initializeEditor(targetContentId: string | null, initializationOwner: number) {
     editorReadyRef.current = false;
     setIsLoadingInitial(true);
+    let initialized = false;
+    const isCurrentInitialization = () => editorInitializationOwnerRef.current === initializationOwner;
     try {
-      if (editingContentId) {
+      if (targetContentId) {
         // 先从后端数据库里面获取数据，避免本地草稿数据过旧导致用户丢失修改内容
-        const detail = await getContentDetail(editingContentId);
+        const detail = await getContentDetail(targetContentId);
+        if (!isCurrentInitialization()) return;
         setEditingStatus(detail.status);
         setLastContentSummary(detail);
         setTitle(detail.title);
@@ -1410,15 +1455,18 @@ export default function EditorPage() {
           getCreativeConversations(detail.id).catch(() => []),
           getContentWorkflowState(detail.id).catch(() => null),
         ]);
+        if (!isCurrentInitialization()) return;
         if (state) applyWorkflowState(state);
 
         // 如果草稿存在，比较草稿和服务器内容的时间戳，优先恢复较新的内容，避免用户在编辑过程中丢失修改内容
         if (draft) {
           const cloudTime = new Date(draft.savedAt).getTime();
-          const local = readLocalDraft(editingContentId);
-          const localTime = local ? new Date(local.savedAt).getTime() : 0;
-          if (local && localTime >= cloudTime) {
-            applySnapshot(local);
+          const local = readLocalDraft(targetContentId);
+          const scopedLocal = local?.contentId === targetContentId ? local : null;
+          if (local && !scopedLocal) removeLocalDraft(targetContentId);
+          const localTime = scopedLocal ? new Date(scopedLocal.savedAt).getTime() : 0;
+          if (scopedLocal && localTime >= cloudTime) {
+            applySnapshot(scopedLocal);
             setStatusMessage("已恢复本地离线草稿");
           } else {
             applySnapshot(snapshotFromCloudDraft(draft, detail));
@@ -1450,9 +1498,19 @@ export default function EditorPage() {
           setStatusMessage("已恢复本地未发布草稿");
         }
       }
+      initialized = true;
+    } catch (error) {
+      if (!isCurrentInitialization()) return;
+      resetEditorForNewContent();
+      contentIdRef.current = targetContentId;
+      setContentId(targetContentId);
+      setStatusMessage(error instanceof Error ? `加载文章失败：${error.message}` : "加载文章失败");
     } finally {
-      editorReadyRef.current = true;
-      setIsLoadingInitial(false);
+      if (isCurrentInitialization()) {
+        // Keep autosave disabled after a failed load so stale editor state cannot target a missing content row.
+        editorReadyRef.current = initialized;
+        setIsLoadingInitial(false);
+      }
     }
   }
 
@@ -1642,13 +1700,15 @@ export default function EditorPage() {
       visibility,
       scheduledAt: publishTimeMode === "scheduled" && scheduledAt ? scheduledAt : null,
     };
-    if (contentId) {
-      const updated = await updateContent(contentId, payload);
+    const targetContentId = currentEditorContentId();
+    if (targetContentId) {
+      const updated = await updateContent(targetContentId, payload);
       setEditingStatus(updated.status);
       setLastContentSummary(updated);
       return updated;
     }
     const created = await createContent(payload);
+    contentIdRef.current = created.id;
     setContentId(created.id);
     setEditingStatus(created.status);
     setLastContentSummary(created);
@@ -1657,6 +1717,8 @@ export default function EditorPage() {
         () => undefined,
       );
     }
+    skipNextEditorInitRef.current = created.id;
+    window.history.replaceState(null, "", `/studio/editor?contentId=${created.id}`);
     return created;
   }
 
@@ -1790,6 +1852,21 @@ export default function EditorPage() {
     };
   }
 
+  function currentEditorContentId() {
+    return contentIdRef.current ?? editingContentId;
+  }
+
+  function assertEditorContentScope(targetContentId?: string | null) {
+    const currentContentId = currentEditorContentId();
+    if (!targetContentId || !currentContentId || targetContentId === currentContentId) return;
+    throw new Error("AI 任务属于另一篇文章，已阻止结果写入当前编辑器");
+  }
+
+  function assertEditorJobScope(targetJob: AiJobSnapshot) {
+    if (isAiJobInEditorScope(currentEditorContentId(), targetJob)) return;
+    throw new Error("AI 任务属于另一篇文章，已阻止结果写入当前编辑器");
+  }
+
   async function commitCreativeJobResult(
     resultJob: AiJobSnapshot,
     result: unknown,
@@ -1797,6 +1874,7 @@ export default function EditorPage() {
     partialAssetIds: string[] = [],
   ) {
     if (!event.id) throw new Error("result_ready event is missing its persisted event ID");
+    assertEditorJobScope(resultJob);
     let next: DraftCache;
     const pendingCommit = listStoredAiJobs().find((item) => item.jobId === resultJob.id)?.pendingCommit;
 
@@ -1814,7 +1892,7 @@ export default function EditorPage() {
       const current = snapshot();
       next = {
         ...current,
-        contentId: contentIdRef.current ?? resultJob.contentId ?? null,
+        contentId: resultJob.contentId ?? contentIdRef.current ?? null,
         title: generated.title,
         body: editorText(),
         html: editorHtml(),
@@ -1839,7 +1917,7 @@ export default function EditorPage() {
       const current = snapshot();
       next = {
         ...current,
-        contentId: contentIdRef.current ?? resultJob.contentId ?? null,
+        contentId: resultJob.contentId ?? contentIdRef.current ?? null,
         body: editorText(),
         html: editorHtml(),
         json: editorJson(),
@@ -1879,6 +1957,7 @@ export default function EditorPage() {
   }
 
   async function handleEditorJobDone(doneJob: AiJobSnapshot, result: unknown) {
+    assertEditorJobScope(doneJob);
     if (doneJob.type === AiJobType.CreativeDirectGenerate || doneJob.type === AiJobType.CreativeImageGenerate) {
       if (!doneJob.contentId) return;
       const [detail, cloudDraft] = await Promise.all([getContentDetail(doneJob.contentId), getDraft(doneJob.contentId)]);
@@ -1959,6 +2038,7 @@ export default function EditorPage() {
 
   function applyRestoredEditorJobResult(restoredJob: AiJobSnapshot, result: unknown) {
     if (appliedRestoredAiJobIdsRef.current.has(restoredJob.id) || !result) return;
+    assertEditorJobScope(restoredJob);
 
     if (restoredJob.type === AiJobType.CreativeDirectGenerate) {
       finishGeneratedDraft(result as DirectGenerateResult, []);
@@ -2013,6 +2093,8 @@ export default function EditorPage() {
               ...current,
               content: approved.content,
               latestQuality: { ...approved.quality, scoredAt: new Date().toISOString() },
+              canScoreQuality: true,
+              qualityBlockReason: undefined,
               canPublish:
                 approved.content.status === ContentStatus.Approved ||
                 approved.content.status === ContentStatus.Updated ||
@@ -2165,7 +2247,15 @@ export default function EditorPage() {
   // AI 生成封面图，优先使用创作简报的主题，如果没有则使用正文前40字作为主题，生成后加入素材库并设置为封面预览
   async function generateCoverImage() {
     const currentBody = editorText();
-    const theme = title || briefTheme || currentBody.slice(0, 40);
+    const targetContentId = currentEditorContentId();
+    const normalizedTitle = title.trim();
+    const meaningfulTitle = normalizedTitle && normalizedTitle !== "未命名草稿" ? normalizedTitle : "";
+    const bodyTopic = currentBody
+      .split(/(?:\r?\n)+|[。！？]/)
+      .map((item) => item.trim())
+      .find((item) => item.length >= 6)
+      ?.slice(0, 120) ?? "";
+    const theme = briefTheme.trim() || meaningfulTitle || bodyTopic;
     if (!theme) {
       setStatusMessage("请先填写标题或正文，再生成封面图");
       return;
@@ -2178,14 +2268,14 @@ export default function EditorPage() {
       const imageJob = await runJob(
         () =>
           startCreativeImageJob({
-            contentId: contentId ?? undefined,
+            contentId: targetContentId ?? undefined,
             position: "封面",
             prompt: [
               `主题：${theme}`,
               "用途：今日头条信息流封面图，画面主体清晰，留出标题文字空间。",
-              `当前标题：${title}`,
-              `当前正文：${currentBody.slice(0, 1200)}`,
-            ].join("\n"),
+              meaningfulTitle ? `当前标题：${meaningfulTitle}` : "",
+              "只根据文章主题设计视觉画面，不要在图片中复述正文长文本。",
+            ].filter(Boolean).join("\n"),
           }),
         {
           onProgress: (data) => {
@@ -2232,6 +2322,7 @@ export default function EditorPage() {
 
   async function generateInlineImageFromText(prompt: string) {
     if (isBusy) return;
+    const targetContentId = currentEditorContentId();
     setActiveOperation("inline-image");
     setStatusMessage("AI 正在生成正文配图...");
     try {
@@ -2239,7 +2330,7 @@ export default function EditorPage() {
       const imageJob = await runJob(
         () =>
           startCreativeImageJob({
-            contentId: contentId ?? undefined,
+            contentId: targetContentId ?? undefined,
             position: "正文配图",
             prompt: `配图需求：${prompt}\n当前标题：${title || briefTheme || "正文配图"}\n当前正文：${editorText().slice(0, 1000)}`,
           }),
@@ -2296,11 +2387,21 @@ export default function EditorPage() {
     if (isBusy) return;
     setActiveOperation("title");
     try {
-      const result = await generateCreativeTitles({
-        currentTitle: title || undefined,
-        body: currentBody,
-        platform: "今日头条",
-      });
+      const job = await runJob(
+        () => generateCreativeTitles({
+          currentTitle: title || undefined,
+          body: currentBody,
+          platform: "今日头条",
+        }),
+        {
+          onProgress: (data) => {
+            if (typeof data.message === "string") setStatusMessage(data.message);
+          },
+          onError: (message) => setStatusMessage(message),
+        },
+      );
+      const result = titleGenerateResult(job.result);
+      if (!result) throw new Error("标题任务返回结果无效");
       setTitleCandidates(result.candidates);
       setShowTitleCandidates(true);
       setStatusMessage("已生成标题候选");
@@ -2601,12 +2702,22 @@ export default function EditorPage() {
     setActiveOperation("rewrite");
     try {
       const tone = toneOverride?.trim();
-      const result = await rewriteSelection({
-        selectedText,
-        action,
-        surroundingContext: editorText(),
-        tone: action === "tone" ? tone || "亲和口语" : undefined,
-      });
+      const job = await runJob(
+        () => rewriteSelection({
+          selectedText,
+          action,
+          surroundingContext: editorText(),
+          tone: action === "tone" ? tone || "亲和口语" : undefined,
+        }),
+        {
+          onProgress: (data) => {
+            if (typeof data.message === "string") setStatusMessage(data.message);
+          },
+          onError: (message) => setStatusMessage(message),
+        },
+      );
+      const result = selectionRewriteResult(job.result);
+      if (!result) throw new Error("选区改写任务返回结果无效");
       editorRef.current?.replaceSelection(result.replacement);
       syncBodyFromEditor("AI 已处理选中内容");
       clearSelectionState();
@@ -2753,6 +2864,7 @@ export default function EditorPage() {
     quality: null;
     rewrite: ReviewRewrite;
   }) {
+    assertEditorContentScope(reviewed.content.id);
     setEditingStatus(reviewed.content.status);
     setLastContentSummary(reviewed.content);
     setWorkflowState((current) => ({
@@ -2764,6 +2876,8 @@ export default function EditorPage() {
         checkedAt: new Date().toISOString(),
       },
       latestQuality: current?.latestQuality,
+      canScoreQuality: reviewed.audit.passed,
+      qualityBlockReason: reviewed.audit.passed ? undefined : "CONTENT_REJECTED",
       canPublish:
         reviewed.content.status === ContentStatus.Approved ||
         reviewed.content.status === ContentStatus.Updated ||
@@ -2882,6 +2996,8 @@ export default function EditorPage() {
               ...current,
               content: approved.content,
               latestQuality: { ...approved.quality, scoredAt: new Date().toISOString() },
+              canScoreQuality: true,
+              qualityBlockReason: undefined,
               canPublish:
                 approved.content.status === ContentStatus.Approved ||
                 approved.content.status === ContentStatus.Updated ||
@@ -4429,6 +4545,26 @@ function QualityRadarChart({ quality }: { quality: QualityScoreResult }) {
   );
 }
 
+function titleGenerateResult(value: unknown): TitleGenerateResult | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidates = (value as { candidates?: unknown }).candidates;
+  if (!Array.isArray(candidates)) return null;
+  const normalized = candidates.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+    const record = candidate as Record<string, unknown>;
+    if (typeof record.title !== "string" || typeof record.reason !== "string") return [];
+    return [{ title: record.title, reason: record.reason }];
+  });
+  return normalized.length === candidates.length ? { candidates: normalized } : null;
+}
+
+function selectionRewriteResult(value: unknown): SelectionRewriteResult | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const replacement = (value as { replacement?: unknown }).replacement;
+  return typeof replacement === "string" && replacement.trim() ? { replacement } : null;
+}
+
+// 根据 AI 任务类型返回对应的编辑器操作
 function editorOperationForJobType(type: AiJobType): EditorOperation {
   if (type === AiJobType.CreativeImageGenerate) return "inline-image";
   if (type === AiJobType.ContentSubmitReview) return "audit";

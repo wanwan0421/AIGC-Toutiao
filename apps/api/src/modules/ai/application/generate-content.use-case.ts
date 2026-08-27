@@ -1,9 +1,8 @@
 import { Injectable } from "@nestjs/common";
-import type { AuditResult, ComplianceRewriteResult, DirectGenerateRequest, DirectGenerateResult, GeneratedImageAsset } from "@aicp/shared";
-import { CreativeProductionCapability } from "../capabilities/creative-production.capability";
-import { SafetyReviewCapability } from "../capabilities/safety-review.capability";
-import { SkillRegistryService } from "./skill-registry.service";
-import type { ContentProductionLineInput, SkillExecutionContext, SkillProgressHooks } from "./skill-runtime.types";
+import type { DirectGenerateRequest, DirectGenerateResult, GeneratedImageAsset } from "@aicp/shared";
+import { ContentDraftPipeline } from "./content-draft.pipeline";
+import { ImageGenerationService } from "../image-generation.service";
+import type { ContentProductionLineInput, SkillExecutionContext, SkillProgressHooks } from "../skills-runtime/skill-runtime.types";
 import { throwIfAborted } from "../../../common/app-error";
 
 type ImageTask = {
@@ -19,21 +18,19 @@ type ImageTaskResult = {
 };
 
 @Injectable()
-export class SkillExecutorService {
+export class GenerateContentUseCase {
   constructor(
-    private readonly productionCapability: CreativeProductionCapability,
-    private readonly safetyReviewCapability: SafetyReviewCapability,
-    private readonly registry: SkillRegistryService
+    private readonly draftPipeline: ContentDraftPipeline,
+    private readonly imageGeneration: ImageGenerationService
   ) {}
 
   // 技能执行器提供的接口，供工作流引擎调用以执行具体技能逻辑
-  async runContentProductionLine(
+  async execute(
     input: ContentProductionLineInput,
     context: SkillExecutionContext,
     hooks: SkillProgressHooks = {}
   ): Promise<DirectGenerateResult> {
     const request = this.normalizeProductionInput(input, context);
-    const trustedContext = this.productionTrustedContext();
     const operationId = input.operationId ?? context.conversationId ?? request.contentId ?? `production-${Date.now()}`;
 
     await hooks.progress?.(10, "分析需求与生成正文", "AI 正在分析需求、写作正文并规划配图");
@@ -41,7 +38,11 @@ export class SkillExecutorService {
     const cachedDraft = await hooks.loadCheckpoint?.("draft");
     const draft = cachedDraft && typeof cachedDraft === "object"
       ? (cachedDraft as DirectGenerateResult)
-      : await this.productionCapability.generateDraft(request, { trustedContext, signal: hooks.signal });
+      : await this.draftPipeline.run(request, {
+          signal: hooks.signal,
+          aiJobId: input.operationId,
+          conversationId: context.conversationId,
+        });
     if (!cachedDraft) {
       await hooks.saveCheckpoint?.("draft", draft);
       await hooks.partial?.("draft", draft);
@@ -66,13 +67,6 @@ export class SkillExecutorService {
       coverAsset,
       imageAssets,
     };
-  }
-
-  async runContentSafetyReviewer(input: { title: string; body: string }, options: { signal?: AbortSignal } = {}): Promise<{
-    audit: AuditResult;
-    rewrite: ComplianceRewriteResult | null;
-  }> {
-    return this.safetyReviewCapability.reviewWithRewrite(input, { trustedContext: this.safetyTrustedContext(), signal: options.signal });
   }
 
   // 生成图片
@@ -108,7 +102,7 @@ export class SkillExecutorService {
           const cached = await hooks.loadCheckpoint?.(stepKey);
           let asset = this.asGeneratedImageAsset(cached);
           const generatedNow = !asset;
-          if (!asset) asset = await this.productionCapability.generateSingleImage({
+          if (!asset) asset = await this.imageGeneration.generateSingleImage({
             userId: context.userId,
             contentId: request.contentId,
             position: task.position,
@@ -116,6 +110,8 @@ export class SkillExecutorService {
             slotId: task.slotId,
             signal: hooks.signal,
             generationKey: `${operationId}:${stepKey}`,
+            aiJobId: operationId,
+            conversationId: context.conversationId,
           });
           if (generatedNow) await hooks.saveCheckpoint?.(stepKey, asset);
           results[index] = { task, asset };
@@ -177,32 +173,6 @@ export class SkillExecutorService {
     if (paragraphs <= 8 && sections <= 3) return 2;
     if (paragraphs <= 14 && sections <= 5) return 3;
     return 4;
-  }
-
-  private productionTrustedContext() {
-    return this.registry.formatTrustedContext(
-      this.registry.trustedContextFor("content-production-line", {
-        prompts: [
-          "01-requirement-analyzer.md",
-          "02-article-draft-writer.md",
-          "03-visual-plan.md",
-          "04-output-normalizer.md",
-        ],
-        references: ["toutiao-style-guide.md", "output-schema.md", "examples.md"],
-        scripts: ["validate_direct_generate_result.cjs"],
-        assets: ["visual-style-presets.json"],
-      })
-    );
-  }
-
-  private safetyTrustedContext() {
-    return this.registry.formatTrustedContext(
-      this.registry.trustedContextFor("content-safety-reviewer", {
-        prompts: ["01-semantic-risk-review.md", "02-compliance-rewrite.md"],
-        references: ["risk-taxonomy.md", "output-schema.md", "rule-engine-contract.md"],
-        scripts: ["merge_safety_review.cjs"],
-      })
-    );
   }
 
   private normalizeProductionInput(input: ContentProductionLineInput, context: SkillExecutionContext): DirectGenerateRequest {

@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger } from "@nestjs/common";
+import { BadRequestException, Injectable, Logger, Optional } from "@nestjs/common";
 import { AssetAuditStatus, Prisma, type Asset } from "@prisma/client";
 import type { GeneratedImageAsset } from "@aicp/shared";
 import { randomUUID } from "node:crypto";
@@ -8,6 +8,7 @@ import { AppError, throwIfAborted } from "../../common/app-error";
 import { fileTypeFromBuffer } from "file-type";
 import sharp from "sharp";
 import { ImageModerationService } from "../assets/image-moderation.service";
+import { AiCallLogService } from "./ai-call-log.service";
 
 type GeneratedImageOutput = {
   kind: "remoteUrl" | "dataUrl";
@@ -30,7 +31,8 @@ export class ImageGenerationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
-    private readonly imageModeration: ImageModerationService
+    private readonly imageModeration: ImageModerationService,
+    @Optional() private readonly callLogs?: AiCallLogService
   ) {}
 
   configStatus() {
@@ -59,17 +61,48 @@ export class ImageGenerationService {
     slotId?: string;
     signal?: AbortSignal;
     generationKey?: string;
+    aiJobId?: string;
+    conversationId?: string;
   }) {
     const userId = await this.resolveUserId(input.userId);
-    return this.generateAndStore({
-      userId,
-      contentId: input.contentId,
-      position: input.position ?? "正文配图",
-      prompt: input.prompt,
-      slotId: input.slotId,
-      signal: input.signal,
-      generationKey: input.generationKey,
-    });
+    if (input.generationKey) {
+      const existing = await this.prisma.asset.findUnique({ where: { generationKey: input.generationKey } });
+      if (existing) {
+        return this.toGeneratedAsset(existing, {
+          position: input.position ?? "正文配图",
+          prompt: input.prompt,
+          slotId: input.slotId,
+        });
+      }
+    }
+    const startedAt = Date.now();
+    try {
+      const asset = await this.generateAndStore({
+        userId,
+        contentId: input.contentId,
+        position: input.position ?? "正文配图",
+        prompt: input.prompt,
+        slotId: input.slotId,
+        signal: input.signal,
+        generationKey: input.generationKey,
+        aiJobId: input.aiJobId,
+        conversationId: input.conversationId,
+      });
+      await this.logGeneration(input, Date.now() - startedAt, true, asset);
+      return asset;
+    } catch (error) {
+      const upstreamBody = error instanceof AppError && typeof error.details?.upstreamBody === "string"
+        ? `; upstream=${error.details.upstreamBody}`
+        : "";
+      await this.logGeneration(
+        input,
+        Date.now() - startedAt,
+        false,
+        undefined,
+        `${error instanceof Error ? error.message : "Image generation failed"}${upstreamBody}`,
+      );
+      throw error;
+    }
   }
 
   // 调用LLM生成图片，保存到存储层，并在数据库创建素材记录。返回最终的素材信息供前端使用
@@ -81,6 +114,8 @@ export class ImageGenerationService {
     slotId?: string;
     signal?: AbortSignal;
     generationKey?: string;
+    aiJobId?: string;
+    conversationId?: string;
   }): Promise<GeneratedImageAsset> {
     throwIfAborted(input.signal);
     if (input.generationKey) {
@@ -111,6 +146,9 @@ export class ImageGenerationService {
         mimeType: inspected.mimeType,
         fileName: requestedFileName,
         signal: input.signal,
+        aiJobId: input.aiJobId,
+        contentId: input.contentId,
+        conversationId: input.conversationId,
       });
     } catch (error) {
       await this.storage.deleteObject({ storageKey: stored.storageKey }).catch(() => undefined);
@@ -204,9 +242,18 @@ export class ImageGenerationService {
       const retryable = response.status === 429 || response.status >= 500;
       throw new AppError({
         code: response.status === 429 ? "UPSTREAM_RATE_LIMITED" : retryable ? "UPSTREAM_UNAVAILABLE" : response.status === 401 || response.status === 403 ? "UPSTREAM_AUTH_FAILED" : "UPSTREAM_BAD_REQUEST",
-        message: response.status === 429 ? "图片生成服务请求过于频繁" : "图片生成服务暂时不可用",
+        message: response.status === 429
+          ? "图片生成服务请求过于频繁"
+          : response.status >= 400 && response.status < 500
+            ? "图片生成请求被模型服务拒绝，请检查提示词是否包含不支持或高风险内容"
+            : "图片生成服务暂时不可用",
         statusCode: 502,
         retryable,
+        details: {
+          service: "image_generation",
+          upstreamStatus: response.status,
+          upstreamBody: errorText.slice(0, 500),
+        },
       });
     }
 
@@ -274,7 +321,13 @@ export class ImageGenerationService {
   private assertConfigured() {
     const status = this.configStatus();
     if (!status.configured) {
-      throw new Error(`Image generation is not configured: missing ${status.missing.join(", ")}`);
+      throw new AppError({
+        code: "AI_CONFIGURATION_ERROR",
+        message: `Image generation is not configured: missing ${status.missing.join(", ")}`,
+        statusCode: 500,
+        retryable: false,
+        details: { service: "image_generation", missing: status.missing },
+      });
     }
   }
 
@@ -329,5 +382,33 @@ export class ImageGenerationService {
       throw new AppError({ code: "IMAGE_DIMENSIONS_EXCEEDED", message: "Generated image dimensions exceed limits", statusCode: 422, retryable: false });
     }
     return { buffer, mimeType: detected.mime };
+  }
+
+  private async logGeneration(
+    input: { prompt: string; contentId?: string; aiJobId?: string; conversationId?: string },
+    latencyMs: number,
+    success: boolean,
+    output?: unknown,
+    errorMessage?: string,
+  ) {
+    if (!this.callLogs) return;
+    await this.callLogs.log({
+      scene: "creative_image_generate",
+      model: this.model,
+      provider: "volcengine_ark",
+      apiStyle: "images",
+      aiJobId: input.aiJobId,
+      contentId: input.contentId,
+      conversationId: input.conversationId,
+      inputSummary: input.prompt.replace(/\s+/g, " ").slice(0, 200),
+      output,
+      latencyMs,
+      cacheStrategy: "off",
+      traceEnabled: false,
+      success,
+      errorMessage,
+    }).catch((error: unknown) => {
+      this.logger.warn(`Failed to persist image generation usage: ${error instanceof Error ? error.message : String(error)}`);
+    });
   }
 }

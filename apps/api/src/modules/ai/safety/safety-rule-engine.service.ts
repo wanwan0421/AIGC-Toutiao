@@ -156,6 +156,7 @@ export class SafetyRuleEngine {
       ...this.scanCombinations("title", input.title, lexicons),
       ...this.scanCombinations("body", input.body, lexicons),
     ]);
+    // 应用白名单规则，去除误报的风险项，并生成最终的风险项列表
     const riskItems = this.dedupe(items.map((item) => this.applyWhitelist(item, input)));
 
     return this.summarize(riskItems);
@@ -244,6 +245,7 @@ export class SafetyRuleEngine {
     return items;
   }
 
+  // 匹配组合规则，查找文本中两个词组的组合出现情况，生成风险项列表
   private matchCombination(
     field: AuditRiskField,
     text: string,
@@ -256,6 +258,7 @@ export class SafetyRuleEngine {
     return this.matchNearbyCombinations(field, text, firstTerms, secondTerms, type, ruleId, reason);
   }
 
+  // 匹配文本中两个词组的组合出现情况，查找它们之间的距离和证据长度，生成风险项列表
   private matchNearbyCombinations(
     field: AuditRiskField,
     text: string,
@@ -373,6 +376,7 @@ export class SafetyRuleEngine {
     return Array.from(new Set(terms.map((term) => term.trim()).filter(Boolean)));
   }
 
+  // 应用白名单规则，去除误报的风险项，并生成最终的风险项列表
   private applyWhitelist(item: AuditRiskItem, input: SafetyReviewInput): AuditRiskItem {
     const text = item.field === "title" ? input.title : input.body;
     const start = item.startOffset ?? text.indexOf(item.evidence);

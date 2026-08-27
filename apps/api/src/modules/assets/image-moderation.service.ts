@@ -1,7 +1,8 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { AssetAuditStatus } from "@prisma/client";
-import { z } from "zod";
 import { ModelClientService } from "../ai/model-client.service";
+import { completeStructured } from "../ai/structured-output";
+import { imageModerationSchema } from "../ai/agents/structured-agent.schemas";
 
 export type ImageModerationResult = {
   auditStatus: AssetAuditStatus;
@@ -10,50 +11,85 @@ export type ImageModerationResult = {
   riskTypes: string[];
 };
 
-const resultSchema = z.object({
-  pass: z.boolean(),
-  level: z.enum(["low", "medium", "high"]),
-  reason: z.string().max(500),
-  types: z.array(z.enum(["pornography", "gambling", "drug", "sensitive", "violence", "fraud", "none"])).max(8),
-}).strict();
+const moderationContract = [
+  "You are an image safety moderation classifier. Return exactly one JSON object and no other text.",
+  "Allowed fields: pass, level, reason, types. Unknown fields are forbidden.",
+  'pass must be boolean. level must be exactly one of: "low", "medium", "high".',
+  'types must contain only: "pornography", "gambling", "drug", "sensitive", "violence", "fraud", "none".',
+  'For an approved image use types ["none"]. Unsafe sexual, violent, weapon, drug, gambling, fraud, politically sensitive, or diversion QR-code content must not pass.',
+  'Approved example: {"pass":true,"level":"low","reason":"No material safety risk detected","types":["none"]}',
+  'Rejected example: {"pass":false,"level":"high","reason":"Graphic violence is visible","types":["violence"]}',
+].join("\n");
 
 @Injectable()
 export class ImageModerationService {
   private readonly logger = new Logger(ImageModerationService.name);
+
   constructor(private readonly modelClient: ModelClientService) {}
 
-  async reviewImage(input: { buffer: Buffer; mimeType: string; fileName?: string; signal?: AbortSignal }): Promise<ImageModerationResult> {
+  async reviewImage(input: {
+    buffer: Buffer;
+    mimeType: string;
+    fileName?: string;
+    signal?: AbortSignal;
+    aiJobId?: string;
+    contentId?: string;
+    conversationId?: string;
+  }): Promise<ImageModerationResult> {
     if (!this.modelClient.hasRemoteProvider()) {
-      return { auditStatus: AssetAuditStatus.pending, auditReason: "图片内容审核服务暂不可用", riskLevel: "unknown", riskTypes: [] };
+      return this.pendingResult("图片内容审核服务暂不可用");
     }
+
     try {
-      // The vision model receives the actual decoded image bytes. The second
-      // strict pass turns its description into a stable moderation contract.
       const description = await this.modelClient.describeImage(
         input.buffer,
         input.mimeType,
         "详细描述图片中的人物、裸露、暴力、武器、毒品、赌博、二维码、文字和其他安全风险。",
         input.signal,
+        {
+          aiJobId: input.aiJobId,
+          contentId: input.contentId,
+          conversationId: input.conversationId,
+          inputSummary: input.fileName,
+        },
       );
       if (!description.trim()) throw new Error("empty visual moderation description");
-      const raw = await this.modelClient.complete({
+
+      const value = await completeStructured({
+        modelClient: this.modelClient, name: "image_moderation", schema: imageModerationSchema,
         temperature: 0.1,
+        telemetry: {
+          scene: "image_moderation",
+          aiJobId: input.aiJobId,
+          contentId: input.contentId,
+          conversationId: input.conversationId,
+          inputSummary: input.fileName,
+        },
         signal: input.signal,
         messages: [
-          { role: "system", content: "你是图片安全审核器。仅返回单个 JSON 对象，字段严格为 pass, level, reason, types。色情、暴力、武器、毒品、赌博、诈骗、政治敏感或导流二维码不得通过。" },
+          { role: "system", content: moderationContract },
           { role: "user", content: `文件名：${input.fileName ?? ""}\n视觉模型描述：${description}` },
         ],
       });
-      const parsed = resultSchema.parse(JSON.parse(raw.trim().replace(/^```json\s*/i, "").replace(/\s*```$/, "")));
+
       return {
-        auditStatus: parsed.pass ? AssetAuditStatus.approved : AssetAuditStatus.rejected,
-        auditReason: parsed.reason,
-        riskLevel: parsed.level,
-        riskTypes: parsed.types.filter((type) => type !== "none"),
+        auditStatus: value.pass ? AssetAuditStatus.approved : AssetAuditStatus.rejected,
+        auditReason: value.reason,
+        riskLevel: value.level,
+        riskTypes: value.types.filter((type) => type !== "none"),
       };
     } catch (error) {
       this.logger.warn(`Image moderation unavailable: ${error instanceof Error ? error.message : String(error)}`);
-      return { auditStatus: AssetAuditStatus.pending, auditReason: "图片内容审核未完成，等待重试", riskLevel: "unknown", riskTypes: [] };
+      return this.pendingResult();
     }
+  }
+
+  private pendingResult(reason = "图片内容审核未完成，等待重试"): ImageModerationResult {
+    return {
+      auditStatus: AssetAuditStatus.pending,
+      auditReason: reason,
+      riskLevel: "unknown",
+      riskTypes: [],
+    };
   }
 }

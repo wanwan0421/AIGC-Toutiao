@@ -23,7 +23,12 @@ async function main() {
   try {
     const user = await prisma.user.findFirst({ select: { id: true } });
     if (!user) throw new Error("smoke test requires at least one seeded user");
-    const job = await jobs.create({ userId: user.id, type: AiJobType.ComplianceRewrite, payload: {} });
+    const job = await jobs.create({
+      userId: user.id,
+      type: AiJobType.ComplianceRewrite,
+      payload: {},
+      idempotencyKey: `smoke:${Date.now()}`,
+    });
     jobId = job.id;
     const terminal = await waitForTerminal(prisma, job.id);
     const queueState = await waitForQueueState(queue, job.id, "failed");

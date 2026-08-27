@@ -1,11 +1,11 @@
 import { Injectable } from "@nestjs/common";
 import type { AuditRiskItem, ComplianceReplacement, ComplianceRewriteResult } from "@aicp/shared";
-import { AiCallLogService } from "../ai-call-log.service";
 import { ModelClientService } from "../model-client.service";
 import { AI_PROMPT_NAMES } from "../prompt-names";
 import { PromptTemplateService } from "../prompt-template.service";
 import { promptTemperature } from "../prompt-model-options";
-import { parseJsonObject } from "../structured-output";
+import { completeStructured } from "../structured-output";
+import { complianceRewriteSchema } from "./structured-agent.schemas";
 
 type ComplianceRewriteInput = {
   title: string;
@@ -47,12 +47,10 @@ const COMPLIANCE_REWRITE_FALLBACK_PROMPT = `你是中文内容合规改写编辑
 export class ComplianceRewriteAgent {
   constructor(
     private readonly modelClient: ModelClientService,
-    private readonly prompts: PromptTemplateService,
-    private readonly logs: AiCallLogService
+    private readonly prompts: PromptTemplateService
   ) {}
 
-  async run(input: ComplianceRewriteInput, options: { trustedContext?: string; signal?: AbortSignal } = {}): Promise<ComplianceRewriteResult> {
-    const startedAt = Date.now();
+  async run(input: ComplianceRewriteInput, options: { trustedContext?: string; signal?: AbortSignal; aiJobId?: string; contentId?: string; conversationId?: string } = {}): Promise<ComplianceRewriteResult> {
     const variables = {
       ...input,
       reasons: input.reasons?.length ? input.reasons : ["根据安全审核结果生成合规替代表达"],
@@ -68,8 +66,20 @@ export class ComplianceRewriteAgent {
       : rendered.prompt;
 
     try {
-      const content = await this.modelClient.complete({
+      const parsed = await completeStructured({
+        modelClient: this.modelClient,
+        name: "compliance_rewrite",
+        schema: complianceRewriteSchema,
         model: rendered.model,
+        telemetry: {
+          scene: AI_PROMPT_NAMES.complianceRewrite,
+          promptKey: rendered.promptKey,
+          promptVersionId: rendered.promptVersionId,
+          inputSummary: `${input.title} / ${input.reasons?.join("; ") ?? ""}`,
+          aiJobId: options.aiJobId,
+          contentId: options.contentId,
+          conversationId: options.conversationId,
+        },
         temperature: promptTemperature(rendered.modelOptions, 0.45),
         messages: [
           {
@@ -80,34 +90,9 @@ export class ComplianceRewriteAgent {
         ],
         signal: options.signal,
       });
-      const parsed = parseJsonObject<Partial<ComplianceRewriteResult>>(content);
-      if (!parsed) {
-        throw new Error("compliance_rewrite returned invalid JSON");
-      }
-
       const result = this.normalize(input, parsed);
-      await this.logs.log({
-        scene: AI_PROMPT_NAMES.complianceRewrite,
-        model: this.modelClient.modelName(rendered.model),
-        promptKey: rendered.promptKey,
-        promptVersionId: rendered.promptVersionId,
-        inputSummary: `${input.title} / ${input.reasons?.join("; ") ?? ""}`,
-        output: result,
-        latencyMs: Date.now() - startedAt,
-        success: true,
-      });
       return result;
     } catch (error) {
-      await this.logs.log({
-        scene: AI_PROMPT_NAMES.complianceRewrite,
-        model: this.modelClient.modelName(rendered.model),
-        promptKey: rendered.promptKey,
-        promptVersionId: rendered.promptVersionId,
-        inputSummary: `${input.title} / ${input.reasons?.join("; ") ?? ""}`,
-        latencyMs: Date.now() - startedAt,
-        success: false,
-        errorMessage: error instanceof Error ? error.message : "unknown compliance rewrite error",
-      });
       throw error;
     }
   }

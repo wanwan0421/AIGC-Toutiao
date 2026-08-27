@@ -6,6 +6,7 @@ import { json, static as serveStatic, type NextFunction, type Request, type Resp
 import { AppModule } from "./app.module";
 import { ApiExceptionFilter } from "./common/api-exception.filter";
 import { getUploadRoot, getUploadRoute } from "./modules/storage/storage.config";
+import { validateBusinessQuality } from "./common/business-quality.validator";
 
 async function bootstrap() {
   process.env.AI_JOB_PROCESS_ROLE = "api";
@@ -39,7 +40,7 @@ async function bootstrap() {
 
 function businessQualityValidation(request: Request, response: Response, next: NextFunction) {
   if (!request.body || typeof request.body !== "object") return next();
-  const issue = validateValue(request.body, "body", 0);
+  const issue = validateBusinessQuality(request.body);
   if (!issue) return next();
   response.status(422).json({
     statusCode: 422,
@@ -49,28 +50,6 @@ function businessQualityValidation(request: Request, response: Response, next: N
     requestId: String(response.getHeader("X-Request-ID") ?? randomUUID()),
     details: { fields: [issue] },
   });
-}
-
-function validateValue(value: unknown, path: string, depth: number): { path: string; message: string } | null {
-  if (depth > 8) return { path, message: "object nesting exceeds 8 levels" };
-  if (typeof value === "string" && value.length > 20_000) return { path, message: "text exceeds 20000 characters" };
-  if (Array.isArray(value)) {
-    const limit = /images?|imagePrompts/i.test(path) ? 5 : 10;
-    if (value.length > limit) return { path, message: `array exceeds ${limit} items` };
-    for (let index = 0; index < value.length; index += 1) {
-      const issue = validateValue(value[index], `${path}.${index}`, depth + 1);
-      if (issue) return issue;
-    }
-  } else if (value && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>);
-    if (entries.length > 50) return { path, message: "object has too many fields" };
-    for (const [key, child] of entries) {
-      if (key === "__proto__" || key === "prototype" || key === "constructor") return { path: `${path}.${key}`, message: "unsafe field name" };
-      const issue = validateValue(child, `${path}.${key}`, depth + 1);
-      if (issue) return issue;
-    }
-  }
-  return null;
 }
 
 function requestIdMiddleware(request: Request, response: Response, next: NextFunction) {

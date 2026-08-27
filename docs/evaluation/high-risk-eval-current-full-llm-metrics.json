@@ -1,0 +1,230 @@
+{
+  "metadata": {
+    "generatedAt": "2026-08-22T09:16:40.798Z",
+    "startedAt": "2026-08-22T09:04:48.139Z",
+    "mode": "Nest application context: ContentSafetyUseCase.review (rule scan -> LLM review -> result merge; rewrite excluded because it does not affect classification)",
+    "datasetPath": "G:\\LWH\\字节训练营\\docs\\evaluation\\high-risk-eval-samples.json",
+    "datasetSha256": "ff1138da242dc9a8f850673c2f2c23036b1ec439b56064dad1bcf5432608af03",
+    "threshold": 0.9,
+    "callLogPersistenceDisabled": true,
+    "callLogPersistenceReason": "Evaluation must not fail when the local AiCallLog usage migration has not been applied."
+  },
+  "totalSamples": 30,
+  "evaluatedSoFar": 30,
+  "completed": 30,
+  "failed": 0,
+  "confusionMatrix": {
+    "tp": 14,
+    "fp": 1,
+    "tn": 15,
+    "fn": 0
+  },
+  "riskLevelConfusionMatrix": {
+    "low": {
+      "low": 10,
+      "medium": 0,
+      "high": 1
+    },
+    "medium": {
+      "low": 2,
+      "medium": 3,
+      "high": 0
+    },
+    "high": {
+      "low": 0,
+      "medium": 0,
+      "high": 14
+    }
+  },
+  "metrics": {
+    "accuracy": 0.9666666666666667,
+    "highRiskRecall": 1,
+    "highRiskPrecision": 0.9333333333333333,
+    "f1": 0.9655172413793104,
+    "specificity": 0.9375,
+    "falsePositiveRate": 0.0625,
+    "falseNegativeRate": 0,
+    "balancedAccuracy": 0.96875,
+    "exactRiskLevelAccuracy": 0.9
+  },
+  "latencyMs": {
+    "average": 23751.033333333333,
+    "p50": 9643,
+    "p95": 82759,
+    "max": 118309
+  },
+  "passed": true,
+  "missedHighRiskSampleIds": [],
+  "falseAlarmSampleIds": [
+    "HR-016"
+  ],
+  "failedSampleIds": [],
+  "categoryBreakdown": {
+    "gambling_contact": {
+      "total": 3,
+      "expectedHigh": 3,
+      "predictedHigh": 3,
+      "highRiskRecall": 1,
+      "highRiskPrecision": 1,
+      "errors": []
+    },
+    "pornography_price_contact": {
+      "total": 3,
+      "expectedHigh": 3,
+      "predictedHigh": 3,
+      "highRiskRecall": 1,
+      "highRiskPrecision": 1,
+      "errors": []
+    },
+    "drug_transaction": {
+      "total": 2,
+      "expectedHigh": 2,
+      "predictedHigh": 2,
+      "highRiskRecall": 1,
+      "highRiskPrecision": 1,
+      "errors": []
+    },
+    "illegal_trade": {
+      "total": 2,
+      "expectedHigh": 2,
+      "predictedHigh": 2,
+      "highRiskRecall": 1,
+      "highRiskPrecision": 1,
+      "errors": []
+    },
+    "privacy": {
+      "total": 1,
+      "expectedHigh": 1,
+      "predictedHigh": 1,
+      "highRiskRecall": 1,
+      "highRiskPrecision": 1,
+      "errors": []
+    },
+    "privacy_contact": {
+      "total": 1,
+      "expectedHigh": 0,
+      "predictedHigh": 0,
+      "highRiskRecall": 0,
+      "highRiskPrecision": 0,
+      "errors": []
+    },
+    "fraud_contact": {
+      "total": 1,
+      "expectedHigh": 1,
+      "predictedHigh": 1,
+      "highRiskRecall": 1,
+      "highRiskPrecision": 1,
+      "errors": []
+    },
+    "illegal_fraud_trade": {
+      "total": 1,
+      "expectedHigh": 1,
+      "predictedHigh": 1,
+      "highRiskRecall": 1,
+      "highRiskPrecision": 1,
+      "errors": []
+    },
+    "whitelist_context": {
+      "total": 3,
+      "expectedHigh": 0,
+      "predictedHigh": 0,
+      "highRiskRecall": 0,
+      "highRiskPrecision": 0,
+      "errors": []
+    },
+    "normal": {
+      "total": 4,
+      "expectedHigh": 0,
+      "predictedHigh": 0,
+      "highRiskRecall": 0,
+      "highRiskPrecision": 0,
+      "errors": []
+    },
+    "meta_discussion": {
+      "total": 1,
+      "expectedHigh": 0,
+      "predictedHigh": 1,
+      "highRiskRecall": 0,
+      "highRiskPrecision": 0,
+      "errors": [
+        "HR-016"
+      ]
+    },
+    "contact_only": {
+      "total": 2,
+      "expectedHigh": 0,
+      "predictedHigh": 0,
+      "highRiskRecall": 0,
+      "highRiskPrecision": 0,
+      "errors": []
+    },
+    "education": {
+      "total": 1,
+      "expectedHigh": 0,
+      "predictedHigh": 0,
+      "highRiskRecall": 0,
+      "highRiskPrecision": 0,
+      "errors": []
+    },
+    "normal_finance": {
+      "total": 1,
+      "expectedHigh": 0,
+      "predictedHigh": 0,
+      "highRiskRecall": 0,
+      "highRiskPrecision": 0,
+      "errors": []
+    },
+    "fraud": {
+      "total": 1,
+      "expectedHigh": 1,
+      "predictedHigh": 1,
+      "highRiskRecall": 1,
+      "highRiskPrecision": 1,
+      "errors": []
+    },
+    "vulgar": {
+      "total": 1,
+      "expectedHigh": 0,
+      "predictedHigh": 0,
+      "highRiskRecall": 0,
+      "highRiskPrecision": 0,
+      "errors": [
+        "HR-026"
+      ]
+    },
+    "external_url": {
+      "total": 1,
+      "expectedHigh": 0,
+      "predictedHigh": 0,
+      "highRiskRecall": 0,
+      "highRiskPrecision": 0,
+      "errors": [
+        "HR-027"
+      ]
+    },
+    "privacy_education": {
+      "total": 1,
+      "expectedHigh": 0,
+      "predictedHigh": 0,
+      "highRiskRecall": 0,
+      "highRiskPrecision": 0,
+      "errors": []
+    }
+  },
+  "previousBaseline": {
+    "metrics": {
+      "accuracy": 0.8,
+      "highRiskRecall": 0.6428571428571429,
+      "highRiskPrecision": 0.9,
+      "f1": 0.75,
+      "falsePositiveRate": 0.0625
+    },
+    "delta": {
+      "accuracy": 0.16666666666666663,
+      "highRiskRecall": 0.3571428571428571,
+      "highRiskPrecision": 0.033333333333333326,
+      "f1": 0.2155172413793104,
+      "falsePositiveRate": 0
+    }
+  }
+}
