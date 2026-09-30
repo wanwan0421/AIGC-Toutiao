@@ -45,6 +45,9 @@ export async function completeStructured<T extends ZodType>(options: {
       return validated.data;
     }
 
+    console.log(`结构化验证失败 (attempt ${attempt + 1}/${maxRepairs + 1}): ${validated.error.issues.map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`).join("; ")}`);
+
+    // 如果验证失败，记录错误信息并尝试修复
     lastIssues = validated.error.issues.slice(0, 12)
       .map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`).join("; ");
     await options.modelClient.attachStructuredResult(

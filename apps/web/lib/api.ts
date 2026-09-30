@@ -97,6 +97,17 @@ const AUTH_REFRESH_LOCK_NAME = "aicp:refresh-access-token";
 const COOKIE_AUTH_PATHS = new Set(["/auth/login", "/auth/register", "/auth/csrf", "/auth/refresh", "/auth/logout"]);
 const BEARER_EXCLUDED_PATHS = new Set(["/auth/login", "/auth/register", "/auth/verification-code", "/auth/csrf", "/auth/refresh"]);
 
+function apiErrorMessage(payload: ApiErrorResponse) {
+  const fields = payload.details?.fields;
+  if (!Array.isArray(fields) || fields.length === 0) return payload.message;
+  const issue = fields[0];
+  if (!issue || typeof issue !== "object") return payload.message;
+  const { path, message } = issue as { path?: unknown; message?: unknown };
+  if (typeof message !== "string" || !message) return payload.message;
+  const suffix = typeof path === "string" && path ? `${path}: ${message}` : message;
+  return `${payload.message}: ${suffix}`;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -106,7 +117,7 @@ export class ApiError extends Error {
   readonly details?: Record<string, unknown>;
 
   constructor(payload: ApiErrorResponse) {
-    super(payload.message);
+    super(apiErrorMessage(payload));
     this.name = "ApiError";
     this.status = payload.statusCode;
     this.code = payload.code;

@@ -150,7 +150,7 @@ describe("ModelClientService thinking mode", () => {
     expect(result.metadata.previousResponseId).toBe("resp-1");
   });
 
-  it("uses Responses text.format for structured output", async () => {
+  it("uses Responses text.format for structured output without caching", async () => {
     process.env.ARK_RESPONSES_API_URL = "https://example.test/api/v3/responses";
     const fetchMock = vi.fn(async () => jsonResponse({
       id: "resp-json",
@@ -178,7 +178,7 @@ describe("ModelClientService thinking mode", () => {
       { type: "message", role: "user", content: "dynamic" },
     ]);
     expect(body.previous_response_id).toBeUndefined();
-    expect(body.caching).toEqual({ type: "enabled" });
+    expect(body.caching).toBeUndefined();
   });
 
   it("emits response ids and usage from a Responses stream", async () => {

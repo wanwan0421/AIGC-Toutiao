@@ -154,6 +154,7 @@ export class ModelClientService {
     }
   }
 
+  // 附加结构化结果
   async attachStructuredResult(
     callLogId: string | undefined,
     output: unknown,
@@ -161,7 +162,7 @@ export class ModelClientService {
   ) {
     if (!callLogId || !this.callLogs) return;
     await this.callLogs.attachResult(callLogId, output, validation).catch((error: unknown) => {
-      this.logger.warn(`Failed to attach structured result to Ark usage: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.warn(`未能附加结构化结果: ${error instanceof Error ? error.message : String(error)}`);
     });
   }
 
@@ -460,7 +461,7 @@ export class ModelClientService {
     success: boolean;
     errorMessage?: string;
     firstTokenLatencyMs?: number;
-    options?: Pick<CompleteOptions, "apiStyle" | "cacheStrategy" | "previousResponseId" | "telemetry">;
+    options?: Pick<CompleteOptions, "apiStyle" | "cacheStrategy" | "previousResponseId" | "responseFormat" | "telemetry">;
   }) {
     if (!this.callLogs) return undefined;
     const root = input.payload ? this.responseRoot(input.payload) : undefined;
@@ -493,7 +494,7 @@ export class ModelClientService {
         outputTokens: this.numberValue(usage?.output_tokens ?? usage?.completion_tokens),
         reasoningTokens: this.numberValue(outputDetails?.reasoning_tokens),
         totalTokens: this.numberValue(usage?.total_tokens),
-        cacheStrategy: input.options?.cacheStrategy ?? "off",
+        cacheStrategy: input.options?.responseFormat ? "off" : input.options?.cacheStrategy ?? "off",
         firstTokenLatencyMs: input.firstTokenLatencyMs,
         sessionRebuilt: telemetry?.sessionRebuilt,
         rebuildReason: telemetry?.rebuildReason,
@@ -669,6 +670,7 @@ export class ModelClientService {
     };
 
     const apiStyle = this.resolveApiStyle(options.apiStyle);
+    const cacheEnabled = Boolean(options.cacheStrategy && options.cacheStrategy !== "off" && !options.responseFormat);
     if (apiStyle === "chat_completions") {
       return {
         ...base,
@@ -694,7 +696,7 @@ export class ModelClientService {
       input: this.buildResponsesInput(options.messages),
       ...(options.previousResponseId ? { previous_response_id: options.previousResponseId } : {}),
       ...(options.store !== undefined ? { store: options.store } : {}),
-      ...(options.cacheStrategy && options.cacheStrategy !== "off" ? { caching: { type: "enabled" } } : {}),
+      ...(cacheEnabled ? { caching: { type: "enabled" } } : {}),
       ...(options.maxOutputTokens ? { max_output_tokens: options.maxOutputTokens } : {}),
       ...(options.responseFormat
         ? {

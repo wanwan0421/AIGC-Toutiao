@@ -1,9 +1,11 @@
 export type BusinessQualityIssue = { path: string; message: string };
 
 const MAX_GENERIC_ARRAY_ITEMS = 1_000;
+const MAX_RICH_TEXT_DEPTH = 32;
 
 export function validateBusinessQuality(value: unknown, path = "body", depth = 0): BusinessQualityIssue | null {
-  if (depth > 8) return { path, message: "object nesting exceeds 8 levels" };
+  const maxDepth = isRichTextPath(path) ? MAX_RICH_TEXT_DEPTH : 8;
+  if (depth > maxDepth) return { path, message: `object nesting exceeds ${maxDepth} levels` };
   if (typeof value === "string" && value.length > 20_000) {
     return { path, message: "text exceeds 20000 characters" };
   }
@@ -30,6 +32,10 @@ export function validateBusinessQuality(value: unknown, path = "body", depth = 0
     }
   }
   return null;
+}
+
+function isRichTextPath(path: string) {
+  return path.includes(".bodyJson") || path.includes(".payload.json");
 }
 
 function arrayLimit(path: string) {
