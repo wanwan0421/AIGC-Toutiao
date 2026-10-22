@@ -4,6 +4,8 @@ import { ContentDraftPipeline } from "./content-draft.pipeline";
 import { ImageGenerationService } from "../image-generation.service";
 import type { ContentProductionLineInput, SkillExecutionContext, SkillProgressHooks } from "../skills-runtime/skill-runtime.types";
 import { throwIfAborted } from "../../../common/app-error";
+import { modelMaterialContext } from "../generation-material.snapshot";
+import { formatWritingStyleContext } from "../../workflow/writing-style-context-resolver.service";
 
 type ImageTask = {
   position: string;
@@ -178,7 +180,9 @@ export class GenerateContentUseCase {
   private normalizeProductionInput(input: ContentProductionLineInput, context: SkillExecutionContext): DirectGenerateRequest {
     const theme = this.firstText(input.theme, input.message, input.currentTitle, this.summarize(input.currentBody), "未命名图文主题");
     const materialNotes = this.mergeNotes([
-      input.materialNotes,
+      input.source === "conversation" && input.materialSnapshot?.currentRequest
+        ? `本次聊天原始要求：${input.materialSnapshot.currentRequest}` : undefined,
+      input.materialSnapshot ? modelMaterialContext(input.materialSnapshot) : input.materialNotes,
       input.source === "conversation" ? input.historyText : undefined,
       input.source === "conversation" ? input.currentBody : undefined,
     ]);
@@ -191,7 +195,7 @@ export class GenerateContentUseCase {
       style: input.style,
       viewpoint: input.viewpoint,
       materialNotes,
-      assets: input.assets,
+      writingStyleContext: input.writingStyleSnapshot ? formatWritingStyleContext(input.writingStyleSnapshot) : undefined,
     };
   }
 

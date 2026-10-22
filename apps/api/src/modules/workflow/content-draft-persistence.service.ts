@@ -2,13 +2,15 @@ import { BadRequestException, Injectable, NotFoundException } from "@nestjs/comm
 import { ContentStatus, ContentVisibility, Prisma } from "@prisma/client";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { RedisService } from "../../infra/redis/redis.service";
-import { sanitizeRichText, sanitizeRichTextPayload } from "../../common/rich-text-sanitizer";
+import { sanitizeRichTextPayload } from "../../common/rich-text-sanitizer";
+import { validateArticleText } from "../../common/article-length-policy";
+import { AppError } from "../../common/app-error";
 import { ContentReviewPolicyService } from "./content-review-policy.service";
 
 export type ContentDraftPersistenceInput = {
   contentId?: string;
-  title: string;
-  body: string;
+  title?: string;
+  body?: string;
   bodyHtml?: string | null;
   bodyJson?: Record<string, unknown> | null;
   tags?: string[];
@@ -39,7 +41,7 @@ export class ContentDraftPersistenceService {
 
   async persistInTransaction(tx: Prisma.TransactionClient, userId: string, input: ContentDraftPersistenceInput) {
     const assetIds = this.uniqueStrings(input.assetIds ?? []);
-    const richText = sanitizeRichText({ html: input.bodyHtml, json: input.bodyJson });
+
     const payload = input.payload === undefined ? undefined : sanitizeRichTextPayload(input.payload);
     await this.assertOwnedAssets(tx, userId, assetIds);
     const current = input.contentId
@@ -50,31 +52,52 @@ export class ContentDraftPersistenceService {
       : null;
     if (input.contentId && !current) throw new NotFoundException("content not found");
 
-    const title = input.title.trim() || "未命名草稿";
-    const body = input.body ?? "";
+    const title = input.title === undefined ? current?.title ?? "未命名草稿" : input.title.trim() ? input.title : "未命名草稿";
+    const richTextProvided = input.bodyHtml !== undefined || input.bodyJson !== undefined;
+    const inputBody = input.body !== undefined ? input.body : richTextProvided ? undefined : current?.body ?? "";
+    // A plain-text replacement must discard old rich text. A title-only autosave,
+    // however, keeps the existing rich text and validates all representations.
+    const replacesRichText = !current || richTextProvided ||
+      (input.body !== undefined && input.body !== current.body);
+    const article = validateArticleText({
+      title,
+      body: inputBody,
+      bodyHtml: replacesRichText ? input.bodyHtml ?? null : current.bodyHtml,
+      bodyJson: replacesRichText ? input.bodyJson ?? null :
+        current.bodyJson && typeof current.bodyJson === "object" && !Array.isArray(current.bodyJson)
+          ? current.bodyJson as Record<string, unknown> : null,
+    });
+    const body = article.body;
+    const richText = article.richText;
     const contentId = current?.id ?? input.contentId;
     let resolvedContentId: string;
     if (current && contentId) {
       const safetySensitiveEdit =
         title !== current.title ||
         body !== current.body ||
-        input.bodyHtml !== undefined && richText.html !== current.bodyHtml ||
-        input.bodyJson !== undefined && !this.jsonEqual(richText.json ?? null, current.bodyJson) ||
+        richText.html !== current.bodyHtml ||
+        !this.jsonEqual(richText.json ?? null, current.bodyJson) ||
         input.tags !== undefined && JSON.stringify(input.tags) !== JSON.stringify(current.tags) ||
         input.assetIds !== undefined && JSON.stringify(assetIds) !== JSON.stringify(current.assets.map((item) => item.assetId));
       const updated = await tx.content.updateMany({
-        where: { id: contentId, authorId: userId },
+        where: { id: contentId, authorId: userId, updatedAt: current.updatedAt },
         data: {
           title,
           body,
-          bodyHtml: richText.html,
-          bodyJson: this.jsonNullable(richText.json),
+          bodyHtml: richText.html ?? null,
+          bodyJson: this.jsonNullable(richText.json ?? null),
           tags: input.tags,
           excerpt: body.slice(0, 72),
           ...(safetySensitiveEdit ? this.reviewPolicy.statusDataForSafetySensitiveEdit(current.status) : {}),
         },
       });
-      if (updated.count === 0) throw new NotFoundException("content not found");
+      if (updated.count === 0) {
+        throw new AppError({
+          code: "CONTENT_CHANGED_DURING_EDIT",
+          message: "内容已在其他位置更新，请刷新后重试",
+          statusCode: 409,
+        });
+      }
       resolvedContentId = contentId;
     } else {
       const created = await tx.content.create({

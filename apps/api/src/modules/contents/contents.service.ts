@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from "@nestjs/common";
+import { BadRequestException, Injectable, NotFoundException, Optional } from "@nestjs/common";
 import {
   AuditRiskLevel,
   ContentStatus as ApiContentStatus,
@@ -18,7 +18,10 @@ import {
 } from "@prisma/client";
 import { toContentCommentSummary, toContentDetail, toContentSummary, toDbContentStatus } from "../../common/prisma-mappers";
 import { sanitizeRichText } from "../../common/rich-text-sanitizer";
+import { validateArticleText } from "../../common/article-length-policy";
+import { AppError } from "../../common/app-error";
 import { PrismaService } from "../../infra/prisma/prisma.service";
+import { WritingSkillService } from "../ai/writing-skill.service";
 import { ContentHeatScoreService } from "../content-metrics/content-heat-score.service";
 import { ContentReviewPolicyService } from "../workflow/content-review-policy.service";
 import { ContentAccessPolicyService } from "./content-access-policy.service";
@@ -76,13 +79,34 @@ function toDateOrNull(value: string | null | undefined) {
   return date;
 }
 
+function validatePublicVisibilityTransition(content: {
+  status: DbContentStatus;
+  visibility: DbContentVisibility;
+  title: string;
+  body: string;
+  bodyHtml: string | null;
+  bodyJson: Prisma.JsonValue | null;
+}, nextVisibility: DbContentVisibility | undefined) {
+  if ((content.status !== DbContentStatus.published && content.status !== DbContentStatus.updated) ||
+      content.visibility === DbContentVisibility.public ||
+      nextVisibility !== DbContentVisibility.public) return;
+  validateArticleText({
+    title: content.title,
+    body: content.body,
+    bodyHtml: content.bodyHtml,
+    bodyJson: content.bodyJson && typeof content.bodyJson === "object" && !Array.isArray(content.bodyJson)
+      ? content.bodyJson as Record<string, unknown> : null,
+  });
+}
+
 @Injectable()
 export class ContentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly accessPolicy: ContentAccessPolicyService,
     private readonly reviewPolicy: ContentReviewPolicyService,
-    private readonly heatScores: ContentHeatScoreService
+    private readonly heatScores: ContentHeatScoreService,
+    @Optional() private readonly writingSkill?: WritingSkillService
   ) {}
 
   async list(userId: string, status?: ApiContentStatus) {
@@ -109,13 +133,19 @@ export class ContentsService {
   }
 
   async create(userId: string, body: ContentWriteBody) {
-    const contentBody = body.body?.trim() ?? "";
-    const richText = sanitizeRichText({ html: body.bodyHtml, json: body.bodyJson });
+    const article = validateArticleText({
+      title: body.title?.trim() ? body.title : "未命名草稿",
+      body: body.body,
+      bodyHtml: body.bodyHtml,
+      bodyJson: body.bodyJson,
+    });
+    const contentBody = article.body;
+    const richText = article.richText;
     const assetIds = await this.ownedAssetIds(userId, body.assetIds);
     const content = await this.prisma.content.create({
       data: {
         authorId: userId,
-        title: body.title?.trim() || "未命名草稿",
+        title: article.title,
         body: contentBody,
         bodyHtml: richText.html ?? null,
         bodyJson: toJsonInput(richText.json),
@@ -197,6 +227,19 @@ export class ContentsService {
       }),
     ]);
     const publishState = this.reviewPolicy.evaluatePublishState(content, auditRecord);
+    let articleBlockReason: string | undefined;
+    try {
+      validateArticleText({
+        title: content.title,
+        body: content.body,
+        bodyHtml: content.bodyHtml,
+        bodyJson: content.bodyJson && typeof content.bodyJson === "object" && !Array.isArray(content.bodyJson)
+          ? content.bodyJson as Record<string, unknown> : null,
+      });
+    } catch (error) {
+      if (!(error instanceof AppError) || error.statusCode !== 422) throw error;
+      articleBlockReason = error.message;
+    }
     const auditState = this.reviewPolicy.evaluateCurrentAudit(content, auditRecord);
     const qualityStatusAllowed = new Set<DbContentStatus>([
       DbContentStatus.draft,
@@ -219,12 +262,14 @@ export class ContentsService {
           }
         : undefined,
       latestQuality: qualityRecord ? this.qualityResultFromRecord(qualityRecord) : undefined,
+      currentAuditValid: auditState.valid,
+      currentAuditBlockReason: auditState.valid ? undefined : auditState.reason,
       canScoreQuality,
       qualityBlockReason: canScoreQuality
         ? undefined
         : auditState.reason ?? "CONTENT_STATUS_NOT_SCORABLE",
-      canPublish: publishState.canPublish,
-      publishBlockReason: publishState.canPublish ? undefined : publishState.reason,
+      canPublish: publishState.canPublish && !articleBlockReason,
+      publishBlockReason: articleBlockReason ?? (publishState.canPublish ? undefined : publishState.reason),
     };
   }
 
@@ -346,52 +391,75 @@ export class ContentsService {
 
   async update(userId: string, id: string, body: ContentWriteBody) {
     const current = await this.getContent(userId, id);
-    await this.createVersion(current.id, current.title, current.body, current.bodyHtml, current.bodyJson);
-
-    const nextTitle = body.title !== undefined ? body.title.trim() || current.title : current.title;
-    const nextBody = body.body ?? current.body;
-    const richText = sanitizeRichText({ html: body.bodyHtml, json: body.bodyJson });
+    const hasTextInput = body.title !== undefined || body.body !== undefined ||
+      body.bodyHtml !== undefined || body.bodyJson !== undefined;
+    const hasBodyInput = body.body !== undefined || body.bodyHtml !== undefined || body.bodyJson !== undefined;
+    const nextTitle = body.title?.trim() ? body.title : current.title;
+    const article = hasTextInput ? validateArticleText({
+      title: nextTitle,
+      body: body.body !== undefined ? body.body : hasBodyInput ? undefined : current.body,
+      bodyHtml: body.bodyHtml !== undefined ? body.bodyHtml : hasBodyInput ? null : current.bodyHtml,
+      bodyJson: body.bodyJson !== undefined ? body.bodyJson :
+        hasBodyInput ? null : current.bodyJson && typeof current.bodyJson === "object" && !Array.isArray(current.bodyJson)
+          ? current.bodyJson as Record<string, unknown> : null,
+    }) : null;
+    if (!article) validatePublicVisibilityTransition(current, toDbContentVisibility(body.visibility));
+    const nextBody = hasBodyInput ? article!.body : current.body;
+    const nextRichHtml = hasBodyInput ? article!.richText.html ?? null : current.bodyHtml;
+    const nextRichJson = hasBodyInput ? article!.richText.json ?? null : current.bodyJson;
     const nextAssetIds = body.assetIds !== undefined ? ((await this.ownedAssetIds(userId, body.assetIds)) ?? []) : undefined;
     const safetySensitiveEdit =
       (body.title !== undefined && nextTitle !== current.title) ||
-      (body.body !== undefined && body.body !== current.body) ||
-      (body.bodyHtml !== undefined && richText.html !== current.bodyHtml) ||
-      (body.bodyJson !== undefined && !this.sameJson(richText.json ?? null, current.bodyJson ?? null)) ||
+      (hasBodyInput && (
+        nextBody !== current.body ||
+        nextRichHtml !== current.bodyHtml ||
+        !this.sameJson(nextRichJson, current.bodyJson ?? null)
+      )) ||
       (body.tags !== undefined && !this.sameStringArray(body.tags, current.tags)) ||
       (nextAssetIds !== undefined && !this.sameStringArray(nextAssetIds, current.assets.map((item) => item.assetId)));
     const reviewStatusData = safetySensitiveEdit ? this.reviewPolicy.statusDataForSafetySensitiveEdit(current.status) : {};
-    const data: Prisma.ContentUpdateInput = {
+    const data: Prisma.ContentUpdateManyMutationInput = {
       title: body.title !== undefined ? nextTitle : undefined,
-      body: body.body,
-      bodyHtml: richText.html,
-      bodyJson: toJsonInput(richText.json),
-      excerpt: body.body !== undefined ? nextBody.slice(0, 72) : undefined,
+      body: hasBodyInput ? nextBody : undefined,
+      bodyHtml: hasBodyInput ? nextRichHtml : undefined,
+      bodyJson: hasBodyInput ? toJsonInput(nextRichJson as Record<string, unknown> | null) : undefined,
+      excerpt: hasBodyInput ? nextBody.slice(0, 72) : undefined,
       tags: body.tags,
       visibility: toDbContentVisibility(body.visibility),
       scheduledAt: safetySensitiveEdit ? null : toDateOrNull(body.scheduledAt),
       ...reviewStatusData,
     };
 
-    if (body.assetIds !== undefined) {
-      const assetIds = nextAssetIds ?? [];
-      await this.prisma.contentAsset.deleteMany({ where: { contentId: id } });
-      if (assetIds.length > 0) {
-        await this.prisma.contentAsset.createMany({
-          data: assetIds.map((assetId, index) => ({ contentId: id, assetId, sortOrder: index })),
-          skipDuplicates: true,
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await this.createVersion(tx, current.id, current.title, current.body, current.bodyHtml, current.bodyJson);
+      const changed = await tx.content.updateMany({
+        where: { id, authorId: userId, updatedAt: current.updatedAt },
+        data,
+      });
+      if (changed.count === 0) {
+        throw new AppError({
+          code: "CONTENT_CHANGED_DURING_EDIT",
+          message: "内容已在其他位置更新，请刷新后重试",
+          statusCode: 409,
         });
       }
-    }
-
-    const updated = await this.prisma.content.update({
-      where: { id },
-      data,
-      include: contentInclude,
+      if (safetySensitiveEdit) await this.invalidateWritingSkillSource(tx, id);
+      if (nextAssetIds !== undefined) {
+        await tx.contentAsset.deleteMany({ where: { contentId: id } });
+        if (nextAssetIds.length > 0) {
+          await tx.contentAsset.createMany({
+            data: nextAssetIds.map((assetId, index) => ({ contentId: id, assetId, sortOrder: index })),
+            skipDuplicates: true,
+          });
+        }
+      }
+      const updated = await tx.content.findUniqueOrThrow({ where: { id }, include: contentInclude });
+      await this.writingSkill?.syncPublishedContent(tx, updated);
+      return updated;
     });
 
     return this.toNormalizedContentDetail(updated);
   }
-
   private async ownedAssetIds(userId: string, assetIds: string[] | undefined) {
     if (assetIds === undefined) return undefined;
 
@@ -412,11 +480,19 @@ export class ContentsService {
     if (!nextVisibility) {
       throw new BadRequestException("invalid visibility");
     }
+    validatePublicVisibilityTransition(current, nextVisibility);
 
-    const updated = await this.prisma.content.update({
-      where: { id: current.id },
-      data: { visibility: nextVisibility },
-      include: contentInclude,
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const changed = await tx.content.updateMany({
+        where: { id: current.id, authorId: userId, status: current.status, updatedAt: current.updatedAt },
+        data: { visibility: nextVisibility },
+      });
+      if (changed.count === 0) throw new AppError({
+        code: "CONTENT_CHANGED_DURING_EDIT", message: "内容已在其他位置更新，请刷新后重试", statusCode: 409,
+      });
+      const content = await tx.content.findUniqueOrThrow({ where: { id: current.id }, include: contentInclude });
+      await this.writingSkill?.syncPublishedContent(tx, content);
+      return content;
     });
 
     return this.toNormalizedContentSummary(updated);
@@ -426,6 +502,7 @@ export class ContentsService {
     await this.assertContentExists(userId, id);
 
     await this.prisma.$transaction(async (tx) => {
+      await this.invalidateWritingSkillSource(tx, id);
       await tx.draft.deleteMany({ where: { contentId: id } });
       await tx.contentAsset.deleteMany({ where: { contentId: id } });
       await tx.contentVersion.deleteMany({ where: { contentId: id } });
@@ -449,33 +526,42 @@ export class ContentsService {
     const target = await this.prisma.contentVersion.findFirst({
       where: { contentId: id, version },
     });
-    if (!target) {
-      throw new NotFoundException("content version not found");
-    }
+    if (!target) throw new NotFoundException("content version not found");
 
-    await this.createVersion(current.id, current.title, current.body, current.bodyHtml, current.bodyJson);
-    const targetRichText = sanitizeRichText({
-      html: target.bodyHtml,
-      json: target.bodyJson && typeof target.bodyJson === "object" && !Array.isArray(target.bodyJson)
-        ? (target.bodyJson as Record<string, unknown>)
-        : null,
+    const targetJson = target.bodyJson && typeof target.bodyJson === "object" && !Array.isArray(target.bodyJson)
+      ? target.bodyJson as Record<string, unknown> : null;
+    const article = validateArticleText({
+      title: target.title,
+      body: target.body,
+      bodyHtml: target.bodyHtml,
+      bodyJson: targetJson,
     });
-    const updated = await this.prisma.content.update({
-      where: { id },
-      data: {
-        title: target.title,
-        body: target.body,
-        bodyHtml: targetRichText.html ?? null,
-        bodyJson: toJsonInput(targetRichText.json),
-        excerpt: target.body.slice(0, 72),
-        ...this.reviewPolicy.statusDataForSafetySensitiveEdit(current.status),
-      },
-      include: contentInclude,
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await this.createVersion(tx, current.id, current.title, current.body, current.bodyHtml, current.bodyJson);
+      const changed = await tx.content.updateMany({
+        where: { id, authorId: userId, updatedAt: current.updatedAt },
+        data: {
+          title: article.title,
+          body: article.body,
+          bodyHtml: article.richText.html ?? null,
+          bodyJson: toJsonInput(article.richText.json),
+          excerpt: article.body.slice(0, 72),
+          ...this.reviewPolicy.statusDataForSafetySensitiveEdit(current.status),
+        },
+      });
+      if (changed.count === 0) {
+        throw new AppError({
+          code: "CONTENT_CHANGED_DURING_EDIT",
+          message: "内容已在其他位置更新，请刷新后重试",
+          statusCode: 409,
+        });
+      }
+      await this.invalidateWritingSkillSource(tx, id);
+      return tx.content.findUniqueOrThrow({ where: { id }, include: contentInclude });
     });
 
     return this.toNormalizedContentDetail(updated);
   }
-
   private async toNormalizedContentSummary<T extends Parameters<ContentHeatScoreService["normalizeContent"]>[0]>(
     content: T
   ) {
@@ -690,6 +776,7 @@ export class ContentsService {
   }
 
   private async createVersion(
+    tx: Prisma.TransactionClient,
     contentId: string,
     title: string,
     body: string,
@@ -702,13 +789,13 @@ export class ContentsService {
         ? (bodyJson as Record<string, unknown>)
         : null,
     });
-    const aggregate = await this.prisma.contentVersion.aggregate({
+    const aggregate = await tx.contentVersion.aggregate({
       where: { contentId },
       _max: { version: true },
     });
     const version = (aggregate._max.version ?? 0) + 1;
 
-    await this.prisma.contentVersion.create({
+    await tx.contentVersion.create({
       data: {
         contentId,
         version,
@@ -724,5 +811,9 @@ export class ContentsService {
         } as Prisma.InputJsonObject,
       },
     });
+  }
+
+  private async invalidateWritingSkillSource(tx: Prisma.TransactionClient, contentId: string) {
+    await this.writingSkill?.invalidateContent(tx, contentId);
   }
 }

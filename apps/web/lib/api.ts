@@ -658,7 +658,6 @@ export async function autosaveDraft(
 
 export async function startAiJob(body: AiJobStartRequest, idempotencyKey = crypto.randomUUID()) {
   const request = { ...body, idempotencyKey };
-  console.log("Starting AI job with idempotency key:", idempotencyKey, "request:", request);
   return apiRequest<AiJobSnapshot>(
     "/ai/jobs",
     {
@@ -1103,6 +1102,29 @@ export async function getPromptEvalRun(key: string, runId: string) {
     {},
     true
   );
+}
+
+export async function getWritingSkill() { return apiRequest<any>("/ai/writing-skill", {}, true); }
+export async function getEligibleWritingSkillContents(page = 1, pageSize = 20) {
+  return apiRequest<any>(`/ai/writing-skill/eligible-contents?page=${page}&pageSize=${pageSize}`, {}, true);
+}
+export async function buildWritingSkill(sourceContentIds: string[]) {
+  return apiRequest<any>("/ai/writing-skill/build", { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({ sourceContentIds }) }, true);
+}
+export async function confirmWritingSkill(body: { candidateVersionId: string; editedProfile: unknown; expectedSourceRevision: number; expectedEditRevision: number }) {
+  return apiRequest<any>("/ai/writing-skill/confirm", { method: "POST", body: JSON.stringify(body) }, true);
+}
+export async function updateWritingSkillProfile(profile: unknown) {
+  return apiRequest<any>("/ai/writing-skill/profile", { method: "PATCH", body: JSON.stringify({ profile }) }, true);
+}
+export async function unlockWritingSkillProfilePaths(paths: string[]) {
+  return apiRequest<any>("/ai/writing-skill/profile/unlock", { method: "POST", body: JSON.stringify({ paths }) }, true);
+}
+export async function updateWritingSkillSource(contentId: string, mode: "manual" | "excluded") {
+  return apiRequest<any>(`/ai/writing-skill/sources/${encodeURIComponent(contentId)}`, { method: "PUT", body: JSON.stringify({ mode }) }, true);
+}
+export async function restoreWritingSkillVersion(id: string) {
+  return apiRequest<any>(`/ai/writing-skill/versions/${encodeURIComponent(id)}/restore`, { method: "POST" }, true);
 }
 
 export async function searchLocations(keyword: string) {

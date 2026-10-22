@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import { BadRequestException, ConflictException, Injectable, NotFoundException, Optional, UnprocessableEntityException } from "@nestjs/common";
 import { AiJobStatus, Prisma } from "@prisma/client";
 import { createHash } from "node:crypto";
 import { AiJobType, type AiJobResultCommitRequest, type AiJobResultCommitResponse } from "@aicp/shared";
@@ -7,6 +7,9 @@ import { PrismaService } from "../../infra/prisma/prisma.service";
 import { ContentDraftPersistenceService } from "./content-draft-persistence.service";
 import { WorkflowJobEventsService } from "./workflow-job-events.service";
 import { toAiJobSnapshot } from "./workflow-job.mapper";
+import { GenerationMaterialResolver } from "./generation-material-resolver.service";
+import { WritingStyleContextResolver } from "./writing-style-context-resolver.service";
+import { generationMaterialSnapshotSchema } from "../ai/generation-material.snapshot";
 
 const COMMIT_TYPES = new Set<string>([AiJobType.CreativeDirectGenerate, AiJobType.CreativeImageGenerate]);
 
@@ -15,13 +18,29 @@ export class WorkflowJobResultCommitService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly persistence: ContentDraftPersistenceService,
-    private readonly events: WorkflowJobEventsService
+    private readonly events: WorkflowJobEventsService,
+    @Optional() private readonly materialResolver?: GenerationMaterialResolver,
+    @Optional() private readonly writingStyleResolver?: WritingStyleContextResolver,
   ) {}
 
   async commit(userId: string, jobId: string, request: AiJobResultCommitRequest): Promise<AiJobResultCommitResponse> {
     this.validateRequest(request);
     const eventId = this.parseEventId(request.resultEventId);
     const payloadHash = this.payloadHash(request.content);
+    const preflight = await this.prisma.aiJob.findFirst({ where: { id: jobId, userId }, select: { status: true, input: true } });
+    if (!preflight) throw new NotFoundException("AI job not found");
+    if (preflight.status === AiJobStatus.awaiting_commit) {
+      const frozenInput = preflight.input && typeof preflight.input === "object" && !Array.isArray(preflight.input)
+        ? preflight.input as Record<string, unknown> : {};
+      if (frozenInput.materialSnapshot !== undefined) {
+        if (!this.materialResolver) throw new Error("GenerationMaterialResolver is not configured");
+        await this.materialResolver.assertCurrent(userId, frozenInput.materialSnapshot);
+      }
+      if (frozenInput.writingStyleSnapshot !== undefined) {
+        if (!this.writingStyleResolver) throw new Error("WritingStyleContextResolver is not configured");
+        await this.writingStyleResolver.assertCurrent(userId, frozenInput.writingStyleSnapshot);
+      }
+    }
     const outcome = await this.prisma.$transaction(async (tx) => {
       const job = await tx.aiJob.findFirst({ where: { id: jobId, userId } });
       if (!job) throw new NotFoundException("AI job not found");
@@ -35,6 +54,16 @@ export class WorkflowJobResultCommitService {
         return { job, content, draft: null, event: null };
       }
       if (job.status !== AiJobStatus.awaiting_commit) throw new ConflictException(`AI job cannot commit from status ${job.status}`);
+
+      const jobInput = job.input && typeof job.input === "object" && !Array.isArray(job.input)
+        ? job.input as Record<string, unknown> : {};
+      if (jobInput.writingStyleSnapshot !== undefined) {
+        if (!this.writingStyleResolver) throw new Error("WritingStyleContextResolver is not configured");
+        await this.writingStyleResolver.assertCurrentInTransaction(tx, userId, jobInput.writingStyleSnapshot);
+      }
+      const parsedMaterials = generationMaterialSnapshotSchema.safeParse(jobInput.materialSnapshot);
+      const frozenAttachmentIds = job.type === AiJobType.CreativeDirectGenerate && parsedMaterials.success
+        ? parsedMaterials.data.attachmentAssetIds : [];
 
       const resultEvent = await tx.aiJobEvent.findFirst({ where: { id: eventId, jobId, type: "result_ready" } });
       if (!resultEvent) throw new BadRequestException("resultEventId is not a result_ready event for this job");
@@ -50,7 +79,7 @@ export class WorkflowJobResultCommitService {
         bodyHtml: request.content.bodyHtml,
         bodyJson: request.content.bodyJson,
         tags: request.content.tags,
-        assetIds: request.content.assetIds,
+        assetIds: [...new Set([...request.content.assetIds, ...frozenAttachmentIds])],
         payload: request.content.payload,
         clientHash: payloadHash,
       });

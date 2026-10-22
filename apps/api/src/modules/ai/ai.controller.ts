@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Param, Patch, Post, Query, Res, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, Headers, HttpCode, HttpStatus, Param, Patch, Post, Put, Query, Res, UseGuards } from "@nestjs/common";
 import type { Response } from "express";
 import {
   AiJobType,
@@ -11,11 +11,13 @@ import {
   type UserProfileSummary
 } from "@aicp/shared";
 import { AuthGuard } from "../auth/auth.guard";
+import { AdminGuard } from "../auth/admin.guard";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { ContentWorkflowEngine } from "../workflow/content-workflow.engine";
 import { WorkflowJobService } from "../workflow/workflow-job.service";
 import { WorkflowJobResultCommitService } from "../workflow/workflow-job-result-commit.service";
 import { AttachConversationDto, CommitJobResultDto, CreativeImageJobDto, RecoverJobsQueryDto, StartAiJobDto } from "./ai.dto";
+import { WritingSkillService } from "./writing-skill.service";
 
 @UseGuards(AuthGuard)
 @Controller("ai")
@@ -23,13 +25,53 @@ export class AiController {
   constructor(
     private readonly workflow: ContentWorkflowEngine,
     private readonly jobs: WorkflowJobService,
-    private readonly jobResultCommit: WorkflowJobResultCommitService
+    private readonly jobResultCommit: WorkflowJobResultCommitService,
+    private readonly writingSkill: WritingSkillService
   ) {}
 
   @Get("logs")
+  @UseGuards(AdminGuard)
   logs() {
     return this.workflow.logs();
   }
+
+  @Get("writing-skill")
+  getWritingSkill(@CurrentUser() user: UserProfileSummary) { return this.writingSkill.get(user.id); }
+
+  @Get("writing-skill/eligible-contents")
+  eligibleWritingSkillContents(@CurrentUser() user: UserProfileSummary, @Query("page") page?: string, @Query("pageSize") pageSize?: string) {
+    return this.writingSkill.eligible(user.id, Number(page ?? 1), Number(pageSize ?? 20));
+  }
+
+  @Post("writing-skill/build")
+  @HttpCode(HttpStatus.ACCEPTED)
+  buildWritingSkill(@CurrentUser() user: UserProfileSummary, @Body() body: { sourceContentIds?: string[] }, @Headers("idempotency-key") idempotencyKey?: string) {
+    return this.jobs.createWritingSkillBuild(user.id, Array.isArray(body?.sourceContentIds) ? body.sourceContentIds : [], idempotencyKey?.slice(0, 128));
+  }
+
+  @Post("writing-skill/confirm")
+  confirmWritingSkill(@CurrentUser() user: UserProfileSummary, @Body() body: { candidateVersionId: string; editedProfile: unknown; expectedSourceRevision: number; expectedEditRevision: number }) {
+    return this.writingSkill.confirm(user.id, body.candidateVersionId, body.editedProfile, body.expectedSourceRevision, body.expectedEditRevision);
+  }
+
+  @Put("writing-skill/sources/:contentId")
+  setWritingSkillSourceMode(@CurrentUser() user: UserProfileSummary, @Param("contentId") contentId: string, @Body() body: { mode: "manual" | "excluded" }) {
+    if (body?.mode !== "manual" && body?.mode !== "excluded") throw new BadRequestException("mode must be manual or excluded");
+    return this.writingSkill.setSourceMode(user.id, contentId, body.mode);
+  }
+
+  @Patch("writing-skill/profile")
+  updateWritingSkillProfile(@CurrentUser() user: UserProfileSummary, @Body() body: { profile: unknown }) {
+    return this.writingSkill.updateProfile(user.id, body?.profile);
+  }
+
+  @Post("writing-skill/profile/unlock")
+  unlockWritingSkillProfilePaths(@CurrentUser() user: UserProfileSummary, @Body() body: { paths: string[] }) {
+    return this.writingSkill.unlockProfilePaths(user.id, Array.isArray(body?.paths) ? body.paths : []);
+  }
+
+  @Post("writing-skill/versions/:id/restore")
+  restoreWritingSkill(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) { return this.writingSkill.restore(user.id, id); }
 
   @Post("jobs")
   startJob(

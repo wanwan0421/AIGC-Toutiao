@@ -181,6 +181,37 @@ describe("ModelClientService thinking mode", () => {
     expect(body.caching).toBeUndefined();
   });
 
+  it("sends image parts and JSON Schema in the same Chat Completions request", async () => {
+    process.env.ARK_API_URL = "https://example.test/api/v3/chat/completions";
+    const fetchMock = vi.fn(async () => jsonResponse({
+      choices: [{ message: { content: JSON.stringify({ pass: true, level: "low", reason: "safe", types: ["none"] }) } }],
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const service = new ModelClientService();
+
+    await completeStructured({
+      modelClient: service,
+      name: "image_moderation",
+      schema: z.object({ pass: z.boolean(), level: z.enum(["low", "medium", "high"]), reason: z.string(), types: z.array(z.string()) }),
+      messages: [
+        { role: "system", content: "review image" },
+        { role: "user", content: [
+          { type: "image_url", image_url: { url: "data:image/png;base64,dGVzdA==", detail: "high" } },
+          { type: "text", text: "return structured review" },
+        ] },
+      ],
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = requestBody(fetchMock);
+    const messages = body.messages as Array<Record<string, unknown>>;
+    expect((messages[1]?.content) as unknown[]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "image_url" }),
+      expect.objectContaining({ type: "text", text: "return structured review" }),
+    ]));
+    expect(body.response_format).toMatchObject({ type: "json_schema", json_schema: { name: "image_moderation", strict: true } });
+  });
+
   it("emits response ids and usage from a Responses stream", async () => {
     process.env.ARK_RESPONSES_API_URL = "https://example.test/api/v3/responses";
     const sse = [

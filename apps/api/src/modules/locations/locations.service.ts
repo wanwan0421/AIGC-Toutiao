@@ -34,6 +34,9 @@ type AmapPoiResponse = {
 
 @Injectable()
 export class LocationsService {
+  /** Coalesce concurrent requests for the same rounded location before they fan out to AMap. */
+  private readonly nearbyInFlight = new Map<string, Promise<NearbyLocationsResponse>>();
+
   constructor(
     private readonly config: ConfigService,
     private readonly redisService: RedisService
@@ -49,6 +52,10 @@ export class LocationsService {
       return JSON.parse(cached);
     }
 
+    const existingRequest = this.nearbyInFlight.get(cacheKey);
+    if (existingRequest) return existingRequest;
+
+    const request = (async (): Promise<NearbyLocationsResponse> => {
     const [regeo, around] = await Promise.all([
       this.fetchAmap<AmapRegeoResponse>("/v3/geocode/regeo", {
         location: `${longitude},${latitude}`,
@@ -96,6 +103,16 @@ export class LocationsService {
     
     await this.redisService.getClient().setex(cacheKey, 300, JSON.stringify(result)).catch(() => undefined);
     return result;
+    })();
+
+    this.nearbyInFlight.set(cacheKey, request);
+    try {
+      return await request;
+    } finally {
+      if (this.nearbyInFlight.get(cacheKey) === request) {
+        this.nearbyInFlight.delete(cacheKey);
+      }
+    }
   }
 
   async search(keyword: string): Promise<LocationSearchResponse> {

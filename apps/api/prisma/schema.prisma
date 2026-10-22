@@ -31,6 +31,7 @@ model User {
   aiConversations AiConversation[]
   aiJobs       AiJob[]
   preferences  UserPreference?
+  writingSkill WritingSkill?
 }
 
 model UserPreference {
@@ -67,6 +68,7 @@ model Content {
   createdAt    DateTime          @default(now())
   updatedAt    DateTime          @updatedAt
   audits       AuditRecord[]
+  reviewTextCheckpoints ContentReviewTextCheckpoint[]
   author       User              @relation(fields: [authorId], references: [id])
   assets       ContentAsset[]
   versions     ContentVersion[]
@@ -77,6 +79,7 @@ model Content {
   comments     ContentComment[]
   aiConversations AiConversation[]
   aiJobs       AiJob[]
+  writingSkillSources WritingSkillSource[]
 
   @@index([authorId, createdAt])
   @@index([status, visibility, heatScore])
@@ -270,8 +273,102 @@ model Asset {
   createdAt   DateTime         @default(now())
   uploader    User             @relation(fields: [uploaderId], references: [id])
   contents    ContentAsset[]
+  extractedText AssetExtractedText?
 }
 
+model ImageModerationCache {
+  id          String           @id @default(cuid())
+  sha256      String
+  policyVersion String
+  auditStatus AssetAuditStatus
+  auditReason String?
+  riskLevel   String
+  riskTypes   String[]         @default([])
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@unique([sha256, policyVersion])
+  @@index([auditStatus, updatedAt])
+}
+
+model WritingSkill {
+  id                 String                @id @default(cuid())
+  userId             String                @unique
+  activeVersionId    String?               @unique
+  candidateVersionId String?               @unique
+  sourceRevision     Int                   @default(0)
+  appliedRevision    Int                   @default(0)
+  editRevision       Int                   @default(0)
+  autoLearnFromAt    DateTime?
+  pauseReason        String?
+  lastError          String?
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+  user               User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeVersion      WritingSkillVersion?  @relation("WritingSkillActiveVersion", fields: [activeVersionId], references: [id], onDelete: SetNull)
+  candidateVersion   WritingSkillVersion?  @relation("WritingSkillCandidateVersion", fields: [candidateVersionId], references: [id], onDelete: SetNull)
+  versions           WritingSkillVersion[] @relation("WritingSkillVersions")
+  sources            WritingSkillSource[]
+
+  @@index([sourceRevision, appliedRevision])
+}
+
+model WritingSkillVersion {
+  id              String                @id @default(cuid())
+  skillId         String
+  versionNo       Int
+  profile         Json
+  sourceManifest  Json
+  sourceRevision  Int
+  editRevision    Int
+  origin          String
+  parentVersionId String?
+  createdAt       DateTime              @default(now())
+  skill           WritingSkill          @relation("WritingSkillVersions", fields: [skillId], references: [id], onDelete: Cascade)
+  activeFor       WritingSkill?         @relation("WritingSkillActiveVersion")
+  candidateFor    WritingSkill?         @relation("WritingSkillCandidateVersion")
+  parentVersion   WritingSkillVersion?  @relation("WritingSkillVersionParent", fields: [parentVersionId], references: [id], onDelete: SetNull)
+  childVersions   WritingSkillVersion[] @relation("WritingSkillVersionParent")
+
+  @@unique([skillId, versionNo])
+  @@index([skillId, createdAt])
+  @@index([parentVersionId])
+}
+
+model WritingSkillSource {
+  skillId          String
+  contentId        String
+  mode             WritingSkillSourceMode
+  contentHash      String?
+  extractedProfile Json?
+  extractedAt      DateTime?
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+  skill            WritingSkill           @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  content          Content                @relation(fields: [contentId], references: [id], onDelete: Restrict)
+
+  @@id([skillId, contentId])
+  @@index([contentId])
+  @@index([skillId, mode])
+}
+
+model AssetExtractedText {
+  assetId             String           @id
+  fullText            String?
+  charCount           Int?
+  fileHash            String?
+  extractorVersion    String?
+  status              AssetTextStatus  @default(pending)
+  errorMessage        String?
+  fullTextAuditStatus AssetAuditStatus @default(pending)
+  auditedHash         String?
+  extractedAt         DateTime?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+  asset               Asset            @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@index([status, fullTextAuditStatus])
+}
 model AiConversation {
   id              String                         @id @default(cuid())
   userId          String
@@ -364,6 +461,20 @@ model AuditRecord {
   content     Content        @relation(fields: [contentId], references: [id])
 
   @@index([contentId, createdAt])
+}
+
+model ContentReviewTextCheckpoint {
+  id        String   @id @default(cuid())
+  contentId String
+  textHash  String
+  audit     Json
+  rewrite   Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  content   Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@unique([contentId, textHash])
+  @@index([updatedAt])
 }
 
 model QualityScore {
@@ -551,6 +662,18 @@ enum AssetAuditStatus {
   rejected
 }
 
+enum WritingSkillSourceMode {
+  manual
+  auto
+  excluded
+}
+
+enum AssetTextStatus {
+  pending
+  extracted
+  failed
+}
+
 enum ContentReactionType {
   like
   collect
@@ -590,4 +713,6 @@ enum AiJobType {
   moderation_text_run
   compliance_rewrite
   prompt_eval_run
+  writing_skill_build
+  writing_skill_refresh
 }

@@ -3,9 +3,13 @@ import { AppError, combineAbortSignals, throwIfAborted } from "../../common/app-
 import { AiCallLogService } from "./ai-call-log.service";
 
 export type ModelToolCall = { id: string; type: "function"; function: { name: string; arguments: string } };
+export type ModelMessageContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string; detail?: "low" | "high" | "auto" } };
+
 export type ModelMessage = {
   role: "system" | "user" | "assistant" | "tool";
-  content: string;
+  content: string | ModelMessageContentPart[];
   tool_call_id?: string;
   tool_calls?: ModelToolCall[];
 };
@@ -223,6 +227,7 @@ export class ModelClientService {
     prompt: string = "请用简洁中文描述这张图片的内容，不要超过150字",
     signal?: AbortSignal,
     telemetry?: ModelTelemetryContext,
+    timeoutMs?: number,
   ): Promise<string> {
     if (!this.hasRemoteProvider()) {
       this.logger.warn("Model provider not configured, skip image description");
@@ -239,7 +244,7 @@ export class ModelClientService {
         method: "POST",
         headers: this.requestHeaders("chat_completions"),
         body: JSON.stringify(this.buildImageDescriptionRequestBody(dataUri, prompt, "chat_completions")),
-      }, undefined, signal);
+      }, timeoutMs, signal);
 
       if (!response.ok) {
         await this.recordModelCall({

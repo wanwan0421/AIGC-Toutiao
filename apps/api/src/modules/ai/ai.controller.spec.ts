@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { GUARDS_METADATA } from "@nestjs/common/constants";
 import { AiJobType } from "@aicp/shared";
+import { AdminGuard } from "../auth/admin.guard";
 import { AiController } from "./ai.controller";
 
 const user = { id: "user-1" };
@@ -7,12 +9,16 @@ const user = { id: "user-1" };
 function createController() {
   const jobs = { create: vi.fn().mockResolvedValue({ id: "job-1" }) };
   return {
-    controller: new AiController({} as never, jobs as never, {} as never),
+    controller: new AiController({} as never, jobs as never, {} as never, {} as never),
     jobs,
   };
 }
 
 describe("AiController idempotency key transport", () => {
+  it("limits AI call logs to administrators", () => {
+    expect(Reflect.getMetadata(GUARDS_METADATA, AiController.prototype.logs)).toContain(AdminGuard);
+  });
+
   it("uses the request-body mirror when a proxy omits the header", async () => {
     const { controller, jobs } = createController();
 

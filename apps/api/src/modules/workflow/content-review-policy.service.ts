@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { BadRequestException, Injectable } from "@nestjs/common";
 import { ContentStatus as DbContentStatus, Prisma } from "@prisma/client";
+import { AssetAuditStatus } from "@prisma/client";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 
 export const PublishBlockReason = {
@@ -11,7 +12,12 @@ export const PublishBlockReason = {
   AlreadyPublished: "CONTENT_ALREADY_PUBLISHED",
   Offline: "CONTENT_OFFLINE",
   InvalidStatus: "CONTENT_STATUS_NOT_PUBLISHABLE",
+  ImageReviewRequired: "IMAGE_REVIEW_REQUIRED",
+  ImageRejected: "IMAGE_REVIEW_REJECTED",
 } as const;
+
+// Increment when moderation prompts, risk thresholds, or image review rules change.
+export const CONTENT_REVIEW_POLICY_VERSION = "2026-10-21-v1";
 
 type PublishBlockReason = (typeof PublishBlockReason)[keyof typeof PublishBlockReason];
 
@@ -26,6 +32,7 @@ type ReviewableContent = {
   assets?: Array<{
     assetId: string;
     sortOrder?: number | null;
+    asset?: { mimeType: string; auditStatus: AssetAuditStatus; metadata?: Prisma.JsonValue };
   }>;
 };
 
@@ -45,9 +52,18 @@ export class ContentReviewPolicyService {
   constructor(private readonly prisma: PrismaService) {}
 
   computeContentReviewHash(content: ReviewableContent) {
-    const assetIds = [...(content.assets ?? [])]
+    const assets = [...(content.assets ?? [])]
       .sort((left, right) => (left.sortOrder ?? 0) - (right.sortOrder ?? 0) || left.assetId.localeCompare(right.assetId))
-      .map((item) => item.assetId);
+      .map((item) => {
+        const metadata = item.asset?.metadata && typeof item.asset.metadata === "object" && !Array.isArray(item.asset.metadata)
+          ? item.asset.metadata as Record<string, unknown>
+          : {};
+        const imageSha256 = typeof metadata.imageSha256 === "string" ? metadata.imageSha256 : null;
+        return {
+          assetId: item.assetId,
+          imageSha256: item.asset?.mimeType.toLowerCase().startsWith("image/") ? imageSha256 : null,
+        };
+      });
 
     const payload = {
       title: content.title,
@@ -55,7 +71,8 @@ export class ContentReviewPolicyService {
       bodyHtml: content.bodyHtml ?? null,
       bodyJson: this.normalizeJson(content.bodyJson ?? null),
       tags: content.tags,
-      assetIds,
+      assets,
+      reviewPolicyVersion: CONTENT_REVIEW_POLICY_VERSION,
     };
 
     return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
@@ -89,6 +106,13 @@ export class ContentReviewPolicyService {
   // 评估当前内容的审核状态
   evaluateCurrentAudit(content: ReviewableContent, audit: AuditLike | null): CurrentAuditState {
     const currentHash = this.computeContentReviewHash(content);
+    const imageAssets = (content.assets ?? []).filter((item) => item.asset?.mimeType.toLowerCase().startsWith("image/"));
+    if (imageAssets.some((item) => item.asset?.auditStatus === AssetAuditStatus.rejected)) {
+      return { valid: false, currentHash, reason: PublishBlockReason.ImageRejected };
+    }
+    if (imageAssets.some((item) => item.asset?.auditStatus !== AssetAuditStatus.approved)) {
+      return { valid: false, currentHash, reason: PublishBlockReason.ImageReviewRequired };
+    }
     if (!audit) {
       return { valid: false, currentHash, reason: PublishBlockReason.NotReviewed };
     }

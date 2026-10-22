@@ -1,4 +1,5 @@
 import type { AiJobType, AiSkillKey, DirectGenerateRequest } from "@aicp/shared";
+import type { GenerationMaterialSnapshot } from "../generation-material.snapshot";
 
 export type SkillRouterAction = "chat" | "run_skill" | "edit_current_content" | "ask_clarification";
 
@@ -39,6 +40,8 @@ export type SkillJobRequest = {
 };
 
 export type ContentProductionLineInput = Partial<DirectGenerateRequest> & {
+  materialSnapshot?: GenerationMaterialSnapshot;
+  writingStyleSnapshot?: unknown;
   source?: "button" | "conversation";
   conversationId?: string;
   message?: string;

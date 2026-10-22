@@ -9,7 +9,7 @@ describe("ImageModerationService", () => {
       .mockResolvedValueOnce('{"pass":true,"level":"low","reason":"ok","types":["none"]}');
     const service = new ImageModerationService({
       hasRemoteProvider: vi.fn(() => true),
-      describeImage: vi.fn(() => "A normal landscape"),
+      resolveTimeoutMs: vi.fn(() => 1_000),
       completeWithMetadata: vi.fn(async (options) => ({ text: await complete(options) })),
       attachStructuredResult: vi.fn(),
     } as never);
@@ -19,9 +19,14 @@ describe("ImageModerationService", () => {
     expect(result.auditStatus).toBe(AssetAuditStatus.approved);
     expect(result.riskLevel).toBe("low");
     expect(complete).toHaveBeenCalledTimes(2);
-    expect(complete.mock.calls[0][0].messages[0].content).toContain('"low", "medium", "high"');
-    expect(complete.mock.calls[0][0].messages[0].content).toContain("Approved example");
-    expect(complete.mock.calls[0][0].messages[0].content).toContain("Rejected example");
+    const request = complete.mock.calls[1][0];
+    expect(request.messages[0].content).toContain("unified content-safety standard");
+    expect(request.messages[1].content).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "image_url", image_url: expect.objectContaining({ url: expect.stringContaining("data:image/png;base64,") }) }),
+      expect.objectContaining({ type: "text" }),
+    ]));
+    expect(request.responseFormat.name).toBe("image_moderation");
+    expect(request.responseFormat.schema).toBeDefined();
   });
 
   it("remains pending when the single repair is still invalid", async () => {
@@ -30,7 +35,7 @@ describe("ImageModerationService", () => {
       .mockResolvedValueOnce('{"pass":true,"level":"unknown","reason":"ok","types":["none"]}');
     const service = new ImageModerationService({
       hasRemoteProvider: vi.fn(() => true),
-      describeImage: vi.fn(() => "A normal landscape"),
+      resolveTimeoutMs: vi.fn(() => 1_000),
       completeWithMetadata: vi.fn(async (options) => ({ text: await complete(options) })),
       attachStructuredResult: vi.fn(),
     } as never);

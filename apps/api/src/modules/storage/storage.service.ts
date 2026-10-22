@@ -109,7 +109,9 @@ export class LocalStorageAdapter {
   }
 
   private buildStoredFileName(originalName: string, mimeType: string) {
-    const extension = extname(originalName) || this.extensionForMimeType(mimeType);
+    // The persisted bytes may be normalized (for example, every uploaded image
+    // is re-encoded as WebP), so the MIME type must determine the stored suffix.
+    const extension = this.extensionForMimeType(mimeType) || extname(originalName);
     const baseName = basename(originalName, extname(originalName))
       .replace(/[^a-zA-Z0-9\u4e00-\u9fa5_-]+/g, "_")
       .replace(/^_+|_+$/g, "") || "asset";

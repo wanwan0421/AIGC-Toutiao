@@ -18,9 +18,9 @@ type DirectGenerateResult = {
 
 ## 字段要求
 
-- `title`: 必填，非空字符串。
+- `title`: 必填，非空字符串；主标题和所有候选标题均不得超过 25 个可见字符。
 - `titleCandidates`: 数组，建议 3-6 个；候选标题不要全部与主标题相同。
-- `bodyMarkdown`: 必填，非空字符串；第一行不要重复主标题。
+- `bodyMarkdown`: 必填，非空字符串；第一行不要重复主标题；渲染后的可见纯文本不得超过 1000 个可见字符，标点和可见空白计入，Markdown 标记与图片槽位不计入。
 - `tags`: 数组，建议 4-8 个；每个标签必须以 `#` 开头。
 - `coverSuggestion`: 可选，但一键图文生成场景应尽量提供。
 - `imagePrompts`: 数组；每项包含 `slotId`、`position` 和 `prompt`。

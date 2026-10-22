@@ -1,6 +1,10 @@
 import { z } from "zod";
+import { ARTICLE_TITLE_MAX_LENGTH, countArticleCharacters } from "@aicp/shared";
 const text = z.string().trim().min(1);
-export const titleGenerateSchema = z.object({ candidates: z.array(z.object({ title: text, reason: text }).strict()).min(1).max(3) }).strict();
+const articleTitle = text.refine((value) => countArticleCharacters(value) <= ARTICLE_TITLE_MAX_LENGTH, {
+  message: `标题不得超过 ${ARTICLE_TITLE_MAX_LENGTH} 个可见字符`,
+});
+export const titleGenerateSchema = z.object({ candidates: z.array(z.object({ title: articleTitle, reason: text }).strict()).min(1).max(3) }).strict();
 export const selectionRewriteSchema = z.object({ replacement: text }).strict();
 export const qualityScoreSchema = z.object({
   total: z.number().int().min(0).max(100),
@@ -8,7 +12,7 @@ export const qualityScoreSchema = z.object({
   reason: text,
 }).strict();
 export const complianceRewriteSchema = z.object({
-  title: text, body: text, reasons: z.array(text).min(1),
+  title: articleTitle, body: text, reasons: z.array(text).min(1),
   replacements: z.array(z.object({ riskItemId: text, original: text, replacement: text, reason: text }).strict()),
 }).strict();
 export const imageModerationSchema = z.object({
@@ -18,12 +22,12 @@ export const imageModerationSchema = z.object({
 export const requirementAnalysisSchema = z.object({
   needsClarification: z.boolean(), clarificationQuestion: z.string(), theme: z.string(), audience: z.string(), style: z.string(), viewpoint: z.string(), materialNotes: z.string(), sourceSummary: z.string(),
 }).strict();
-const titleCandidate = z.object({ title: text, reason: z.string() }).strict();
+const titleCandidate = z.object({ title: articleTitle, reason: z.string() }).strict();
 const outlineItem = z.object({ heading: text, summary: z.string() }).strict();
 const imagePrompt = z.object({ slotId: z.string().nullable(), position: text, prompt: text }).strict();
-export const articleDraftSchema = z.object({ title: text, titleCandidates: z.array(titleCandidate), bodyMarkdown: text, tags: z.array(text), outline: z.array(outlineItem) }).strict();
+export const articleDraftSchema = z.object({ title: articleTitle, titleCandidates: z.array(titleCandidate), bodyMarkdown: text, tags: z.array(text), outline: z.array(outlineItem) }).strict();
 export const visualPlanSchema = z.object({ bodyMarkdown: text, coverSuggestion: text, imagePrompts: z.array(imagePrompt) }).strict();
-export const directGenerateSchema = z.object({ title: text, titleCandidates: z.array(titleCandidate), bodyMarkdown: text, tags: z.array(text), coverSuggestion: text, imagePrompts: z.array(imagePrompt), outline: z.array(outlineItem) }).strict();
+export const directGenerateSchema = z.object({ title: articleTitle, titleCandidates: z.array(titleCandidate), bodyMarkdown: text, tags: z.array(text), coverSuggestion: text, imagePrompts: z.array(imagePrompt), outline: z.array(outlineItem) }).strict();
 export const skillRouterSchema = z.object({
   action: z.enum(["chat", "run_skill", "edit_current_content", "ask_clarification"]),
   skillKey: z.enum(["content-production-line", "content-safety-reviewer"]).nullable(),

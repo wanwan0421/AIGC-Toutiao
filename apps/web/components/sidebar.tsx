@@ -14,6 +14,7 @@ const navItems = [
   { href: "/studio/analytics", label: "素材管理", icon: <Icons.Image className="h-5 w-5" /> },
   { href: "/studio/prompts", label: "Prompt 管理", icon: <Icons.Sparkles className="h-5 w-5" /> },
   { href: "/studio/growth", label: "成长指南", icon: <Icons.Compass className="h-5 w-5" /> },
+  { href: "/studio/writing-style", label: "我的写作风格", icon: <Icons.Sparkles className="h-5 w-5" /> },
 ];
 
 export function Sidebar() {

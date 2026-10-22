@@ -56,9 +56,10 @@ export class RecoverJobsQueryDto {
 
 export class CommitContentDto {
   @IsOptional() @IsString() @MaxLength(128) contentId?: string;
-  @IsString() @MaxLength(100) title!: string;
-  @IsString() @MaxLength(20_000) body!: string;
-  @IsOptional() @IsString() @MaxLength(20_000) bodyHtml?: string | null;
+  // Visible article length is enforced centrally by ArticleLengthPolicy after rich-text sanitization.
+  @IsString() title!: string;
+  @IsString() body!: string;
+  @IsOptional() @IsString() bodyHtml?: string | null;
   @IsOptional() @IsObject() bodyJson?: Record<string, unknown> | null;
   @IsArray() @ArrayMaxSize(10) @IsString({ each: true }) tags!: string[];
   @IsArray() @ArrayMaxSize(10) @IsString({ each: true }) assetIds!: string[];

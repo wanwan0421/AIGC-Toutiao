@@ -1,6 +1,9 @@
 import { Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../infra/prisma/prisma.service";
+import { AI_PROMPT_NAMES } from "./prompt-names";
+
+const MATERIAL_SCENES: string[] = [AI_PROMPT_NAMES.directGenerate, AI_PROMPT_NAMES.creativeChat];
 
 @Injectable()
 export class AiCallLogService {
@@ -35,6 +38,7 @@ export class AiCallLogService {
     success: boolean;
     errorMessage?: string;
   }) {
+    const containsPrivateMaterials = MATERIAL_SCENES.includes(data.scene);
     return this.prisma.aiCallLog.create({
       data: {
         scene: data.scene,
@@ -49,8 +53,8 @@ export class AiCallLogService {
         conversationId: data.conversationId,
         promptKey: data.promptKey,
         promptVersionId: data.promptVersionId,
-        inputSummary: data.inputSummary,
-        output: data.output as Prisma.InputJsonValue | undefined,
+        inputSummary: containsPrivateMaterials ? undefined : data.inputSummary,
+        output: containsPrivateMaterials ? undefined : data.output as Prisma.InputJsonValue | undefined,
         latencyMs: data.latencyMs,
         inputTokens: data.inputTokens,
         cachedInputTokens: data.cachedInputTokens,
@@ -63,26 +67,26 @@ export class AiCallLogService {
         rebuildReason: data.rebuildReason,
         traceEnabled: data.traceEnabled,
         success: data.success,
-        errorMessage: data.errorMessage,
+        errorMessage: containsPrivateMaterials && data.errorMessage ? "creative model call failed" : data.errorMessage,
       },
     });
   }
 
-  attachResult(
+  async attachResult(
     id: string,
     output: unknown,
     validation?: { success: boolean; errorMessage?: string }
   ) {
+    if (validation) {
+      await this.prisma.aiCallLog.updateMany({
+        where: { id },
+        data: { success: validation.success, errorMessage: validation.errorMessage ?? null },
+      });
+    }
     return this.prisma.aiCallLog.updateMany({
-      where: { id },
+      where: { id, scene: { notIn: MATERIAL_SCENES } },
       data: {
         output: output as Prisma.InputJsonValue,
-        ...(validation
-          ? {
-              success: validation.success,
-              errorMessage: validation.errorMessage ?? null,
-            }
-          : {}),
       },
     });
   }

@@ -1,3 +1,6 @@
+export * from "./article-length";
+export * from "./writing-style-profile";
+
 export enum ContentStatus {
   Draft = "draft",
   PendingReview = "pending_review",
@@ -173,7 +176,9 @@ export enum AiJobType {
   ModerationContentRun = "moderation_content_run",
   ModerationTextRun = "moderation_text_run",
   ComplianceRewrite = "compliance_rewrite",
-  PromptEvalRun = "prompt_eval_run"
+  PromptEvalRun = "prompt_eval_run",
+  WritingSkillBuild = "writing_skill_build",
+  WritingSkillRefresh = "writing_skill_refresh"
 }
 
 export enum AuditRiskLevel {
@@ -486,7 +491,18 @@ export interface CreativeChatRequest {
   currentTitle?: string;
   currentBody?: string;
   selectedText?: string;
+  materialNotes?: string;
+  attachmentAssetIds?: string[];
+  materialAssetIds?: string[];
+  referenceContentIds?: string[];
+  writingStyle?: WritingStyleSelection;
+  expectedVersionId?: string;
 }
+
+export type WritingStyleSelection = {
+  mode: "off" | "common" | "topic";
+  topicKey?: string;
+};
 
 export interface CreativeChatDone {
   conversationId: string;
@@ -541,6 +557,14 @@ export interface DirectGenerateRequest {
   style?: string;
   viewpoint?: string;
   materialNotes?: string;
+  attachmentAssetIds?: string[];
+  materialAssetIds?: string[];
+  referenceContentIds?: string[];
+  writingStyle?: WritingStyleSelection;
+  expectedVersionId?: string;
+  /** Server-derived, frozen profile context. Public job payload validation rejects client input for this field. */
+  writingStyleContext?: string;
+  /** Legacy image attachment field; new clients use attachmentAssetIds. */
   assets?: string[];
 }
 
@@ -641,6 +665,8 @@ export interface ContentWorkflowState {
   content: ContentSummary;
   latestAudit?: ContentWorkflowAuditState;
   latestQuality?: ContentWorkflowQualityState;
+  currentAuditValid: boolean;
+  currentAuditBlockReason?: string;
   canScoreQuality: boolean;
   qualityBlockReason?: string;
   canPublish: boolean;

@@ -3,6 +3,12 @@ import { AiJobType } from "@aicp/shared";
 import { WorkflowJobService } from "./workflow-job.service";
 
 describe("WorkflowJobService", () => {
+  it("rejects a public request that tries to create the internal writing-skill build job", async () => {
+    const service = new WorkflowJobService({} as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never);
+    await expect(service.create({ userId: "user-1", type: AiJobType.WritingSkillBuild, payload: { sourceContentIds: ["a", "b", "c"] } }))
+      .rejects.toThrow("writing-skill build jobs are internal");
+  });
+
   it("rejects a content-scoped job before queueing when the article is missing or belongs to another user", async () => {
     const consume = vi.fn(async () => undefined);
     const dispatchJob = vi.fn(async () => true);

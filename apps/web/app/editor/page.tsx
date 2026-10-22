@@ -1,10 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
+import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
+  ARTICLE_BODY_MAX_LENGTH,
+  ARTICLE_TITLE_MAX_LENGTH,
   AiJobType,
   ContentStatus,
+  countArticleCharacters,
   type AiJobEvent,
   type AiJobSnapshot,
   type AuditResult,
@@ -24,12 +28,16 @@ import {
   type QualityScoreResult,
   type SelectionRewriteResult,
   type TitleGenerateResult,
+  type WritingStyleProfile,
+  type WritingStyleSelection,
 } from "@aicp/shared";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   attachCreativeConversation,
+  buildWritingSkill,
   commitAiJobResult,
+  confirmWritingSkill,
   createContent,
   deleteAsset,
   deleteContent,
@@ -41,7 +49,10 @@ import {
   getCreativeConversations,
   getCreativeImageConfigStatus,
   getDraft,
+  getAiJob,
   getOfficialTopics,
+  getEligibleWritingSkillContents,
+  getWritingSkill,
   postNearbyLocations,
   publishContent,
   recoverAiJobs,
@@ -55,6 +66,11 @@ import {
   updateContent,
   uploadAsset,
 } from "../../lib/api";
+
+const writingStyleFields: Array<[keyof WritingStyleProfile["common"], string]> = [
+  ["structure", "文章结构"], ["opening", "开头方式"], ["transitions", "段落过渡"], ["ending", "结尾方式"],
+  ["tone", "语气"], ["viewpoint", "叙述视角"], ["diction", "措辞习惯"],
+];
 import {
   clearStoredAiJobPendingCommit,
   listStoredAiJobs,
@@ -62,6 +78,7 @@ import {
 } from "../../lib/ai-job-session";
 import { useAiJob } from "../../lib/use-ai-job";
 import { useDraftAutosave, type EditorDraftCache } from "./use-draft-autosave";
+import { CoverCropDialog } from "./cover-crop-dialog";
 import { isAiJobInEditorScope } from "../../lib/editor-ai-job-scope";
 import {
   RichTextEditor,
@@ -82,6 +99,7 @@ import {
   ImagePlus,
   MapPin,
   MessageCircle,
+  Plus,
   Search,
   ShieldCheck,
   Smile,
@@ -125,6 +143,7 @@ type ChatMessage = {
   role: "user" | "assistant";
   kind?: "chat" | "skill_status";
   content: string;
+  attachments?: string[];
   insertable?: boolean;
 };
 
@@ -553,7 +572,26 @@ function isImageAsset(asset: AssetSummary) {
 }
 
 function isTextAsset(asset: AssetSummary) {
-  return asset.mimeType.startsWith("text/");
+  return asset.mimeType.startsWith("text/") || asset.mimeType === "application/markdown"
+    || isGenerationDocument(asset);
+}
+
+function isGenerationDocument(asset: AssetSummary) {
+  const mimeType = asset.mimeType.toLowerCase();
+  if (/\.txt$/i.test(asset.fileName)) return mimeType === "text/plain";
+  if (/\.(?:md|markdown)$/i.test(asset.fileName)) {
+    return ["text/plain", "text/markdown", "text/x-markdown", "application/markdown"].includes(mimeType);
+  }
+  if (/\.pdf$/i.test(asset.fileName)) return mimeType === "application/pdf";
+  if (/\.docx$/i.test(asset.fileName)) return mimeType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+  return false;
+}
+
+function generationMaterialIds(items: AssetSummary[]) {
+  return {
+    attachmentAssetIds: items.filter(isImageAsset).map((item) => item.id),
+    materialAssetIds: items.filter(isGenerationDocument).map((item) => item.id),
+  };
 }
 
 function locationErrorMessage(error: unknown, fallback: string) {
@@ -651,6 +689,12 @@ function payloadBoolean(payload: Record<string, unknown>, key: string, fallback:
 function payloadStringArray(payload: Record<string, unknown>, key: string, fallback: string[]) {
   const value = payload[key];
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : fallback;
+}
+
+function payloadWritingStyleMode(payload: Record<string, unknown>): "off" | "common" | "topic" {
+  return payload.writingStyleMode === "common" || payload.writingStyleMode === "topic"
+    ? payload.writingStyleMode
+    : "off";
 }
 
 function payloadGeneratedImageCandidates(payload: Record<string, unknown>) {
@@ -760,12 +804,44 @@ function riskSeverityClass(severity: AuditRiskItem["severity"]) {
 }
 
 function textFromHtml(html: string) {
+  // Match the server's rich-text plain-text form: two line breaks between
+  // visible blocks, one per <br>. Repeated hard breaks must survive.
+  const markers: string[] = [];
+  for (let code = 0xe000; code <= 0xf8ff && markers.length < 2; code += 1) {
+    const marker = String.fromCharCode(code);
+    if (!html.includes(marker)) markers.push(marker);
+  }
+  if (markers.length !== 2) throw new Error("No available article separator markers");
+  const [blockMarker, breakMarker] = markers;
+  const withMarkers = html
+    .replace(/<br\s*\/?\s*>/gi, breakMarker)
+    .replace(/<\/(?:p|h[1-6]|blockquote|pre|li|tr|th|td|figcaption)>/gi, `$&${blockMarker}`);
+  let text: string;
   if (typeof document !== "undefined") {
     const container = document.createElement("div");
-    container.innerHTML = html;
-    return container.textContent ?? "";
+    container.innerHTML = withMarkers;
+    container.querySelectorAll("script,style").forEach((node) => node.remove());
+    text = container.textContent ?? "";
+  } else {
+    text = withMarkers.replace(/<[^>]*>/g, "");
   }
-  return html.replace(/<[^>]*>/g, "");
+  const blocks = text.split(blockMarker);
+  if (blocks.at(-1) === "") blocks.pop();
+  return blocks.join("\n\n").replaceAll(breakMarker, "\n");
+}
+
+function titleForSave(title: string): string {
+  return title.trim() ? title : "未命名草稿";
+}
+
+function articleLengthBlockReason(title: string, body: string): string | null {
+  const titleCount = countArticleCharacters(title);
+  const bodyCount = countArticleCharacters(body);
+  const problems = [
+    titleCount > ARTICLE_TITLE_MAX_LENGTH ? `标题 ${titleCount}/${ARTICLE_TITLE_MAX_LENGTH} 字` : null,
+    bodyCount > ARTICLE_BODY_MAX_LENGTH ? `正文 ${bodyCount}/${ARTICLE_BODY_MAX_LENGTH} 字` : null,
+  ].filter(Boolean);
+  return problems.length ? `${problems.join("、")}，请缩短后保存` : null;
 }
 
 function htmlHasMedia(html: string) {
@@ -803,6 +879,13 @@ function snapshotFromCloudDraft(draft: CloudDraft, detail: ContentDetailForDraft
     coverMode: payloadCoverMode(payload, fallbackCoverMode),
     assetIds: payloadStringArray(payload, "assetIds", detail.assets.map((item) => item.id)),
     briefTheme: payloadString(payload, "briefTheme"),
+    materialNotes: payloadString(payload, "materialNotes"),
+    briefMaterialIds: payloadStringArray(payload, "briefMaterialIds", []),
+    chatMaterialIds: payloadStringArray(payload, "chatMaterialIds", []),
+    referenceContentIds: payloadStringArray(payload, "referenceContentIds", []),
+    writingStyleMode: payloadWritingStyleMode(payload),
+    writingTopicKey: payloadString(payload, "writingTopicKey"),
+    conversationId: payloadString(payload, "conversationId") || undefined,
     audience: payloadString(payload, "audience"),
     style: payloadString(payload, "style"),
     viewpoint: payloadString(payload, "viewpoint"),
@@ -824,6 +907,9 @@ export default function EditorPage() {
   const editorRef = useRef<RichTextEditorHandle | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const textInputRef = useRef<HTMLInputElement | null>(null);
+  const generationInputRef = useRef<HTMLInputElement | null>(null);
+  const generationUploadTargetRef = useRef<"brief" | "chat">("brief");
+  const generationAttachedImageIdsRef = useRef(new Set<string>());
   const streamLockRef = useRef(false);
   const chatJobIdRef = useRef<string | null>(null);
   const editorReadyRef = useRef(false);
@@ -853,6 +939,56 @@ export default function EditorPage() {
   const [audience, setAudience] = useState("");
   const [style, setStyle] = useState("");
   const [viewpoint, setViewpoint] = useState("");
+  const [materialNotes, setMaterialNotes] = useState("");
+  const [briefMaterials, setBriefMaterials] = useState<AssetSummary[]>([]);
+  const [chatMaterials, setChatMaterials] = useState<AssetSummary[]>([]);
+  const [referenceContentIds, setReferenceContentIds] = useState<string[]>([]);
+  const [referenceChoices, setReferenceChoices] = useState<ContentSummary[]>([]);
+  const [referencePickerOpen, setReferencePickerOpen] = useState(false);
+  const [invalidReferenceIds, setInvalidReferenceIds] = useState<string[]>([]);
+  const [invalidBriefMaterialIds, setInvalidBriefMaterialIds] = useState<string[]>([]);
+  const [invalidChatMaterialIds, setInvalidChatMaterialIds] = useState<string[]>([]);
+  const [writingSkill, setWritingSkill] = useState<any>(null);
+  const [writingStyleMode, setWritingStyleMode] = useState<WritingStyleSelection["mode"]>("off");
+  const [writingTopicKey, setWritingTopicKey] = useState("");
+  const [writingStyleMenuOpen, setWritingStyleMenuOpen] = useState(false);
+  const writingStyleMenuRef = useRef<HTMLDivElement | null>(null);
+  const [writingStyleSetupOpen, setWritingStyleSetupOpen] = useState(false);
+  const [writingStyleSetupBusy, setWritingStyleSetupBusy] = useState(false);
+  const [writingStyleItems, setWritingStyleItems] = useState<any[]>([]);
+  const [writingStylePage, setWritingStylePage] = useState(1);
+  const [writingStyleTotal, setWritingStyleTotal] = useState(0);
+  const [writingStyleSelectedIds, setWritingStyleSelectedIds] = useState<string[]>([]);
+  const [writingStyleCandidate, setWritingStyleCandidate] = useState<WritingStyleProfile | null>(null);
+  useEffect(() => {
+    let current = true;
+    void getWritingSkill().then((value) => { if (current) setWritingSkill(value); }).catch(() => undefined);
+    return () => { current = false; };
+  }, []);
+  useEffect(() => {
+    if (!writingStyleSetupOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setWritingStyleSetupOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [writingStyleSetupOpen]);
+  useEffect(() => {
+    if (!writingStyleMenuOpen) return;
+    const closeMenu = (event: MouseEvent) => {
+      if (!writingStyleMenuRef.current?.contains(event.target as Node)) setWritingStyleMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setWritingStyleMenuOpen(false);
+    };
+    document.addEventListener("mousedown", closeMenu);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeMenu);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [writingStyleMenuOpen]);
+  const [generationMenuTarget, setGenerationMenuTarget] = useState<"brief" | "chat" | null>(null);
   const [prepTab, setPrepTab] = useState<PrepTab>("brief");
   const [chatInput, setChatInput] = useState("");
   const [conversationId, setConversationId] = useState<string | undefined>();
@@ -894,9 +1030,12 @@ export default function EditorPage() {
   const [originalStatement, setOriginalStatement] = useState(false);
   const [contentStatement, setContentStatement] = useState("无声明");
   const [assets, setAssets] = useState<AssetSummary[]>([]);
-  const [assetPanel, setAssetPanel] = useState<null | "image" | "text">(null);
+  const [assetPanel, setAssetPanel] = useState<null | "image" | "text" | "generation-brief" | "generation-chat">(null);
   const [coverPickerOpen, setCoverPickerOpen] = useState(false);
+  const [coverCropFile, setCoverCropFile] = useState<File | null>(null);
   const [isUploadingAsset, setIsUploadingAsset] = useState(false);
+  const [isUploadingCover, setIsUploadingCover] = useState(false);
+  const [isUploadingGenerationMaterials, setIsUploadingGenerationMaterials] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [previewHtml, setPreviewHtml] = useState("");
   const [lastContentSummary, setLastContentSummary] = useState<ContentSummary | null>(null);
@@ -918,7 +1057,10 @@ export default function EditorPage() {
 
   const imageAssets = useMemo(() => assets.filter(isImageAsset), [assets]);
   const textAssets = useMemo(() => assets.filter(isTextAsset), [assets]);
-  const wordCount = useMemo(() => body.replace(/\s/g, "").length, [body]);
+  const titleCount = useMemo(() => countArticleCharacters(title), [title]);
+  const bodyCount = useMemo(() => countArticleCharacters(body), [body]);
+  const titleTooLong = titleCount > ARTICLE_TITLE_MAX_LENGTH;
+  const bodyTooLong = bodyCount > ARTICLE_BODY_MAX_LENGTH;
   const visibleReviewRiskItems = useMemo(
     () => (reviewResult?.audit.riskItems ?? []).filter((item) => item.severity !== "low" && !processedRiskItemIds.has(item.id)),
     [reviewResult, processedRiskItemIds],
@@ -980,13 +1122,35 @@ export default function EditorPage() {
   ]);
   const canRunQualityReview =
     workflowState?.canScoreQuality ?? Boolean(editingStatus && qualityReadyStatuses.has(editingStatus));
+  const auditPassedForCurrentContent = Boolean(
+    reviewResult?.audit.passed && (workflowState?.currentAuditValid ?? true),
+  );
+  const auditResultIsStale = Boolean(
+    reviewResult?.audit.passed && workflowState && !workflowState.currentAuditValid,
+  );
   const localCanPublishContent =
     editingStatus === ContentStatus.Approved ||
     editingStatus === ContentStatus.Updated ||
     editingStatus === ContentStatus.PendingReview ||
     editingStatus === ContentStatus.Scheduled;
-  const canPublishContent = Boolean(workflowState?.canPublish || localCanPublishContent);
+  // Once the server has supplied workflow state, its audit/hash decision is
+  // authoritative. Falling back to the local status here could show Publish
+  // as enabled while quality review correctly remains blocked.
+  const canPublishContent = workflowState ? workflowState.canPublish : localCanPublishContent;
   const publishBlockReason = workflowState?.publishBlockReason ?? "内容需要先通过安全审核后才能发布";
+  const qualityBlockMessage = (() => {
+    switch (workflowState?.qualityBlockReason) {
+      case "CONTENT_NOT_REVIEWED": return "请先对当前内容完成安全审核。";
+      case "CONTENT_REJECTED": return "当前内容的安全审核未通过，请修改后重新审核。";
+      case "CONTENT_CHANGED_AFTER_REVIEW": return "审核后内容或图片素材发生变化，请重新进行安全审核。";
+      case "IMAGE_REVIEW_REQUIRED": return "当前作品中的图片尚未通过审核，请重新进行内容审核。";
+      case "IMAGE_REVIEW_REJECTED": return "当前作品中的图片审核未通过，请更换图片后重新审核。";
+      case "CONTENT_STATUS_NOT_SCORABLE": return "当前作品状态暂不支持质量评估。";
+      default: return workflowState?.qualityBlockReason
+        ? "当前内容暂不可进行质量评估，请重新审核后重试。"
+        : "";
+    }
+  })();
   const [editorHtmlContent, setEditorHtmlContent] = useState(""); // 当 editorRef 还没挂载时，把 HTML 存在状态里
   const [editorJsonContent, setEditorJsonContent] = useState<Record<string, unknown> | null>(null);
   const [editorResetKey, setEditorResetKey] = useState(0);
@@ -994,6 +1158,7 @@ export default function EditorPage() {
 
   const {
     isOnline,
+    isCloudSaving,
     localSaveError,
     scheduleLocalDraftSave,
     scheduleCloudAutosave,
@@ -1005,7 +1170,12 @@ export default function EditorPage() {
     snapshotRef,
     draftStorageKey,
     ensureContentForDraft,
-    isMeaningful: (data) => Boolean(data.title.trim() || data.body.trim() || editorRef.current?.getText().trim()),
+    isMeaningful: (data) => Boolean(
+      data.title.trim() || data.body.trim() || editorRef.current?.getText().trim()
+      || data.materialNotes?.trim() || data.briefMaterialIds?.length || data.chatMaterialIds?.length || data.referenceContentIds?.length
+      || data.writingStyleMode && data.writingStyleMode !== "off",
+    ),
+    cloudSyncBlockReason: (data) => articleLengthBlockReason(data.title, data.body),
     onStatus: setStatusMessage,
     onCloudSaved: loadDraftCards,
   });
@@ -1031,6 +1201,27 @@ export default function EditorPage() {
   }, [generatedImageCandidates]);
 
   useEffect(() => {
+    if (!generationMenuTarget) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      const isInsideMenu = event.composedPath().some(
+        (target) => target instanceof Element && target.hasAttribute("data-generation-file-menu"),
+      );
+      if (!isInsideMenu) {
+        setGenerationMenuTarget(null);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setGenerationMenuTarget(null);
+    };
+    document.addEventListener("pointerdown", closeOnOutsideClick, true);
+    document.addEventListener("keydown", closeOnEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsideClick, true);
+      document.removeEventListener("keydown", closeOnEscape, true);
+    };
+  }, [generationMenuTarget]);
+
+  useEffect(() => {
     // Switching works detaches local subscriptions only. Durable jobs remain
     // active and are discoverable from the server when the user returns.
     stopStreaming();
@@ -1041,6 +1232,10 @@ export default function EditorPage() {
     setReviewResult(null);
     setReviewRewrite(null);
     setQualityResult(null);
+    setBriefMaterials([]);
+    setChatMaterials([]);
+    setGenerationMenuTarget(null);
+    generationAttachedImageIdsRef.current.clear();
   }, [editingContentId, stopStreaming]);
 
   useEffect(() => {
@@ -1196,8 +1391,7 @@ export default function EditorPage() {
   }
 
   function editorText() {
-    const domText = editorRef.current?.getText().trim();
-    return domText || bodyRef.current.trim();
+    return editorRef.current?.getHTML() ? editorRef.current.getText() : bodyRef.current;
   }
 
   function editorJson() {
@@ -1293,11 +1487,18 @@ export default function EditorPage() {
       audience,
       style,
       viewpoint,
+      materialNotes,
       selectedTopics,
       coverPreview,
       coverAssetId: resolveCoverAssetId(),
       coverMode,
       assetIds: buildContentAssetIds(),
+      briefMaterialIds: briefMaterials.map((asset) => asset.id),
+      chatMaterialIds: chatMaterials.map((asset) => asset.id),
+      referenceContentIds,
+      writingStyleMode,
+      writingTopicKey,
+      conversationId,
       publishTimeMode,
       scheduledAt,
       selectedLocation,
@@ -1323,6 +1524,13 @@ export default function EditorPage() {
     setAudience(data.audience ?? "");
     setStyle(data.style ?? "");
     setViewpoint(data.viewpoint ?? "");
+    setMaterialNotes(data.materialNotes ?? "");
+    setWritingStyleMode(data.writingStyleMode ?? "off");
+    setWritingTopicKey(data.writingTopicKey ?? "");
+    setConversationId(data.conversationId || undefined);
+    void restoreGenerationMaterials(data.briefMaterialIds ?? [], "brief");
+    void restoreGenerationMaterials(data.chatMaterialIds ?? [], "chat");
+    void restoreReferenceContents(data.referenceContentIds ?? []);
     setSelectedTopics(normalizeTopicList(data.selectedTopics ?? []));
     coverUserTouchedRef.current = false;
     coverPreviewRef.current = data.coverPreview ?? "";
@@ -1345,12 +1553,14 @@ export default function EditorPage() {
     const html = content.html ?? "";
     const json = (content.json && typeof content.json === "object" ? content.json : null) as Record<string, unknown> | null;
     const nextText = content.text ?? textFromHtml(html);
-    setEditorHtmlContent(html);
-    setEditorJsonContent(json);
     setEditorResetKey((value) => value + 1);
     editorRef.current?.setContent(content);
-    bodyRef.current = nextText;
-    setBody(nextText);
+    const editorValue = editorRef.current?.getValue();
+    const parsed = editorValue?.html ? editorValue : null;
+    setEditorHtmlContent(parsed?.html ?? html);
+    setEditorJsonContent((parsed?.json as Record<string, unknown> | undefined) ?? json);
+    bodyRef.current = parsed?.text ?? nextText;
+    setBody(bodyRef.current);
   }
 
   function writeEditorMarkup(html: string, nextBody?: string) {
@@ -1404,7 +1614,6 @@ export default function EditorPage() {
           })),
         );
       } else {
-        setConversationId(undefined);
         setChatMessages([]);
       }
 
@@ -1519,6 +1728,20 @@ export default function EditorPage() {
     setEditingStatus(null);
     setTitle("");
     setBody("");
+    setBriefTheme("");
+    setAudience("");
+    setStyle("");
+    setViewpoint("");
+    setMaterialNotes("");
+    setBriefMaterials([]);
+    setChatMaterials([]);
+    setInvalidBriefMaterialIds([]);
+    setInvalidChatMaterialIds([]);
+    setReferenceContentIds([]);
+    setInvalidReferenceIds([]);
+    setReferencePickerOpen(false);
+    setWritingStyleMode("off");
+    setWritingTopicKey("");
     setSelectedTopics([]);
     setAssetIds([]);
     clearCover();
@@ -1539,6 +1762,7 @@ export default function EditorPage() {
 
   async function loadDraftCards() {
     const items = await getContents().catch(() => []);
+    setReferenceChoices(items.filter((item) => item.status === "published"));
     const draftItems = items
       .filter((item) => editableDraftStatuses.has(item.status))
       .slice(0, 8);
@@ -1573,6 +1797,13 @@ export default function EditorPage() {
     if (!targetId) return null;
     const state = await getContentWorkflowState(targetId);
     applyWorkflowState(state);
+    if (state.latestAudit?.audit.passed && !state.currentAuditValid) {
+      setStatusMessage(
+        state.currentAuditBlockReason === "IMAGE_REVIEW_REQUIRED"
+          ? "文字审核通过，但当前作品仍有图片未通过审核；请重新进行内容审核。"
+          : "上次审核结果不再对应当前内容或图片，请重新进行内容审核。",
+      );
+    }
     return state;
   }
 
@@ -1690,8 +1921,10 @@ export default function EditorPage() {
   // 内容持久化的总出口，负责把编辑器当前状态的内容保存到云端，并返回最新的内容记录
   async function persistContent() {
     const nextBody = editorText();
+    const lengthError = articleLengthBlockReason(title, nextBody);
+    if (lengthError) throw new Error(lengthError);
     const payload = {
-      title: title.trim() || "未命名草稿",
+      title: titleForSave(title),
       body: nextBody,
       bodyHtml: editorHtml(),
       bodyJson: editorJson(),
@@ -1728,7 +1961,7 @@ export default function EditorPage() {
 
     // 如果没有 contentId，说明是新草稿，先创建一个内容记录再进行后续的自动保存，避免后续自动保存时频繁创建内容记录
     const created = await createContent({
-      title: data.title.trim() || "未命名草稿",
+      title: titleForSave(data.title),
       body: data.body,
       bodyHtml: data.html,
       bodyJson: data.json,
@@ -1821,6 +2054,274 @@ export default function EditorPage() {
   function openTextUpload() {
     uploadIntentRef.current = "library";
     textInputRef.current?.click();
+  }
+
+  function openGenerationUpload(target: "brief" | "chat") {
+    setGenerationMenuTarget(null);
+    generationUploadTargetRef.current = target;
+    generationInputRef.current?.click();
+  }
+
+  function openGenerationLibrary(target: "brief" | "chat") {
+    setGenerationMenuTarget(null);
+    setAssetPanel(target === "brief" ? "generation-brief" : "generation-chat");
+    void loadAssets();
+  }
+
+  async function restoreGenerationMaterials(ids: string[], target: "brief" | "chat") {
+    const uniqueIds = Array.from(new Set(ids.filter((id) => typeof id === "string" && id.length > 0)));
+    if (!uniqueIds.length) {
+      if (target === "brief") { setBriefMaterials([]); setInvalidBriefMaterialIds([]); }
+      else { setChatMaterials([]); setInvalidChatMaterialIds([]); }
+      return;
+    }
+    try {
+      const currentAssets = await getAssets();
+      setAssets(currentAssets);
+      const byId = new Map(currentAssets.map((asset) => [asset.id, asset]));
+      const restored: AssetSummary[] = [];
+      const invalid: string[] = [];
+      for (const id of uniqueIds) {
+        const asset = byId.get(id);
+        const document = asset && isGenerationDocument(asset);
+        const image = asset && isImageAsset(asset);
+        const hasStoredSource = asset?.source === "uploaded" && typeof asset.metadata?.storageKey === "string";
+        const validAudit = asset?.auditStatus === "approved" || (image && asset?.auditStatus === "pending");
+        if (!asset || (!document && !image) || (document && !hasStoredSource) || (document && asset.auditStatus !== "approved") || !validAudit) {
+          invalid.push(asset?.fileName ?? `素材 ${id}`);
+          continue;
+        }
+        restored.push(asset);
+      }
+      if (target === "brief") { setBriefMaterials(restored); setInvalidBriefMaterialIds(invalid); }
+      else { setChatMaterials(restored); setInvalidChatMaterialIds(invalid); }
+    } catch {
+      const invalid = uniqueIds.map((id) => `素材 ${id}`);
+      if (target === "brief") { setBriefMaterials([]); setInvalidBriefMaterialIds(invalid); }
+      else { setChatMaterials([]); setInvalidChatMaterialIds(invalid); }
+    }
+  }
+
+  async function restoreReferenceContents(ids: string[]) {
+    if (!ids.length) {
+      setReferenceContentIds([]);
+      setInvalidReferenceIds([]);
+      return;
+    }
+    try {
+      const current = await getContents();
+      const published = current.filter((item) => item.status === "published");
+      setReferenceChoices(published);
+      const available = new Set(published.map((item) => item.id));
+      setReferenceContentIds(ids.filter((id) => available.has(id)).slice(0, 5));
+      setInvalidReferenceIds(ids.filter((id) => !available.has(id)));
+    } catch {
+      setReferenceContentIds([]);
+      setInvalidReferenceIds(ids);
+    }
+  }
+
+  function toggleReferenceContent(id: string) {
+    if (referenceContentIds.includes(id)) setReferenceContentIds((items) => items.filter((item) => item !== id));
+    else if (referenceContentIds.length >= 5) {
+      setStatusMessage("涓€娆℃渶澶氬弬鑰?5 绡囧凡鍙戝竷鏂囩珷");
+      return;
+    } else setReferenceContentIds((items) => [...items, id]);
+    scheduleLocalDraftSave();
+    scheduleCloudAutosave();
+  }
+
+  function temporaryReferenceControl() {
+    return (
+      <div className="relative">
+        <button type="button" onClick={() => setReferencePickerOpen((open) => !open)} className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:border-slate-300">
+          参考旧文{referenceContentIds.length ? ` · ${referenceContentIds.length}` : ""}
+        </button>
+        {referencePickerOpen ? (
+          <div className="absolute bottom-full left-0 z-40 mb-2 max-h-64 w-72 overflow-y-auto rounded-xl border border-slate-200 bg-white p-2 shadow-xl">
+            {referenceChoices.length ? referenceChoices.map((item) => (
+              <label key={item.id} className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-2 text-xs text-slate-700 hover:bg-slate-50">
+                <input type="checkbox" checked={referenceContentIds.includes(item.id)} onChange={() => toggleReferenceContent(item.id)} disabled={!referenceContentIds.includes(item.id) && referenceContentIds.length >= 5} className="mt-0.5 accent-[#ff2442]" />
+                <span className="line-clamp-2">{item.title || "未命名作品"}</span>
+              </label>
+            )) : <p className="px-2 py-3 text-xs text-slate-400">没有可参考的已发布文章</p>}
+            {invalidReferenceIds.map((id) => <div key={id} className="flex items-center justify-between gap-2 px-2 py-2 text-xs text-amber-700"><span>已失效的参考文章</span><button type="button" onClick={() => { setInvalidReferenceIds((items) => items.filter((item) => item !== id)); scheduleCloudAutosave(); }} aria-label="移除失效参考文章">移除</button></div>)}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
+  function removeInvalidGenerationMaterial(target: "brief" | "chat", label: string) {
+    if (target === "brief") setInvalidBriefMaterialIds((items) => items.filter((item) => item !== label));
+    else setInvalidChatMaterialIds((items) => items.filter((item) => item !== label));
+    scheduleLocalDraftSave();
+    scheduleCloudAutosave();
+  }
+
+  function addGenerationAsset(target: "brief" | "chat", asset: AssetSummary) {
+    const isDocument = isGenerationDocument(asset);
+    const isImage = isImageAsset(asset);
+    const selected = target === "brief" ? briefMaterials : chatMaterials;
+    if (!isDocument && !isImage) {
+      setStatusMessage(`文件类型不可用于生成：${asset.fileName}`);
+      return false;
+    }
+    if (isDocument && (asset.source !== "uploaded" || typeof asset.metadata?.storageKey !== "string")) {
+      setStatusMessage(`文档没有可读取的原始上传文件：${asset.fileName}`);
+      return false;
+    }
+    if (asset.auditStatus !== "approved" && !(isImage && asset.auditStatus === "pending")) {
+      setStatusMessage(`文件尚未通过审核：${asset.fileName}`);
+      return false;
+    }
+    if (selected.some((item) => item.id === asset.id)) return true;
+    if (isDocument && selected.filter(isGenerationDocument).length >= 3) {
+      setStatusMessage("每次最多选择 3 份文档");
+      return false;
+    }
+    if (target === "brief") setBriefMaterials((items) => [...items, asset]);
+    else setChatMaterials((items) => [...items, asset]);
+    if (isImage) {
+      if (!assetIds.includes(asset.id)) generationAttachedImageIdsRef.current.add(asset.id);
+      setAssetIds((items) => Array.from(new Set([...items, asset.id])));
+    }
+    scheduleLocalDraftSave();
+    scheduleCloudAutosave();
+    setStatusMessage(`已选择文件：${asset.fileName}`);
+    return true;
+  }
+
+  async function uploadGenerationFiles(files: File[], target: "brief" | "chat") {
+    if (!files.length || isUploadingGenerationMaterials) return;
+    const selected = target === "brief" ? briefMaterials : chatMaterials;
+    let documentCount = selected.filter(isGenerationDocument).length;
+    let uploadedCount = 0;
+    const errors: string[] = [];
+    setIsUploadingGenerationMaterials(true);
+    try {
+      for (const file of files) {
+        const isDocument = /\.(?:txt|md|markdown|pdf|docx)$/i.test(file.name);
+        const isLargeDocument = /\.(?:pdf|docx)$/i.test(file.name);
+        const isImage = /\.(jpe?g|png|webp|gif|avif|bmp)$/i.test(file.name);
+        if (!isDocument && !isImage) {
+          errors.push(`${file.name}：仅支持 TXT、MD 和图片`);
+          continue;
+        }
+        const maxBytes = isLargeDocument ? 10 * 1024 * 1024 : 2 * 1024 * 1024;
+        if (isDocument && file.size > maxBytes) {
+          errors.push(`${file.name}：TXT/MD 文件不能超过 2 MB`);
+          continue;
+        }
+        if (isDocument && documentCount >= 3) {
+          errors.push("每次最多选择 3 份文档");
+          continue;
+        }
+        try {
+          // Generation materials remain user-owned assets. They are linked to
+          // the article only when selected as image attachments.
+          const asset = await uploadAsset({ file });
+          if ((isDocument && !isGenerationDocument(asset)) || (isImage && !isImageAsset(asset))) {
+            errors.push(`${file.name}：上传后的文件类型不匹配`);
+            continue;
+          }
+          setAssets((items) => [asset, ...items.filter((item) => item.id !== asset.id)]);
+          if (isDocument && asset.auditStatus !== "approved") {
+            errors.push(`${file.name}：${asset.auditStatus === "pending" ? "审核中，请通过后从已有文件选择" : "未通过审核，不能用于生成"}`);
+            continue;
+          }
+          if (target === "brief") setBriefMaterials((items) => [...items, asset]);
+          else setChatMaterials((items) => [...items, asset]);
+          if (isDocument) documentCount += 1;
+          if (isImage) {
+            generationAttachedImageIdsRef.current.add(asset.id);
+            setAssetIds((items) => Array.from(new Set([...items, asset.id])));
+          }
+          uploadedCount += 1;
+        } catch (error) {
+          errors.push(`${file.name}：${error instanceof Error ? error.message : "上传失败"}`);
+        }
+      }
+      if (errors.length) setStatusMessage(errors.join("；"));
+      else if (uploadedCount) setStatusMessage(`已添加 ${uploadedCount} 个文件`);
+      if (uploadedCount) {
+        setAssetPanel((current) => current === `generation-${target}` ? null : current);
+        scheduleLocalDraftSave();
+        scheduleCloudAutosave();
+      }
+    } finally {
+      setIsUploadingGenerationMaterials(false);
+    }
+  }
+
+  function removeGenerationMaterial(target: "brief" | "chat", asset: AssetSummary) {
+    if (target === "brief") setBriefMaterials((items) => items.filter((item) => item.id !== asset.id));
+    else setChatMaterials((items) => items.filter((item) => item.id !== asset.id));
+    if (isImageAsset(asset)) {
+      const otherMaterials = target === "brief" ? chatMaterials : briefMaterials;
+      if (generationAttachedImageIdsRef.current.has(asset.id)
+        && !otherMaterials.some((item) => item.id === asset.id)
+        && coverAssetIdRef.current !== asset.id
+        && !editorHtml().includes(asset.url)) {
+        setAssetIds((items) => items.filter((id) => id !== asset.id));
+        generationAttachedImageIdsRef.current.delete(asset.id);
+      }
+    }
+    scheduleLocalDraftSave();
+    scheduleCloudAutosave();
+    setStatusMessage(`已从本次生成移除：${asset.fileName}`);
+  }
+
+  function generationMaterialTags(target: "brief" | "chat") {
+    const selected = target === "brief" ? briefMaterials : chatMaterials;
+    const invalid = target === "brief" ? invalidBriefMaterialIds : invalidChatMaterialIds;
+    if (!selected.length && !invalid.length && !referenceContentIds.length && !invalidReferenceIds.length) return <div>{temporaryReferenceControl()}</div>;
+    return (
+      <div className="flex flex-wrap gap-2" aria-label="已选择的文件">
+        {temporaryReferenceControl()}
+        {selected.map((asset) => (
+          <span key={asset.id} className="inline-flex max-w-full items-center gap-1 rounded-full border border-slate-200 bg-white py-1 pl-2.5 pr-1 text-xs text-slate-700">
+            {isImageAsset(asset) ? <ImagePlus size={13} /> : <FileText size={13} />}
+            <span className="max-w-40 truncate" title={asset.fileName}>{asset.fileName}</span>
+            {asset.auditStatus !== "approved" ? <span className="text-amber-700">{asset.auditStatus === "pending" ? "审核中" : "审核未通过"}</span> : null}
+            <button type="button" onClick={() => removeGenerationMaterial(target, asset)} aria-label={`移除 ${asset.fileName}`} className="rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700">
+              <X size={13} />
+            </button>
+          </span>
+        ))}
+        {invalid.map((label) => (
+          <span key={`invalid-${label}`} className="inline-flex max-w-full items-center gap-1 rounded-full border border-amber-200 bg-amber-50 py-1 pl-2.5 pr-1 text-xs text-amber-800">
+            <FileText size={13} />
+            <span className="max-w-40 truncate" title={label}>{label} · 不可用</span>
+            <button type="button" onClick={() => removeInvalidGenerationMaterial(target, label)} aria-label={`移除不可用素材 ${label}`} className="rounded-full p-1 text-amber-700 hover:bg-amber-100"><X size={13} /></button>
+          </span>
+        ))}
+      </div>
+    );
+  }
+
+  function generationFileButton(target: "brief" | "chat") {
+    return (
+      <div className="relative shrink-0" data-generation-file-menu>
+        <button
+          type="button"
+          onClick={() => setGenerationMenuTarget((current) => current === target ? null : target)}
+          disabled={isUploadingGenerationMaterials || isBusy || target === "chat" && isChatStreaming}
+          aria-label={target === "brief" ? "添加本次生成文件" : "添加聊天文件"}
+          aria-expanded={generationMenuTarget === target}
+          title="添加 TXT/MD 或图片"
+          className={`inline-flex items-center justify-center border border-slate-200 bg-white text-slate-700 hover:border-[#ff2442] hover:text-[#ff2442] disabled:opacity-50 ${target === "brief" ? "size-11 rounded-2xl" : "size-10 rounded-xl"}`}
+        >
+          <Plus size={target === "brief" ? 20 : 19} />
+        </button>
+        {generationMenuTarget === target ? (
+          <div className="absolute bottom-full left-0 z-20 mb-2 w-44 rounded-xl border border-slate-200 bg-white p-1 shadow-lg">
+            <button type="button" onClick={() => openGenerationUpload(target)} className="block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-slate-50">上传文件</button>
+            <button type="button" onClick={() => openGenerationLibrary(target)} className="block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-slate-50">选择已有文件</button>
+          </div>
+        ) : null}
+      </div>
+    );
   }
 
   function registerGeneratedAsset(asset: GeneratedImageAsset, generatedAssetIds: string[]) {
@@ -1983,6 +2484,13 @@ export default function EditorPage() {
       coverMode: data.coverMode,
       assetIds: data.assetIds,
       briefTheme: data.briefTheme,
+      materialNotes: data.materialNotes,
+      briefMaterialIds: data.briefMaterialIds ?? [],
+      chatMaterialIds: data.chatMaterialIds ?? [],
+      referenceContentIds: data.referenceContentIds ?? [],
+      writingStyleMode: data.writingStyleMode ?? "off",
+      writingTopicKey: data.writingTopicKey ?? "",
+      conversationId: data.conversationId ?? "",
       audience: data.audience,
       style: data.style,
       viewpoint: data.viewpoint,
@@ -2093,6 +2601,8 @@ export default function EditorPage() {
               ...current,
               content: approved.content,
               latestQuality: { ...approved.quality, scoredAt: new Date().toISOString() },
+              currentAuditValid: true,
+              currentAuditBlockReason: undefined,
               canScoreQuality: true,
               qualityBlockReason: undefined,
               canPublish:
@@ -2147,7 +2657,7 @@ export default function EditorPage() {
         slotId: asset.slotId,
       }))
     );
-    writeEditorMarkup(rendered.html, rendered.bodyMarkdown);
+    writeEditorMarkup(rendered.html);
 
     candidates.push(
       ...rendered.unplaced.map((item) =>
@@ -2186,13 +2696,114 @@ export default function EditorPage() {
   }
 
   // 左侧 AI 一键生成初稿：只使用创作简报字段，右侧对话入口不再复用这个直接生成函数。
-  async function runBriefDraftSkill() {
+  async function openWritingStyleSetup() {
+    setWritingStyleSetupOpen(true);
+    setWritingStyleCandidate(null);
+    setWritingStyleSelectedIds([]);
+    setWritingStylePage(1);
+    setWritingStyleSetupBusy(true);
+    try {
+      const page = await getEligibleWritingSkillContents(1, 20);
+      setWritingStyleItems(page.items ?? []);
+      setWritingStyleTotal(page.total ?? 0);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "加载可选文章失败");
+    } finally {
+      setWritingStyleSetupBusy(false);
+    }
+  }
+
+  async function loadWritingStylePage(pageNumber: number) {
+    setWritingStyleSetupBusy(true);
+    try {
+      const page = await getEligibleWritingSkillContents(pageNumber, 20);
+      setWritingStyleItems(page.items ?? []);
+      setWritingStyleTotal(page.total ?? 0);
+      setWritingStylePage(pageNumber);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "加载可选文章失败");
+    } finally {
+      setWritingStyleSetupBusy(false);
+    }
+  }
+
+  async function buildWritingStyleCandidate() {
+    if (writingStyleSelectedIds.length < 3 || writingStyleSelectedIds.length > 20 || writingStyleSetupBusy) return;
+    setWritingStyleSetupBusy(true);
+    setStatusMessage("正在分析你选择的文章…");
+    try {
+      const created = await buildWritingSkill(writingStyleSelectedIds);
+      let job = created;
+      for (let attempt = 0; attempt < 1200; attempt += 1) {
+        if (job.status === "succeeded") break;
+        if (job.status === "failed" || job.status === "cancelled") throw new Error(job.errorMessage || "写作风格生成失败");
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        job = await getAiJob(created.id);
+      }
+      if (job.status !== "succeeded") throw new Error("生成时间较长，请稍后重试");
+      const result = job.result as any;
+      setWritingStyleCandidate(result.candidateVersion.profile as WritingStyleProfile);
+      setWritingSkill(await getWritingSkill());
+      setStatusMessage("候选写法已生成。检查并编辑后确认，即可用于本次创作。");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "写作风格生成失败");
+    } finally {
+      setWritingStyleSetupBusy(false);
+    }
+  }
+
+  async function confirmWritingStyleAndGenerate() {
+    const candidateVersion = writingSkill?.candidateVersion;
+    if (!candidateVersion || !writingStyleCandidate || writingStyleSetupBusy) return;
+    setWritingStyleSetupBusy(true);
+    try {
+      const confirmed = await confirmWritingSkill({
+        candidateVersionId: candidateVersion.id,
+        editedProfile: writingStyleCandidate,
+        expectedSourceRevision: writingSkill.sourceRevision,
+        expectedEditRevision: writingSkill.editRevision,
+      });
+      const refreshed = {
+        ...writingSkill,
+        activeVersionId: confirmed.activeVersionId,
+        activeVersion: confirmed.activeVersion,
+        candidateVersion: null,
+        pauseReason: null,
+      };
+      setWritingSkill(refreshed);
+      setWritingStyleMode("common");
+      setWritingTopicKey("");
+      setWritingStyleSetupOpen(false);
+      setStatusMessage("写作风格已确认，正在按你的写法生成初稿…");
+      await runBriefDraftSkill({ mode: "common", versionId: confirmed.activeVersionId });
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? error.message : "确认写作风格失败");
+    } finally {
+      setWritingStyleSetupBusy(false);
+    }
+  }
+
+  async function runBriefDraftSkill(styleOverride?: { mode: "common" | "topic"; versionId: string; topicKey?: string }) {
     const theme = briefTheme.trim();
     if (!theme) {
       setStatusMessage("请先填写创作简报里的主题");
       return;
     }
-    if (isBusy) return;
+    if (isBusy || isUploadingGenerationMaterials) return;
+    const activeStyleVersionId = writingSkill?.activeVersion?.id;
+    if (!styleOverride && writingStyleMode !== "off" && (!activeStyleVersionId || writingSkill?.pauseReason)) {
+      setStatusMessage("当前写作风格不可用，请先检查或重新确认档案");
+      return;
+    }
+    if (!styleOverride && writingStyleMode === "topic" && !writingTopicKey) {
+      setStatusMessage("请先选择要使用的主题写法");
+      return;
+    }
+    const selectedStyle = styleOverride ?? (writingStyleMode === "off" ? undefined : {
+      mode: writingStyleMode as "common" | "topic",
+      ...(writingStyleMode === "topic" ? { topicKey: writingTopicKey } : {}),
+      versionId: activeStyleVersionId as string,
+    });
 
     setActiveOperation("draft");
     rememberGeneratedImageCandidates([]);
@@ -2207,6 +2818,13 @@ export default function EditorPage() {
             audience,
             style,
             viewpoint,
+            materialNotes,
+            referenceContentIds,
+            ...generationMaterialIds(briefMaterials),
+            ...(selectedStyle ? {
+              writingStyle: { mode: selectedStyle.mode, ...(selectedStyle.topicKey ? { topicKey: selectedStyle.topicKey } : {}) },
+              expectedVersionId: selectedStyle.versionId,
+            } : {}),
           }),
         {
           onProgress: (data) => {
@@ -2602,7 +3220,16 @@ export default function EditorPage() {
   // it does not cancel the old server task.
   async function sendCreativeChatMessage() {
     const message = chatInput.trim();
-    if (!message || isChatStreaming || streamLockRef.current) return;
+    if (!message || isChatStreaming || streamLockRef.current || isUploadingGenerationMaterials) return;
+    if (writingStyleMode === "topic" && !writingTopicKey) {
+      setStatusMessage("请先在创作简报中选择要使用的主题写法");
+      return;
+    }
+    if (writingStyleMode !== "off" && (!writingSkill?.activeVersion?.id || writingSkill?.pauseReason)) {
+      setStatusMessage("当前写作风格不可用，请先在创作简报中重新确认档案");
+      return;
+    }
+    const submittedMaterials = chatMaterials;
     streamLockRef.current = true;
     setChatInput("");
     setIsChatStreaming(true);
@@ -2610,7 +3237,7 @@ export default function EditorPage() {
     const assistantId = `assistant-${Date.now()}`;
     setChatMessages((items) => [
       ...items,
-      { id: userId, role: "user", content: message },
+      { id: userId, role: "user", content: message, attachments: submittedMaterials.map((item) => item.fileName) },
       { id: assistantId, role: "assistant", kind: "chat", content: "" },
     ]);
     try {
@@ -2627,10 +3254,19 @@ export default function EditorPage() {
           currentTitle: title,
           currentBody: editorText(),
           selectedText: selectionMenu?.text,
+          ...generationMaterialIds(submittedMaterials),
+          referenceContentIds,
+          ...(writingStyleMode !== "off" && writingSkill?.activeVersion?.id && !writingSkill?.pauseReason ? {
+            writingStyle: { mode: writingStyleMode, ...(writingStyleMode === "topic" ? { topicKey: writingTopicKey } : {}) },
+            expectedVersionId: writingSkill.activeVersion.id,
+          } : {}),
           assistantMessageId: assistantId,
         }}),
         {
-          onSnapshot: (snapshot) => { chatJobIdRef.current = snapshot.id; },
+          onSnapshot: (snapshot) => {
+            chatJobIdRef.current = snapshot.id;
+            setChatMaterials((items) => items.filter((item) => !submittedMaterials.some((submitted) => submitted.id === item.id)));
+          },
           onPartial: (data) => {
             if (data.kind !== "creativeChatEvent" || !data.value || typeof data.value !== "object") return;
             const event = data.value as { type?: string; data?: Record<string, unknown> };
@@ -2736,23 +3372,20 @@ export default function EditorPage() {
     if (!file) return;
     const intent = uploadIntentRef.current;
     uploadIntentRef.current = "library";
+    if (intent === "cover") {
+      setCoverCropFile(file);
+      return;
+    }
     setIsUploadingAsset(true);
     try {
-      const asset = await uploadAsset({
-        file,
-        contentId: contentId ?? undefined,
-      });
+      const asset = await uploadAsset({ file, contentId: contentId ?? undefined });
       setAssets((items) => [
         asset,
         ...items.filter((item) => item.id !== asset.id),
       ]);
       setAssetIds((items) => Array.from(new Set([asset.id, ...items])));
       if (isImageAsset(asset)) {
-        if (intent === "cover") {
-          setCoverFromAsset(asset);
-          setCoverPickerOpen(false);
-          setStatusMessage(`封面图已上传：${asset.fileName}`);
-        } else if (intent === "insert") {
+        if (intent === "insert") {
           insertAsset(asset);
         } else {
           if (!coverPreview) setCoverFromAsset(asset);
@@ -2770,6 +3403,24 @@ export default function EditorPage() {
       );
     } finally {
       setIsUploadingAsset(false);
+    }
+  }
+
+  async function uploadCroppedCover(file: File) {
+    setCoverCropFile(null);
+    setIsUploadingCover(true);
+    try {
+      const asset = await uploadAsset({ file, contentId: contentId ?? undefined });
+      setAssets((items) => [asset, ...items.filter((item) => item.id !== asset.id)]);
+      setAssetIds((items) => Array.from(new Set([asset.id, ...items])));
+      setCoverFromAsset(asset);
+      setCoverPickerOpen(false);
+      setStatusMessage(`封面图已上传：${asset.fileName}`);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? `封面上传失败：${error.message}` : "封面上传失败");
+      setCoverCropFile(file);
+    } finally {
+      setIsUploadingCover(false);
     }
   }
 
@@ -2840,6 +3491,9 @@ export default function EditorPage() {
       await deleteAsset(asset.id);
       setAssets((items) => items.filter((item) => item.id !== asset.id));
       setAssetIds((items) => items.filter((id) => id !== asset.id));
+      setBriefMaterials((items) => items.filter((item) => item.id !== asset.id));
+      setChatMaterials((items) => items.filter((item) => item.id !== asset.id));
+      generationAttachedImageIdsRef.current.delete(asset.id);
       if (coverPreview === asset.url) clearCover();
         setStatusMessage("素材已删除");
     } catch (error) {
@@ -2876,6 +3530,8 @@ export default function EditorPage() {
         checkedAt: new Date().toISOString(),
       },
       latestQuality: current?.latestQuality,
+      currentAuditValid: reviewed.audit.passed,
+      currentAuditBlockReason: reviewed.audit.passed ? undefined : "CONTENT_REJECTED",
       canScoreQuality: reviewed.audit.passed,
       qualityBlockReason: reviewed.audit.passed ? undefined : "CONTENT_REJECTED",
       canPublish:
@@ -2896,10 +3552,15 @@ export default function EditorPage() {
         ? "安全审核通过，可直接发布；也可以先做质量评估作为分发参考"
         : `审核未通过：${reviewed.audit.reasons.join("；")}`,
     );
+    void loadAssets();
   }
 
   // 提交审核前先保存内容；这里只做安全合规，安全通过后即可发布。
   async function submitForReview() {
+    if (coverCropFile || isUploadingCover) {
+      setStatusMessage("请先完成封面裁剪和上传，再进行内容审核");
+      return;
+    }
     if (isBusy) return;
     setActiveOperation("audit");
     setReviewRewrite(null);
@@ -2937,6 +3598,7 @@ export default function EditorPage() {
       await refreshWorkflowState(reviewed.content.id).catch(() => null);
       await loadDraftCards();
     } catch (error) {
+      await loadAssets();
       setStatusMessage(
         error instanceof Error
           ? `内容审核失败：${error.message}`
@@ -2996,6 +3658,8 @@ export default function EditorPage() {
               ...current,
               content: approved.content,
               latestQuality: { ...approved.quality, scoredAt: new Date().toISOString() },
+              currentAuditValid: true,
+              currentAuditBlockReason: undefined,
               canScoreQuality: true,
               qualityBlockReason: undefined,
               canPublish:
@@ -3020,6 +3684,10 @@ export default function EditorPage() {
   }
 
   async function publishCurrentContent() {
+    if (coverCropFile || isUploadingCover) {
+      setStatusMessage("请先完成封面裁剪和上传，再发布内容");
+      return;
+    }
     const targetId = contentId ?? lastContentSummary?.id;
     if (!targetId) {
       setStatusMessage("请先保存内容后再发布");
@@ -3255,15 +3923,62 @@ export default function EditorPage() {
                   onChange={setViewpoint}
                   placeholder="例如：少量单品也能穿出松弛感"
                 />
-                <button
-                  type="button"
-                  onClick={() => void runBriefDraftSkill()}
-                  disabled={isBusy}
-                  className="inline-flex w-full items-center justify-center gap-2 rounded-2xl bg-[#ff2442] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#e91635] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  <Sparkles size={16} />
-                  {isOperation("draft") ? "AI 生成中..." : "AI 一键生成初稿"}
-                </button>
+                <label className="block">
+                  <span className={FIELD_LABEL_CLASS_NAME}>补充信息</span>
+                  <textarea
+                    id="brief-material-notes"
+                    value={materialNotes}
+                    onChange={(event) => setMaterialNotes(event.target.value)}
+                    rows={3}
+                    placeholder="例如：亲自体验了 3 天，花费约 200 元，实际效果是……"
+                    className={`${FIELD_CONTROL_CLASS_NAME} resize-none`}
+                  />
+                </label>
+                {generationMaterialTags("brief")}
+                {writingStyleSetupOpen && typeof document !== "undefined" && createPortal(
+                  <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/40 p-4 backdrop-blur-sm" onMouseDown={(event) => { if (event.target === event.currentTarget) setWritingStyleSetupOpen(false); }}>
+                    <section role="dialog" aria-modal="true" aria-labelledby="writing-style-setup-title" className="flex max-h-[calc(100dvh-2rem)] w-full max-w-3xl flex-col overflow-hidden rounded-3xl border border-slate-100 bg-white shadow-2xl">
+                      <header className="flex shrink-0 items-center justify-between border-b border-slate-100 px-5 py-4 sm:px-6">
+                        <div><h3 id="writing-style-setup-title" className="text-lg font-semibold text-slate-900">建立我的写作风格</h3><p className="mt-1 text-sm text-slate-500">从已发布文章中提炼可编辑的写作档案</p></div>
+                        <button type="button" aria-label="关闭" onClick={() => setWritingStyleSetupOpen(false)} className="rounded-full p-2 text-slate-500 transition hover:bg-slate-100"><X size={18} /></button>
+                      </header>
+                      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5 sm:p-6">
+                        {writingStyleCandidate ? (
+                          <>
+                            <p className="text-sm text-slate-600">检查并编辑 AI 从所选文章中提炼的写法。确认后本次初稿会直接使用该版本。</p>
+                            <label className="block"><span className={FIELD_LABEL_CLASS_NAME}>整体概括</span><textarea value={writingStyleCandidate.summary} onChange={(event) => setWritingStyleCandidate({ ...writingStyleCandidate, summary: event.target.value })} rows={3} className={`${FIELD_CONTROL_CLASS_NAME} resize-y`} /></label>
+                            <div className="grid gap-3 sm:grid-cols-2">{writingStyleFields.map(([key, label]) => <label key={key} className="block"><span className={FIELD_LABEL_CLASS_NAME}>{label}</span><textarea value={writingStyleCandidate.common[key]} onChange={(event) => setWritingStyleCandidate({ ...writingStyleCandidate, common: { ...writingStyleCandidate.common, [key]: event.target.value } })} rows={3} className={`${FIELD_CONTROL_CLASS_NAME} resize-y`} /></label>)}</div>
+                          </>
+                        ) : (
+                          <>
+                            <p className="text-sm text-slate-600">选择 3–20 篇自己已发布的文章；AI 会提炼写作方法供你编辑确认。</p>
+                            <ul className="divide-y divide-slate-100 rounded-2xl border border-slate-200 bg-white px-4">{writingStyleItems.map((item) => <li key={item.id} className="flex items-start gap-3 py-3"><input type="checkbox" className="mt-1 h-4 w-4 shrink-0 accent-[#ff2442]" checked={writingStyleSelectedIds.includes(item.id)} disabled={!item.eligible || writingStyleSetupBusy || (!writingStyleSelectedIds.includes(item.id) && writingStyleSelectedIds.length >= 20)} onChange={() => setWritingStyleSelectedIds((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id])} aria-label={`选择 ${item.title}`} /><div className="min-w-0 flex-1"><p className="break-words text-sm font-medium leading-6 text-slate-800">{item.title}</p><p className="mt-0.5 text-xs leading-5 text-slate-500">{item.characterCount} 字{item.reason ? ` · ${item.reason}` : ""}</p></div></li>)}</ul>
+                          </>
+                        )}
+                      </div>
+                      <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-slate-100 bg-white px-5 py-4 sm:px-6">
+                        {writingStyleCandidate ? (
+                          <><span className="text-sm text-slate-500">确认后将用于本次初稿</span><button type="button" onClick={() => void confirmWritingStyleAndGenerate()} disabled={writingStyleSetupBusy} className="rounded-full bg-[#ff2442] px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-[#e91635] disabled:opacity-50">{writingStyleSetupBusy ? "处理中…" : "确认并按此风格生成"}</button></>
+                        ) : (
+                          <><span className="text-sm text-slate-500">已选 {writingStyleSelectedIds.length}/20 · 共 {writingStyleTotal} 篇</span><div className="flex flex-wrap items-center gap-2"><button type="button" disabled={writingStyleSetupBusy || writingStylePage <= 1} onClick={() => void loadWritingStylePage(writingStylePage - 1)} className="rounded-full border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 disabled:opacity-40">上一页</button><button type="button" disabled={writingStyleSetupBusy || writingStylePage * 20 >= writingStyleTotal} onClick={() => void loadWritingStylePage(writingStylePage + 1)} className="rounded-full border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 disabled:opacity-40">下一页</button><button type="button" disabled={writingStyleSetupBusy || writingStyleSelectedIds.length < 3} onClick={() => void buildWritingStyleCandidate()} className="rounded-full bg-[#ff2442] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{writingStyleSetupBusy ? "分析中…" : "提炼写法"}</button></div></>
+                        )}
+                      </footer>
+                    </section>
+                  </div>,
+                  document.body,
+                )}
+                <div className="flex gap-2">
+                  {generationFileButton("brief")}
+                  <button
+                    type="button"
+                    onClick={() => void runBriefDraftSkill()}
+                    disabled={isBusy || isUploadingGenerationMaterials}
+                    className="inline-flex flex-1 items-center justify-center gap-2 rounded-2xl bg-[#ff2442] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#e91635] disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <Sparkles size={16} />
+                    {isOperation("draft") ? "AI 生成中..." : "AI 一键生成初稿"}
+                  </button>
+                </div>
               </div>
             ) : (
               <div className="space-y-4">
@@ -3374,13 +4089,31 @@ export default function EditorPage() {
               <span>
                 {isOnline ? "在线编辑" : "离线编辑"} · {statusMessage}
               </span>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <div ref={writingStyleMenuRef} className="relative">
+                  <button type="button" aria-haspopup="menu" aria-expanded={writingStyleMenuOpen} onClick={() => setWritingStyleMenuOpen((open) => !open)} className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${writingStyleMode === "off" ? "border-slate-200 bg-white text-slate-600 hover:border-slate-300" : "border-rose-200 bg-rose-50 text-[#ff2442]"}`}>
+                    <span>写作风格：{writingStyleMode === "off" ? "不使用" : writingStyleMode === "common" ? "通用写法" : writingSkill?.activeVersion?.profile?.topics?.find((topic: any) => topic.key === writingTopicKey)?.label ?? "选择主题"}</span>
+                    <ChevronDown size={14} className={`transition-transform ${writingStyleMenuOpen ? "rotate-180" : ""}`} />
+                  </button>
+                  {writingStyleMenuOpen && <div role="menu" aria-label="选择写作风格" className="absolute right-0 top-full z-40 mt-2 w-72 max-w-[calc(100vw-2rem)] rounded-2xl border border-slate-100 bg-white p-2 text-left shadow-xl">
+                    <p className="px-3 pb-1 pt-2 text-xs font-medium text-slate-400">生成时使用</p>
+                    <button type="button" role="menuitem" onClick={() => { setWritingStyleMode("off"); setWritingStyleMenuOpen(false); }} className={`w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-slate-50 ${writingStyleMode === "off" ? "font-semibold text-[#ff2442]" : "text-slate-700"}`}>不使用写作风格</button>
+                    <button type="button" role="menuitem" disabled={!writingSkill?.activeVersion || Boolean(writingSkill?.pauseReason)} onClick={() => { setWritingStyleMode("common"); setWritingStyleMenuOpen(false); }} className={`w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 ${writingStyleMode === "common" ? "font-semibold text-[#ff2442]" : "text-slate-700"}`}>通用写法</button>
+                    <div className="my-2 border-t border-slate-100" />
+                    <p className="px-3 pb-1 pt-1 text-xs font-medium text-slate-400">按主题使用</p>
+                    {writingSkill?.activeVersion?.profile?.topics?.length && !writingSkill?.pauseReason ? writingSkill.activeVersion.profile.topics.map((topic: any) => <button key={topic.key} type="button" role="menuitem" onClick={() => { setWritingTopicKey(topic.key); setWritingStyleMode("topic"); setWritingStyleMenuOpen(false); }} className={`w-full rounded-xl px-3 py-2 text-left text-sm hover:bg-slate-50 ${writingStyleMode === "topic" && writingTopicKey === topic.key ? "font-semibold text-[#ff2442]" : "text-slate-700"}`}>{topic.label}</button>) : <p className="px-3 py-2 text-sm text-slate-400">暂无可用的主题写法</p>}
+                    <div className="my-2 border-t border-slate-100" />
+                    <button type="button" role="menuitem" onClick={() => { setWritingStyleMenuOpen(false); void openWritingStyleSetup(); }} className="w-full rounded-xl px-3 py-2 text-left text-sm font-semibold text-[#ff2442] hover:bg-rose-50">{writingSkill?.activeVersion ? "管理写作风格" : "建立我的写作风格"}</button>
+                    {writingSkill?.pauseReason && <p className="px-3 pb-2 text-xs text-amber-700">档案已暂停，重新建档并确认后即可使用。</p>}
+                  </div>}
+                </div>
                 <button
                   type="button"
                   onClick={() => void autoSaveDraft(true)}
-                  className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600"
+                  disabled={isCloudSaving}
+                  className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600 disabled:cursor-wait disabled:opacity-60"
                 >
-                  保存
+                  {isCloudSaving ? "保存中…" : "保存"}
                 </button>
               </div>
             </div>
@@ -3390,7 +4123,9 @@ export default function EditorPage() {
                 value={title}
                 onChange={(event) => setTitle(event.target.value)}
                 placeholder="填写标题会有更多赞哦"
-                className="w-full rounded-2xl border border-transparent bg-slate-50 px-4 py-4 pr-16 text-xl font-bold outline-none placeholder:text-slate-300 focus:border-[#ff2442]/20 focus:bg-white"
+                aria-invalid={titleTooLong}
+                aria-describedby="article-title-count"
+                className={`w-full rounded-2xl border bg-slate-50 px-4 py-4 pr-16 text-xl font-bold outline-none placeholder:text-slate-300 focus:bg-white ${titleTooLong ? "border-rose-400 focus:border-rose-500" : "border-transparent focus:border-[#ff2442]/20"}`}
               />
               <button
                 type="button"
@@ -3402,6 +4137,9 @@ export default function EditorPage() {
                 <Wand2 size={18} />
               </button>
             </div>
+            <p id="article-title-count" className={`mt-2 text-right text-xs ${titleTooLong ? "font-semibold text-rose-600" : "text-slate-400"}`} role={titleTooLong ? "alert" : undefined}>
+              标题 {titleCount}/{ARTICLE_TITLE_MAX_LENGTH}{titleTooLong ? `，超出 ${titleCount - ARTICLE_TITLE_MAX_LENGTH} 字，请缩短后保存` : ""}
+            </p>
 
             {showTitleCandidates ? (
               <div className="mt-3 grid gap-2 rounded-2xl bg-[#fff3f5] p-3">
@@ -3614,8 +4352,8 @@ export default function EditorPage() {
                 <Smile className="mr-1 inline h-4 w-4" />
                 表情
               </button>
-              <span className="ml-auto text-sm text-slate-400">
-                {wordCount}/10000
+              <span className={`ml-auto text-sm ${bodyTooLong ? "font-semibold text-rose-600" : "text-slate-400"}`} role={bodyTooLong ? "alert" : undefined}>
+                正文 {bodyCount}/{ARTICLE_BODY_MAX_LENGTH}{bodyTooLong ? `，超出 ${bodyCount - ARTICLE_BODY_MAX_LENGTH} 字，请缩短后保存` : ""}
               </span>
             </div>
 
@@ -4031,7 +4769,7 @@ export default function EditorPage() {
               <h2 className="text-lg font-semibold">发布流转</h2>
               {editingStatus ? (
                 <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">
-                  {contentStatusLabels[editingStatus]}
+                  {auditResultIsStale ? "审核结果已失效" : contentStatusLabels[editingStatus]}
                 </span>
               ) : null}
             </div>
@@ -4070,18 +4808,26 @@ export default function EditorPage() {
               </button>
             </div>
 
+            {!canRunQualityReview && !isBusy && qualityBlockMessage ? (
+              <p className="mt-2 text-sm text-amber-700" role="status">
+                {qualityBlockMessage}
+              </p>
+            ) : null}
+
             {reviewResult ? (
               <div
                 className={`mt-3 rounded-2xl p-3 text-sm ${
-                  reviewResult.audit.passed
+                  auditPassedForCurrentContent
                     ? "bg-emerald-50 text-emerald-800"
                     : "bg-rose-50 text-rose-800"
                 }`}
               >
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <p className="font-bold">
-                    {reviewResult.audit.passed
-                      ? "安全审核通过"
+                    {auditPassedForCurrentContent
+                      ? "安全审核通过（文字与图片均已审核）"
+                      : auditResultIsStale
+                        ? "上次审核结果已失效，请重新审核当前内容与图片"
                       : "安全审核未通过"}
                   </p>
                   {!reviewResult.audit.passed && reviewActions.length ? (
@@ -4263,9 +5009,10 @@ export default function EditorPage() {
                           </ReactMarkdown>
                         </div>
                       ) : (
-                        <p className="whitespace-pre-wrap">
-                          {message.content}
-                        </p>
+                        <>
+                          <p className="whitespace-pre-wrap">{message.content}</p>
+                          {message.attachments?.length ? <p className="mt-2 text-xs text-rose-700">附件：{message.attachments.join("、")}</p> : null}
+                        </>
                       )}
                       {message.role === "assistant" &&
                       message.kind !== "skill_status" &&
@@ -4309,6 +5056,7 @@ export default function EditorPage() {
             </div>
 
             <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50 p-2">
+              {writingStyleMode !== "off" && writingSkill?.activeVersion?.id && !writingSkill?.pauseReason && <div className="mb-2 flex items-center justify-between gap-2 rounded-xl bg-white px-3 py-2 text-xs text-slate-600"><span>完整图文生成将使用{writingStyleMode === "topic" ? `「${writingSkill.activeVersion.profile?.topics?.find((item: any) => item.key === writingTopicKey)?.label ?? "所选主题"}」` : "通用写法"}</span><button type="button" onClick={() => setWritingStyleMode("off")} className="font-medium text-[#ff2442]">关闭</button></div>}
               <textarea
                 value={chatInput}
                 onChange={(event) => setChatInput(event.target.value)}
@@ -4316,17 +5064,19 @@ export default function EditorPage() {
                 placeholder="和 AI 讨论选题、修改正文，或直接说生成完整图文/审核当前内容..."
                 className="w-full resize-none bg-transparent p-2 text-sm outline-none placeholder:text-slate-400"
               />
-              <button
-                type="button"
-                onClick={() => void (isChatStreaming ? stopCreativeChat() : sendCreativeChatMessage())}
-                disabled={isBusy}
-                className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-[#ff2442] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                <Sparkles size={16} />
-                {isChatStreaming
-                  ? "停止并取消任务"
-                  : "发送给 AI"}
-              </button>
+              {generationMaterialTags("chat")}
+              <div className="mt-2 flex gap-2">
+                {generationFileButton("chat")}
+                <button
+                  type="button"
+                  onClick={() => void (isChatStreaming ? stopCreativeChat() : sendCreativeChatMessage())}
+                  disabled={isBusy || isUploadingGenerationMaterials}
+                  className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-[#ff2442] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <Sparkles size={16} />
+                  {isChatStreaming ? "停止并取消任务" : "发送给 AI"}
+                </button>
+              </div>
             </div>
           </section>
 
@@ -4346,26 +5096,47 @@ export default function EditorPage() {
       <input
         ref={textInputRef}
         type="file"
-        accept=".txt,.md,text/plain,text/markdown"
+        accept=".txt,.md,.markdown,.pdf,.docx,text/plain,text/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         className="hidden"
         onChange={(event) => {
           void handleAssetUpload(event.target.files?.[0]);
           event.currentTarget.value = "";
         }}
       />
+      <input
+        ref={generationInputRef}
+        type="file"
+        accept=".txt,.md,.markdown,.pdf,.docx,text/plain,text/markdown,text/x-markdown,application/markdown,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/jpeg,image/png,image/webp,image/gif,image/avif,image/bmp"
+        multiple
+        className="hidden"
+        onChange={(event) => {
+          void uploadGenerationFiles(Array.from(event.target.files ?? []), generationUploadTargetRef.current);
+          event.currentTarget.value = "";
+        }}
+      />
+
+      {coverCropFile ? (
+        <CoverCropDialog file={coverCropFile} onCancel={() => setCoverCropFile(null)} onConfirm={(file) => void uploadCroppedCover(file)} />
+      ) : null}
 
       {assetPanel ? (
         <AssetPanel
-          mode={assetPanel}
-          assets={assetPanel === "image" ? imageAssets : textAssets}
+          mode={assetPanel === "image" || assetPanel === "text" ? assetPanel : "generation"}
+          assets={assetPanel === "image" ? imageAssets : assetPanel === "text" ? textAssets : assets.filter((item) => isImageAsset(item) || isGenerationDocument(item))}
           uploading={isUploadingAsset}
           onClose={() => setAssetPanel(null)}
           onUpload={() =>
             assetPanel === "image"
               ? openImageUpload("library")
-              : openTextUpload()
+              : assetPanel === "text"
+                ? openTextUpload()
+                : openGenerationUpload(assetPanel === "generation-brief" ? "brief" : "chat")
           }
-          onInsert={insertAsset}
+          onInsert={(asset) => {
+            if (assetPanel === "generation-brief" || assetPanel === "generation-chat") {
+              if (addGenerationAsset(assetPanel === "generation-brief" ? "brief" : "chat", asset)) setAssetPanel(null);
+            } else insertAsset(asset);
+          }}
           onDelete={(asset) => void removeAsset(asset)}
           onDragStart={onAssetDragStart}
         />
@@ -4572,11 +5343,14 @@ function editorOperationForJobType(type: AiJobType): EditorOperation {
   return "draft";
 }
 
+const FIELD_LABEL_CLASS_NAME = "mb-1 block text-sm font-normal text-slate-700";
+const FIELD_CONTROL_CLASS_NAME = "w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-[#ff2442]/50 focus:ring-4 focus:ring-[#ff2442]/10";
+
 function Field({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (value: string) => void; placeholder: string }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-sm font-medium text-slate-700">{label}</span>
-      <input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm outline-none focus:border-[#ff2442]/50 focus:bg-white focus:ring-4 focus:ring-[#ff2442]/10" />
+      <span className={FIELD_LABEL_CLASS_NAME}>{label}</span>
+      <input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className={FIELD_CONTROL_CLASS_NAME} />
     </label>
   );
 }
@@ -4591,7 +5365,7 @@ function AssetPanel({
   onDelete,
   onDragStart,
 }: {
-  mode: "image" | "text";
+  mode: "image" | "text" | "generation";
   assets: AssetSummary[];
   uploading: boolean;
   onClose: () => void;
@@ -4606,8 +5380,8 @@ function AssetPanel({
       <div className="relative z-10 w-full max-w-5xl rounded-3xl border border-slate-100 bg-white p-6 shadow-xl">
         <div className="mb-4 flex items-center justify-between">
           <div>
-            <h3 className="text-lg font-bold">{mode === "image" ? "图片素材库" : "文本素材库"}</h3>
-            <p className="mt-1 text-sm text-slate-400">点击“插入正文”会放到当前光标处；也可以拖到正文指定位置。删除会从个人素材库移除。</p>
+            <h3 className="text-lg font-bold">{mode === "generation" ? "选择已有文件" : mode === "image" ? "图片素材库" : "文本素材库"}</h3>
+            {mode !== "generation" ? <p className="mt-1 text-sm text-slate-400">点击“插入正文”会放到当前光标处；也可以拖到正文指定位置。删除会从个人素材库移除。</p> : null}
           </div>
           <div className="flex items-center gap-2">
             <button type="button" onClick={onUpload} className="inline-flex items-center gap-2 rounded-2xl bg-[#ff2442] px-4 py-2 text-sm font-semibold text-white">
@@ -4619,8 +5393,8 @@ function AssetPanel({
         </div>
         <div className="grid max-h-[62vh] gap-3 overflow-y-auto sm:grid-cols-2 lg:grid-cols-3">
           {assets.length ? assets.map((asset) => (
-            <div key={asset.id} draggable onDragStart={(event) => onDragStart(event, asset)} className="rounded-2xl border border-slate-100 bg-white p-3 text-left shadow-sm hover:border-rose-100 hover:bg-[#fff3f5]">
-              {mode === "image" ? (
+            <div key={asset.id} draggable={mode !== "generation"} onDragStart={mode === "generation" ? undefined : (event) => onDragStart(event, asset)} className="rounded-2xl border border-slate-100 bg-white p-3 text-left shadow-sm hover:border-rose-100 hover:bg-[#fff3f5]">
+              {isImageAsset(asset) ? (
                 <div className="aspect-4/3 overflow-hidden rounded-xl bg-slate-100">
                   <img src={asset.url} alt={asset.fileName} className="h-full w-full object-cover" />
                 </div>
@@ -4633,11 +5407,13 @@ function AssetPanel({
               <p className="mt-1 text-xs text-slate-400">{asset.mimeType} · {asset.auditStatus}</p>
               <div className="mt-3 flex gap-2">
                 <button type="button" onClick={() => onInsert(asset)} className="flex-1 rounded-xl bg-[#ff2442] px-3 py-2 text-xs font-semibold text-white">
-                  插入正文
+                  {mode === "generation" ? "选为本次文件" : "插入正文"}
                 </button>
-                <button type="button" onClick={() => onDelete(asset)} className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-rose-50 hover:text-rose-600">
-                  删除
-                </button>
+                {mode !== "generation" ? (
+                  <button type="button" onClick={() => onDelete(asset)} className="rounded-xl bg-slate-100 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-rose-50 hover:text-rose-600">
+                    删除
+                  </button>
+                ) : null}
               </div>
             </div>
           )) : <div className="col-span-full grid h-52 place-items-center text-sm text-slate-400">暂无素材，点击右上角添加。</div>}

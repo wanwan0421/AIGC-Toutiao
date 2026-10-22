@@ -119,11 +119,35 @@ function resolveInitialContent(content: RichTextInitialContent) {
 }
 
 function editorValue(editor: Editor): RichTextValue {
+  const html = editor.getHTML();
   return {
-    text: editor.getText({ blockSeparator: "\n\n" }),
-    html: editor.getHTML(),
+    // Keep the plain-text field in lockstep with the HTML representation sent
+    // to the API. ProseMirror's getText treats block atoms (for example images)
+    // differently from the server's visible-HTML extractor.
+    text: visibleTextFromEditorHtml(html),
+    html,
     json: editor.getJSON(),
   };
+}
+
+function visibleTextFromEditorHtml(html: string) {
+  const markers: string[] = [];
+  for (let code = 0xe000; code <= 0xf8ff && markers.length < 2; code += 1) {
+    const marker = String.fromCharCode(code);
+    if (!html.includes(marker)) markers.push(marker);
+  }
+  if (markers.length !== 2) throw new Error("No available article separator markers");
+  const [blockMarker, breakMarker] = markers;
+  const withMarkers = html
+    .replace(/<br\s*\/?\s*>/gi, breakMarker)
+    .replace(/<\/(?:p|h[1-6]|pre|figcaption)>/gi, `$&${blockMarker}`);
+  const container = document.createElement("div");
+  container.innerHTML = withMarkers;
+  container.querySelectorAll("script,style").forEach((node) => node.remove());
+  const text = container.textContent ?? "";
+  const blocks = text.split(blockMarker);
+  if (blocks.at(-1) === "") blocks.pop();
+  return blocks.join("\n\n").replaceAll(breakMarker, "\n");
 }
 
 function buildPlainTextPositionMap(editor: Editor) {
@@ -226,7 +250,7 @@ function editorContentClassName(readonly = false) {
     "[&_.ProseMirror_ul]:my-4 [&_.ProseMirror_ul]:list-disc [&_.ProseMirror_ul]:pl-6 [&_.ProseMirror_ol]:my-4 [&_.ProseMirror_ol]:list-decimal [&_.ProseMirror_ol]:pl-6 [&_.ProseMirror_li]:my-1",
     "[&_.ProseMirror_blockquote]:my-5 [&_.ProseMirror_blockquote]:border-l-4 [&_.ProseMirror_blockquote]:border-[#ff2442]/30 [&_.ProseMirror_blockquote]:bg-[#fff3f5] [&_.ProseMirror_blockquote]:px-4 [&_.ProseMirror_blockquote]:py-2 [&_.ProseMirror_blockquote]:text-rose-900",
     "[&_.ProseMirror_code]:rounded [&_.ProseMirror_code]:bg-slate-100 [&_.ProseMirror_code]:px-1.5 [&_.ProseMirror_code]:py-0.5 [&_.ProseMirror_code]:text-sm [&_.ProseMirror_code]:text-slate-700",
-    "[&_.ProseMirror_img]:my-5 [&_.ProseMirror_img]:max-w-full [&_.ProseMirror_img]:rounded-2xl",
+    "[&_.ProseMirror_img]:my-5 [&_.ProseMirror_img]:w-full [&_.ProseMirror_img]:h-auto [&_.ProseMirror_img]:max-w-full [&_.ProseMirror_img]:rounded-2xl",
     "[&_.ProseMirror_.tableWrapper]:my-5 [&_.ProseMirror_.tableWrapper]:max-w-full [&_.ProseMirror_.tableWrapper]:overflow-x-auto [&_.ProseMirror_.tableWrapper]:rounded-xl",
     "[&_.ProseMirror_table]:my-5 [&_.ProseMirror_table]:w-full [&_.ProseMirror_table]:max-w-full [&_.ProseMirror_table]:table-fixed [&_.ProseMirror_table]:border-collapse [&_.ProseMirror_table]:overflow-hidden [&_.ProseMirror_table]:rounded-xl [&_.ProseMirror_table]:text-left",
     "[&_.ProseMirror_th]:min-w-0 [&_.ProseMirror_th]:break-words [&_.ProseMirror_th]:border [&_.ProseMirror_th]:border-slate-200 [&_.ProseMirror_th]:bg-slate-50 [&_.ProseMirror_th]:px-3 [&_.ProseMirror_th]:py-2 [&_.ProseMirror_th]:font-bold [&_.ProseMirror_th]:whitespace-normal [&_.ProseMirror_td]:min-w-0 [&_.ProseMirror_td]:break-words [&_.ProseMirror_td]:border [&_.ProseMirror_td]:border-slate-200 [&_.ProseMirror_td]:px-3 [&_.ProseMirror_td]:py-2 [&_.ProseMirror_td]:align-top [&_.ProseMirror_td]:whitespace-normal [&_.ProseMirror_.selectedCell]:bg-[#fff3f5]",
@@ -335,7 +359,7 @@ export const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorPro
         focus: () => editor?.commands.focus(),
         isFocused: () => editor?.isFocused ?? false,
         getValue: () => (editor ? editorValue(editor) : { text: "", html: "", json: { type: "doc", content: [] } }),
-        getText: () => editor?.getText({ blockSeparator: "\n\n" }) ?? "",
+        getText: () => (editor ? editorValue(editor).text : ""),
         getHTML: () => editor?.getHTML() ?? "",
         getJSON: () => editor?.getJSON() ?? { type: "doc", content: [] },
         getSelectedText: () => {

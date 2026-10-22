@@ -62,13 +62,11 @@ export class DraftsService {
     contentId: string,
     body: { title?: string; body?: string; payload?: Record<string, unknown>; clientHash?: string }
   ) {
-    const content = await this.prisma.content.findFirst({ where: { id: contentId, authorId: userId } });
-    if (!content) throw new NotFoundException("content not found");
     const payload = body.payload;
     const result = await this.persistence.persist(userId, {
       contentId,
-      title: body.title ?? content.title,
-      body: body.body ?? content.body,
+      title: body.title,
+      body: body.body,
       bodyHtml: typeof payload?.html === "string" ? payload.html : undefined,
       bodyJson: this.recordOrNull(payload?.json),
       tags: this.stringArray(payload?.tags),

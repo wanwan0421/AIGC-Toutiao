@@ -112,4 +112,45 @@ describe("ContentProductionResourceOrchestrator", () => {
     expect(resources.loadOutputRepair).not.toHaveBeenCalled();
     expect(resources.validateOutput).toHaveBeenCalledTimes(1);
   });
+
+  it.each([true, false])("allows at most two server-validated output repairs (second succeeds: %s)", async (secondSucceeds) => {
+    const requirement = {
+      needsClarification: false, clarificationQuestion: "", theme: "主题", audience: "", style: "",
+      viewpoint: "", materialNotes: "", sourceSummary: "button",
+    };
+    const draft = { title: "标题", titleCandidates: [], bodyMarkdown: "正文", tags: ["#主题"], outline: [] };
+    const visual = { bodyMarkdown: "正文", coverSuggestion: "封面", imagePrompts: [] };
+    const repaired = { ...draft, ...visual };
+    const complete = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify(requirement))
+      .mockResolvedValueOnce(JSON.stringify(draft))
+      .mockResolvedValueOnce(JSON.stringify(visual))
+      .mockResolvedValueOnce(JSON.stringify(repaired))
+      .mockResolvedValueOnce(JSON.stringify(repaired));
+    const invalid = { ok: false, errors: ["bodyMarkdown visible text exceeds 1000 characters"], value: repaired };
+    const valid = { ok: true, errors: [], value: repaired };
+    const resources = {
+      loadSelectedSkill: vi.fn(() => "skill"),
+      loadRequirementAnalysis: vi.fn(() => "requirement"),
+      loadArticleWriting: vi.fn(() => "article"),
+      loadVisualPlanning: vi.fn(() => "visual"),
+      loadOutputRepair: vi.fn(() => "repair"),
+      validateOutput: vi.fn().mockReturnValueOnce(invalid).mockReturnValueOnce(invalid)
+        .mockReturnValueOnce(secondSucceeds ? valid : invalid),
+    };
+    const pipeline = new ContentDraftPipeline(
+      { completeWithMetadata: vi.fn(async (options) => ({ text: await complete(options) })), attachStructuredResult: vi.fn() } as never,
+      { render: vi.fn(() => ({ model: "model", modelOptions: {}, promptKey: "key" })) } as never,
+      resources as never
+    );
+
+    if (secondSucceeds) {
+      await expect(pipeline.run({ userId: "user", theme: "主题" })).resolves.toEqual(repaired);
+    } else {
+      await expect(pipeline.run({ userId: "user", theme: "主题" })).rejects.toThrow("output invalid");
+    }
+    expect(complete).toHaveBeenCalledTimes(5);
+    expect(resources.loadOutputRepair).toHaveBeenCalledTimes(2);
+    expect(resources.validateOutput).toHaveBeenCalledTimes(3);
+  });
 });

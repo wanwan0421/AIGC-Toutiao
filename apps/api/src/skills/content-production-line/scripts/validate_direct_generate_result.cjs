@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const fs = require("node:fs");
+const { ARTICLE_TITLE_MAX_LENGTH, ARTICLE_BODY_MAX_LENGTH, countArticleCharacters } = require("@aicp/shared");
 
 function asText(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -120,12 +121,54 @@ function validateDirectGenerateResult(input) {
   if (!Array.isArray(input && input.titleCandidates)) errors.push("titleCandidates must be an array");
   if (!Array.isArray(input && input.imagePrompts)) errors.push("imagePrompts must be an array");
   if (!Array.isArray(input && input.outline)) errors.push("outline must be an array");
+  const titleLength = countArticleCharacters(value.title);
+  if (titleLength > ARTICLE_TITLE_MAX_LENGTH) errors.push(`title exceeds ${ARTICLE_TITLE_MAX_LENGTH} visible characters (${titleLength})`);
+  value.titleCandidates.forEach((candidate, index) => {
+    const length = countArticleCharacters(candidate.title);
+    if (length > ARTICLE_TITLE_MAX_LENGTH) errors.push(`titleCandidates[${index}].title exceeds ${ARTICLE_TITLE_MAX_LENGTH} visible characters (${length})`);
+  });
+  const bodyLength = countArticleCharacters(visibleMarkdownText(value.bodyMarkdown));
+  if (bodyLength > ARTICLE_BODY_MAX_LENGTH) errors.push(`bodyMarkdown visible text exceeds ${ARTICLE_BODY_MAX_LENGTH} characters (${bodyLength})`);
 
   return {
     ok: errors.length === 0,
     errors,
     value,
   };
+}
+
+function visibleMarkdownText(markdown) {
+  // Mirror the editor's Markdown subset: every nonempty line becomes a block,
+  // and TipTap getText() separates blocks with two line breaks.
+  const lines = asText(markdown)
+    .replace(/<!--\s*aicp-image-slot:[a-zA-Z0-9_-]+\s*-->/g, "")
+    .split(/\r\n?|\n/);
+  const blocks = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].trim();
+    if (!line) continue;
+    const next = lines[index + 1]?.trim() ?? "";
+    if (/^\|.*\|$/.test(line) && /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(next)) {
+      const tableLines = [line];
+      index += 2;
+      while (index < lines.length && /^\|.*\|$/.test(lines[index].trim())) {
+        tableLines.push(lines[index].trim());
+        index += 1;
+      }
+      index -= 1;
+      blocks.push(tableLines.map((row) => row.replace(/^\||\|$/g, "").split("|").map((cell) => visibleInlineMarkdown(cell.trim())).join("\n\n")).join("\n\n"));
+      continue;
+    }
+    const text = /^#{1,3}\s+/.test(line)
+      ? line.replace(/^#{1,3}\s+/, "")
+      : /^[-*]\s+/.test(line) ? line.replace(/^[-*]\s+/, "") : line;
+    blocks.push(visibleInlineMarkdown(text));
+  }
+  return blocks.join("\n\n");
+}
+
+function visibleInlineMarkdown(text) {
+  return text.replace(/\*\*(.+?)\*\*/g, "$1").replace(/`(.+?)`/g, "$1");
 }
 
 function readJsonFromArg(filePath) {
@@ -148,6 +191,14 @@ function selfTest() {
   if (result.value.bodyMarkdown.startsWith("# 测试标题")) {
     throw new Error("repeated title was not stripped");
   }
+  const longTitle = validateDirectGenerateResult({ ...result.value, title: "标".repeat(ARTICLE_TITLE_MAX_LENGTH + 1) });
+  if (longTitle.ok || !longTitle.errors.some((item) => item.includes("title exceeds"))) throw new Error("long title was accepted");
+  const longBody = validateDirectGenerateResult({ ...result.value, bodyMarkdown: "文".repeat(ARTICLE_BODY_MAX_LENGTH + 1) });
+  if (longBody.ok || !longBody.errors.some((item) => item.includes("bodyMarkdown visible text"))) throw new Error("long body was accepted");
+  const exactBody = validateDirectGenerateResult({ ...result.value, bodyMarkdown: `${"文".repeat(498)}\n\n${"文".repeat(500)}` });
+  if (!exactBody.ok) throw new Error("1000 visible characters were rejected");
+  const paragraphHeavyBody = validateDirectGenerateResult({ ...result.value, bodyMarkdown: Array(335).fill("文").join("\n\n") });
+  if (paragraphHeavyBody.ok) throw new Error("visible paragraph separators were not counted");
   return result;
 }
 

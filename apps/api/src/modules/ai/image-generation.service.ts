@@ -138,18 +138,16 @@ export class ImageGenerationService {
             mimeType: output.mimeType,
           }, input.signal);
 
-    let moderation;
+    const moderation = {
+      auditStatus: AssetAuditStatus.pending,
+      auditReason: null,
+      riskLevel: "unknown",
+      riskTypes: [],
+    };
     try {
-      const inspected = await this.inspectStoredImage(stored.storageKey, input.signal);
-      moderation = await this.imageModeration.reviewImage({
-        buffer: inspected.buffer,
-        mimeType: inspected.mimeType,
-        fileName: requestedFileName,
-        signal: input.signal,
-        aiJobId: input.aiJobId,
-        contentId: input.contentId,
-        conversationId: input.conversationId,
-      });
+      // Keep structural validation/re-encoding, but defer content moderation
+      // until the author submits the composed content for review.
+      await this.inspectStoredImage(stored.storageKey, input.signal);
     } catch (error) {
       await this.storage.deleteObject({ storageKey: stored.storageKey }).catch(() => undefined);
       throw error;

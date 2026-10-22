@@ -1,10 +1,11 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { AiJobStatus } from "@prisma/client";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { aiJobConfig } from "./workflow-job.config";
 import { WorkflowJobEventsService } from "./workflow-job-events.service";
 import { toAiJobSnapshot } from "./workflow-job.mapper";
 import { WorkflowJobQueueService } from "./workflow-job-queue.service";
+import { WritingSkillService } from "../ai/writing-skill.service";
 
 @Injectable()
 export class WorkflowJobMaintenanceService {
@@ -14,12 +15,17 @@ export class WorkflowJobMaintenanceService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly events: WorkflowJobEventsService,
-    private readonly queue: WorkflowJobQueueService
+    private readonly queue: WorkflowJobQueueService,
+    @Optional() private readonly writingSkill?: WritingSkillService
   ) {}
 
   async run() {
     const expired = await this.expireAwaitingCommits();
     const deleted = await this.cleanupEvents();
+    if (this.writingSkill) {
+      await this.writingSkill.reconcileAutoLearning();
+      await this.writingSkill.enqueuePendingRefreshes();
+    }
     const [outboxBacklog, awaitingCommit, queueCounts] = await Promise.all([
       this.prisma.aiJobDispatch.count({ where: { status: { in: ["pending", "dispatching"] } } }),
       this.prisma.aiJob.count({ where: { status: AiJobStatus.awaiting_commit } }),

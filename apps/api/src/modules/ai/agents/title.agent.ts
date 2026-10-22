@@ -41,7 +41,7 @@ export class TitleAgent {
       messages: [
         {
           role: "system",
-          content: "你只基于当前作品内容生成中文标题候选，并严格返回 JSON。",
+          content: "你只基于当前作品内容生成中文标题候选，每个候选最多 25 个可见字符（标点和可见空白计入），并严格返回 JSON。",
         },
         { role: "user", content: prompt },
       ],

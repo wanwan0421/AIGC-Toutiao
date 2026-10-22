@@ -10,6 +10,9 @@ const ALLOWED_TAGS = [
   "h1",
   "h2",
   "h3",
+  "h4",
+  "h5",
+  "h6",
   "blockquote",
   "pre",
   "code",
@@ -38,7 +41,7 @@ const ALLOWED_TAGS = [
   "td",
 ] as const;
 
-const TEXT_ALIGN_TAGS = ["p", "h1", "h2", "h3"] as const;
+const TEXT_ALIGN_TAGS = ["p", "h1", "h2", "h3", "h4", "h5", "h6"] as const;
 const BLOCK_NODE_TYPES = new Set([
   "paragraph",
   "heading",
@@ -241,7 +244,7 @@ function sanitizeNodeAttributes(type: string, value: unknown): JsonRecord {
   const attributes = isRecord(value) ? value : {};
   if (type === "heading") {
     return {
-      level: allowedInteger(attributes.level, 1, 3, 2),
+      level: allowedInteger(attributes.level, 1, 6, 2),
       ...textAlignAttribute(attributes.textAlign),
     };
   }

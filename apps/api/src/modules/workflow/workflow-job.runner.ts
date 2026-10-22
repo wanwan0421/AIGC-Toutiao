@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, Optional } from "@nestjs/common";
 import { AiJobStatus as DbAiJobStatus, Prisma } from "@prisma/client";
 import { UnrecoverableError } from "bullmq";
 import { randomUUID } from "node:crypto";
@@ -24,6 +24,9 @@ import { WorkflowJobEventsService } from "./workflow-job-events.service";
 import { toAiJobSnapshot, type AiJobRecord } from "./workflow-job.mapper";
 import { AiJobHandlerRegistry } from "./ai-job-handler.registry";
 import { WorkflowJobService } from "./workflow-job.service";
+import { GenerationMaterialResolver } from "./generation-material-resolver.service";
+import { WritingSkillService } from "../ai/writing-skill.service";
+import { WritingStyleContextResolver } from "./writing-style-context-resolver.service";
 
 type RunOptions = {
   signal?: AbortSignal;
@@ -52,7 +55,10 @@ export class WorkflowJobRunner {
     private readonly handlers: AiJobHandlerRegistry,
     private readonly conversationCompaction?: ConversationCompactionService,
     private readonly conversationSessions?: ConversationSessionService,
-    private readonly memory?: MemoryService
+    private readonly memory?: MemoryService,
+    private readonly materialResolver?: GenerationMaterialResolver,
+    @Optional() private readonly writingSkill?: WritingSkillService,
+    @Optional() private readonly writingStyleResolver?: WritingStyleContextResolver,
   ) {
     this.registerHandlers();
   }
@@ -64,16 +70,31 @@ export class WorkflowJobRunner {
 
     try {
       throwIfAborted(options.signal);
+      const frozenInput = this.asPayload(job.input);
+      if (frozenInput.materialSnapshot !== undefined) {
+        if (!this.materialResolver) throw new Error("GenerationMaterialResolver is not configured");
+        await this.materialResolver.assertCurrent(job.userId, frozenInput.materialSnapshot);
+      }
+      if (frozenInput.writingStyleSnapshot !== undefined) {
+        if (!this.writingStyleResolver) throw new Error("WritingStyleContextResolver is not configured");
+        await this.writingStyleResolver.assertCurrent(job.userId, frozenInput.writingStyleSnapshot);
+      }
       const result = await this.handlers.execute({
         jobId,
         runToken,
         type: job.type as `${AiJobType}`,
-        payload: this.asPayload(job.input),
+        payload: frozenInput,
         userId: job.userId,
         contentId: job.contentId ?? undefined,
         conversationId: job.conversationId ?? undefined,
         signal: options.signal,
       });
+      if (frozenInput.materialSnapshot !== undefined) {
+        await this.materialResolver!.assertCurrent(job.userId, frozenInput.materialSnapshot);
+      }
+      if (frozenInput.writingStyleSnapshot !== undefined) {
+        await this.writingStyleResolver!.assertCurrent(job.userId, frozenInput.writingStyleSnapshot);
+      }
       if (BROWSER_COMMIT_TYPES.has(job.type)) {
         await this.resultReady(jobId, runToken, result);
       } else {
@@ -115,6 +136,18 @@ export class WorkflowJobRunner {
   private registerHandlers() {
     this.handlers.register(AiJobType.CreativeChat, ({ jobId, runToken, payload, userId, signal }) =>
       this.runCreativeChat(jobId, runToken, payload, userId, signal));
+    if (this.writingSkill) {
+      this.handlers.register(AiJobType.WritingSkillBuild, ({ userId, payload }) => {
+        const ids = Array.isArray(payload.sourceContentIds) ? payload.sourceContentIds.filter((item): item is string => typeof item === "string") : [];
+        return this.writingSkill!.buildCandidate(userId, ids);
+      });
+      this.handlers.register(AiJobType.WritingSkillRefresh, ({ userId, payload }) => {
+        if (typeof payload.skillId !== "string" || typeof payload.sourceRevision !== "number" || !Number.isInteger(payload.sourceRevision)) {
+          throw new Error("invalid writing-skill refresh payload");
+        }
+        return this.writingSkill!.refreshAuto(userId, payload.skillId, payload.sourceRevision);
+      });
+    }
     if (this.conversationCompaction && this.memory) {
       this.handlers.register(AiJobType.ConversationCompaction, ({ jobId, runToken, payload, userId, signal }) =>
         this.runConversationCompaction(jobId, runToken, payload, userId, signal));
@@ -188,6 +221,8 @@ export class WorkflowJobRunner {
       signal,
       aiJobId: jobId,
       assistantMessageId: messageId,
+      assertMaterialsCurrent: payload.materialSnapshot !== undefined
+        ? () => this.materialResolver!.assertCurrent(userId, payload.materialSnapshot) : undefined,
     })) {
       await this.assertActive(jobId, runToken, signal);
       if (event.type === "delta") text += String((event.data as { text?: string }).text ?? "");
@@ -252,14 +287,23 @@ export class WorkflowJobRunner {
   // 创建嵌套 Skill 任务
   private createNestedJob(parentJobId: string, userId: string, conversationId: string | undefined, assistantMessageId: string | undefined, request: { type?: AiJobType; payload?: Record<string, unknown>; contentId?: string }) {
     if (!request.type) throw new AppError({ code: "INVALID_TOOL_REQUEST", message: "Skill 任务类型无效", statusCode: 422, retryable: false });
+    const payload = { ...request.payload };
+    if (request.type === AiJobType.CreativeDirectGenerate) {
+      // Router/model output may propose writing parameters, but never materials.
+      // The parent chat job's server-side snapshot is the only material source.
+      for (const key of ["materialNotes", "assets", "attachmentAssetIds", "materialAssetIds", "referenceContentIds", "materialSnapshot", "parentChatJobId", "writingStyle", "expectedVersionId", "writingStyleContext", "writingStyleSnapshot"]) {
+        delete payload[key];
+      }
+    }
     return this.jobs.create({
       userId,
       type: request.type,
-      payload: request.payload ?? {},
+      payload,
       contentId: request.contentId,
       conversationId,
       assistantMessageId,
       idempotencyKey: `nested:${parentJobId}:${request.type}`,
+      ...(request.type === AiJobType.CreativeDirectGenerate ? { parentChatJobId: parentJobId } : {}),
     });
   }
 
@@ -267,7 +311,7 @@ export class WorkflowJobRunner {
   private runCreativeDirectGenerate(jobId: string, runToken: string, input: DirectGenerateRequest, userId: string, signal?: AbortSignal) {
     const payload = input as DirectGenerateRequest & { conversationId?: string; source?: "button" | "conversation" };
     return this.generateContent.execute(
-      { ...payload, operationId: jobId },
+      { ...payload, writingStyleSnapshot: (input as DirectGenerateRequest & { writingStyleSnapshot?: unknown }).writingStyleSnapshot, operationId: jobId },
       {
         userId,
         contentId: payload.contentId,

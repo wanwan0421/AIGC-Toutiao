@@ -15,6 +15,7 @@ export type EditorDraftCache = {
   // JSON is the editable Tiptap document shape used to restore rich text structure.
   json: Record<string, unknown> | null;
   briefTheme: string;
+  materialNotes: string;
   audience: string;
   style: string;
   viewpoint: string;
@@ -23,6 +24,12 @@ export type EditorDraftCache = {
   coverAssetId?: string | null;
   coverMode: "single" | "none";
   assetIds: string[];
+  briefMaterialIds?: string[];
+  chatMaterialIds?: string[];
+  referenceContentIds?: string[];
+  writingStyleMode?: "off" | "common" | "topic";
+  writingTopicKey?: string;
+  conversationId?: string;
   publishTimeMode: "now" | "scheduled";
   scheduledAt: string;
   selectedLocation: string;
@@ -38,6 +45,7 @@ type UseDraftAutosaveOptions = {
   draftStorageKey: (contentId: string | null) => string;
   ensureContentForDraft: (data: EditorDraftCache) => Promise<string>;
   isMeaningful: (data: EditorDraftCache) => boolean;
+  cloudSyncBlockReason?: (data: EditorDraftCache) => string | null;
   onStatus: (message: string) => void;
   onCloudSaved?: () => void | Promise<void>;
 };
@@ -66,6 +74,7 @@ export function useDraftAutosave(options: UseDraftAutosaveOptions) {
   const cloudTimerRef = useRef<number | null>(null);
   const [isOnline, setIsOnline] = useState(true);
   const [localSaveError, setLocalSaveError] = useState("");
+  const [isCloudSaving, setIsCloudSaving] = useState(false);
 
   useEffect(() => {
     optionsRef.current = options;
@@ -125,17 +134,33 @@ export function useDraftAutosave(options: UseDraftAutosaveOptions) {
   // 将当前编辑内容保存到云端草稿。这里会先保存到本地，再尝试保存到云端，避免网络不稳定导致数据丢失。
   const autoSaveDraft = useCallback(async (force = false) => {
     const current = optionsRef.current;
-    if (!current.editorReadyRef.current) return;
+    if (!current.editorReadyRef.current) {
+      if (force) current.onStatus("编辑器仍在加载，稍后可以再次保存");
+      return;
+    }
 
     const data = current.snapshotRef.current();
     if (!current.isMeaningful(data) && !force) return;
 
     // 不论有无网络都先保存到本地；localStorage 失败时也继续尝试云端。
     saveLocalDraftNow(data);
-    if (typeof navigator !== "undefined" && !navigator.onLine) return;
-    if (saveLockRef.current) return;
+    if (force) current.onStatus("正在保存到云端…");
+    const blockReason = current.cloudSyncBlockReason?.(data);
+    if (blockReason) {
+      if (force) current.onStatus(`${blockReason}；已保存在本地，缩短后可同步云端`);
+      return;
+    }
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      if (force) current.onStatus("当前离线，草稿已保存在本地，联网后会自动同步");
+      return;
+    }
+    if (saveLockRef.current) {
+      if (force) current.onStatus("云端保存正在进行，请稍候");
+      return;
+    }
 
     saveLockRef.current = true;
+    setIsCloudSaving(true);
     try {
       const savedContentId = await current.ensureContentForDraft(data);
       await autosaveDraft(savedContentId, {
@@ -150,6 +175,13 @@ export function useDraftAutosave(options: UseDraftAutosaveOptions) {
           coverMode: data.coverMode,
           assetIds: data.assetIds,
           briefTheme: data.briefTheme,
+          materialNotes: data.materialNotes,
+          briefMaterialIds: data.briefMaterialIds ?? [],
+          chatMaterialIds: data.chatMaterialIds ?? [],
+          referenceContentIds: data.referenceContentIds ?? [],
+          writingStyleMode: data.writingStyleMode ?? "off",
+          writingTopicKey: data.writingTopicKey ?? "",
+          conversationId: data.conversationId ?? "",
           audience: data.audience,
           style: data.style,
           viewpoint: data.viewpoint,
@@ -169,13 +201,14 @@ export function useDraftAutosave(options: UseDraftAutosaveOptions) {
       } else {
         removeLocalDraft(null);
         removeLocalDraft(savedContentId);
-        current.onStatus(`已自动保存到云端 · ${formatTime(new Date().toISOString())}`);
+        current.onStatus(`${force ? "已保存到云端" : "已自动保存到云端"} · ${formatTime(new Date().toISOString())}`);
       }
       await current.onCloudSaved?.();
     } catch (error) {
-      current.onStatus(error instanceof Error ? `云端保存失败：${error.message}` : "云端保存失败，已保留本地草稿");
+      current.onStatus(error instanceof Error ? `云端保存失败：${error.message}（本地草稿已保留）` : "云端保存失败，本地草稿已保留");
     } finally {
       saveLockRef.current = false;
+      setIsCloudSaving(false);
     }
   }, [hasLocalChangesAfter, removeLocalDraft, saveLocalDraftNow]);
 
@@ -244,6 +277,7 @@ export function useDraftAutosave(options: UseDraftAutosaveOptions) {
 
   return {
     isOnline,
+    isCloudSaving,
     localSaveError,
     saveLocalDraftNow,
     scheduleLocalDraftSave,

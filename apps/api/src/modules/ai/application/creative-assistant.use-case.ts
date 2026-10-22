@@ -12,6 +12,7 @@ import { ConversationSessionService } from "../conversation-session.service";
 import { MemoryService } from "../memory.service";
 import type { ModelResponseMetadata } from "../model-client.service";
 import type { SkillJobRequest, SkillRouterDecision } from "../skills-runtime/skill-runtime.types";
+import { generationMaterialSnapshotSchema, modelMaterialContext } from "../generation-material.snapshot";
 
 @Injectable()
 export class CreativeAssistantUseCase {
@@ -41,8 +42,11 @@ export class CreativeAssistantUseCase {
     signal?: AbortSignal;
     aiJobId?: string;
     assistantMessageId?: string;
+    assertMaterialsCurrent?: () => Promise<void>;
   } = {}) {
     const context = await this.contextBuilder.buildCreativeChatContext(request);
+    const materialSnapshot = generationMaterialSnapshotSchema.safeParse((request as CreativeChatRequest & { materialSnapshot?: unknown }).materialSnapshot);
+    const materialContext = materialSnapshot.success ? modelMaterialContext(materialSnapshot.data) : "";
     const assistantMessageId = options.assistantMessageId ?? this.memory.createMessageId();
     let assistantContent = "";
     const conversation = await this.conversations.ensureActiveConversation({
@@ -129,6 +133,8 @@ export class CreativeAssistantUseCase {
           contentId: context.persistenceContentId ?? undefined,
           message: modelMessage,
           rawMessage: request.message,
+          materialContext,
+          assertMaterialsCurrent: options.assertMaterialsCurrent,
           currentTitle: context.currentTitle,
           currentBody: context.currentBody,
           selectedText: context.selectedText,
@@ -142,6 +148,7 @@ export class CreativeAssistantUseCase {
       }
 
       if (archiveAssistantMessage) {
+        await options.assertMaterialsCurrent?.();
         await this.conversations.appendMessage({
           id: assistantMessageId,
           conversationId,
@@ -175,6 +182,8 @@ export class CreativeAssistantUseCase {
     contentId?: string;
     message: string;
     rawMessage: string;
+    materialContext: string;
+    assertMaterialsCurrent?: () => Promise<void>;
     currentTitle: string;
     currentBody: string;
     selectedText: string;
@@ -205,6 +214,7 @@ export class CreativeAssistantUseCase {
         const recovered = await this.ideaAssistant.retrieve(decision.session.pendingResponseId, { signal: input.signal }).catch(() => null);
         if (recovered?.metadata.status === "completed" && recovered.text) {
           yield recovered.text;
+          await input.assertMaterialsCurrent?.();
           await this.sessions.commitResponse({
             conversationId: input.conversationId,
             userId: input.userId,
@@ -255,6 +265,7 @@ export class CreativeAssistantUseCase {
       const includeEditorContext = rebuilt || decision.session?.editorContextHash !== editorContextHash;
       const userContent = JSON.stringify({
         message: input.message,
+        ...(input.materialContext ? { materialContext: input.materialContext } : {}),
         ...(includeEditorContext
           ? { editorContext: { title: input.currentTitle, body: input.currentBody, selectedText: input.selectedText } }
           : input.selectedText
@@ -306,6 +317,7 @@ export class CreativeAssistantUseCase {
         }
 
         if (!usingResponses) {
+          await input.assertMaterialsCurrent?.();
           await this.conversations.appendMessage({
             id: input.assistantMessageId,
             conversationId: input.conversationId,
@@ -339,6 +351,7 @@ export class CreativeAssistantUseCase {
           });
           pendingVersion = pending.version;
         }
+        await input.assertMaterialsCurrent?.();
         await this.sessions.commitResponse({
           conversationId: input.conversationId,
           userId: input.userId,

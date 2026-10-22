@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, UnprocessableEntityException } from "@nestjs/common";
+import { Injectable, Logger, NotFoundException, Optional, UnprocessableEntityException } from "@nestjs/common";
 import { AiJobDispatchStatus, AiJobStatus as DbAiJobStatus, Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { AiJobStatus, AiJobType, type AiJobEvent, type AiJobSnapshot } from "@aicp/shared";
@@ -12,6 +12,8 @@ import { AppError } from "../../common/app-error";
 import { AiJobPayloadValidator } from "./ai-job-payload.validator";
 import { UserRateLimitService } from "./user-rate-limit.service";
 import { ConversationArchiveService } from "../ai/conversation-archive.service";
+import { GenerationMaterialResolver } from "./generation-material-resolver.service";
+import { WritingStyleContextResolver } from "./writing-style-context-resolver.service";
 
 export const AI_JOB_CANCEL_CHANNEL = "ai-job:cancel";
 
@@ -27,7 +29,9 @@ export class WorkflowJobService {
     private readonly queue: WorkflowJobQueueService,
     private readonly payloadValidator: AiJobPayloadValidator,
     private readonly rateLimit: UserRateLimitService,
-    private readonly conversations: ConversationArchiveService
+    private readonly conversations: ConversationArchiveService,
+    @Optional() private readonly materialResolver?: GenerationMaterialResolver,
+    @Optional() private readonly writingStyleResolver?: WritingStyleContextResolver,
   ) {}
 
   async create(input: {
@@ -38,14 +42,37 @@ export class WorkflowJobService {
     conversationId?: string;
     assistantMessageId?: string;
     idempotencyKey?: string;
+    /** Internal only: nested full-article generation inherits this owned chat job's frozen materials. */
+    parentChatJobId?: string;
+    /** Only the writing-skill controller path may create this internal build job. */
+    internalWritingSkillBuild?: boolean;
+    /** Refresh jobs are created transactionally with source changes, never by public callers. */
+    internalWritingSkillRefresh?: boolean;
   }): Promise<AiJobSnapshot> {
     if (!Object.values(AiJobType).includes(input.type as AiJobType)) {
       throw new UnprocessableEntityException("unsupported AI job type");
     }
+    if (input.type === AiJobType.WritingSkillBuild && !input.internalWritingSkillBuild) {
+      throw new UnprocessableEntityException("writing-skill build jobs are internal");
+    }
+    if (input.type === AiJobType.WritingSkillRefresh && !input.internalWritingSkillRefresh) {
+      throw new UnprocessableEntityException("writing-skill refresh jobs are internal");
+    }
+    if (input.internalWritingSkillBuild && input.type !== AiJobType.WritingSkillBuild) {
+      throw new UnprocessableEntityException("internal writing-skill flag only applies to build jobs");
+    }
+    if (input.internalWritingSkillRefresh && input.type !== AiJobType.WritingSkillRefresh) {
+      throw new UnprocessableEntityException("internal writing-skill flag only applies to refresh jobs");
+    }
     if (!input.payload || typeof input.payload !== "object" || Array.isArray(input.payload)) {
       throw new UnprocessableEntityException("AI job payload must be an object");
     }
-    const payload = this.payloadValidator.parse(input.type, input.payload);
+    if (input.parentChatJobId && input.type !== AiJobType.CreativeDirectGenerate) {
+      throw new UnprocessableEntityException("parent chat job is only valid for direct generation");
+    }
+    const payload = this.payloadValidator.parse(input.type, input.payload, {
+      internalDirectGenerate: Boolean(input.parentChatJobId),
+    });
     const contentId = input.contentId ?? this.contentIdFromPayload(payload);
     if (contentId) {
       const ownedContent = await this.prisma.content.count({ where: { id: contentId, authorId: input.userId } });
@@ -58,6 +85,31 @@ export class WorkflowJobService {
     }
     const existing = await this.prisma.aiJob.findFirst({ where: { userId: input.userId, idempotencyKey } });
     if (existing) return toAiJobSnapshot(existing);
+    let frozenPayload = payload;
+    if (input.type === AiJobType.CreativeChat || input.type === AiJobType.CreativeDirectGenerate) {
+      if (!this.materialResolver) throw new Error("GenerationMaterialResolver is not configured");
+      const materialSnapshot = await this.materialResolver.resolve(input.userId, payload, input.parentChatJobId);
+      frozenPayload = {
+        ...payload,
+        materialNotes: materialSnapshot.materialNotes,
+        attachmentAssetIds: materialSnapshot.attachmentAssetIds,
+        materialAssetIds: materialSnapshot.materialDocuments.map((document) => document.assetId),
+        referenceContentIds: materialSnapshot.referenceContents.map((content) => content.contentId),
+        ...(input.parentChatJobId ? { message: materialSnapshot.currentRequest } : {}),
+        materialSnapshot,
+      };
+      const hasStyleSelection = payload.writingStyle !== undefined || payload.expectedVersionId !== undefined || Boolean(input.parentChatJobId);
+      if (hasStyleSelection && !this.writingStyleResolver) throw new Error("WritingStyleContextResolver is not configured");
+      const writingStyleSnapshot = hasStyleSelection
+        ? await this.writingStyleResolver!.resolve(input.userId, payload.writingStyle, payload.expectedVersionId, input.parentChatJobId)
+        : undefined;
+      delete frozenPayload.writingStyle;
+      delete frozenPayload.expectedVersionId;
+      if (writingStyleSnapshot) frozenPayload.writingStyleSnapshot = writingStyleSnapshot;
+      else delete frozenPayload.writingStyleSnapshot;
+      // Legacy `assets` is an attachment alias, never material for a text model.
+      delete frozenPayload.assets;
+    }
     await this.rateLimit.consume(input.userId, input.type === AiJobType.CreativeImageGenerate ? "image" : "ai");
     const activeCount = await this.prisma.aiJob.count({
       where: { userId: input.userId, status: { in: [DbAiJobStatus.queued, DbAiJobStatus.running] } },
@@ -79,7 +131,7 @@ export class WorkflowJobService {
             idempotencyKey,
             type: input.type,
             status: DbAiJobStatus.queued,
-            input: this.toJson(payload),
+            input: this.toJson(frozenPayload),
             dispatch: { create: { status: AiJobDispatchStatus.pending } },
           },
         });
@@ -102,6 +154,10 @@ export class WorkflowJobService {
     // 将任务加入队列，等待调度器处理
     await this.dispatcher.dispatchJob(jobId);
     return created.snapshot;
+  }
+
+  createWritingSkillBuild(userId: string, sourceContentIds: string[], idempotencyKey?: string) {
+    return this.create({ userId, type: AiJobType.WritingSkillBuild, payload: { sourceContentIds }, idempotencyKey, internalWritingSkillBuild: true });
   }
 
   async get(userId: string, jobId: string) {

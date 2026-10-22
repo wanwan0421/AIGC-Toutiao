@@ -1,5 +1,7 @@
 import { Module } from "@nestjs/common";
 import { AiCoreModule } from "../ai/ai-core.module";
+import { AssetsService } from "../assets/assets.service";
+import { StorageModule } from "../storage/storage.module";
 import { ContentMetricsModule } from "../content-metrics/content-metrics.module";
 import { PromptsModule } from "../prompts/prompts.module";
 import { ContentReviewPolicyService } from "./content-review-policy.service";
@@ -17,10 +19,16 @@ import { WorkflowJobService } from "./workflow-job.service";
 import { AiJobPayloadValidator } from "./ai-job-payload.validator";
 import { UserRateLimitService } from "./user-rate-limit.service";
 import { AiJobHandlerRegistry } from "./ai-job-handler.registry";
+import { GenerationMaterialResolver } from "./generation-material-resolver.service";
+import { WritingStyleContextResolver } from "./writing-style-context-resolver.service";
+import { WritingSkillService } from "../ai/writing-skill.service";
 
 @Module({
-  imports: [AiCoreModule, ContentMetricsModule, PromptsModule],
+  imports: [AiCoreModule, ContentMetricsModule, PromptsModule, StorageModule],
   providers: [
+    AssetsService,
+    GenerationMaterialResolver,
+    WritingStyleContextResolver,
     ContentReviewPolicyService,
     ContentWorkflowEngine,
     ScheduledPublishService,
@@ -35,6 +43,7 @@ import { AiJobHandlerRegistry } from "./ai-job-handler.registry";
     WorkflowJobService,
     AiJobPayloadValidator,
     UserRateLimitService,
+    WritingSkillService,
     AiJobHandlerRegistry,
   ],
   exports: [
@@ -47,6 +56,8 @@ import { AiJobHandlerRegistry } from "./ai-job-handler.registry";
     WorkflowJobRunner,
     WorkflowJobService,
     UserRateLimitService,
+    WritingSkillService,
+    WritingStyleContextResolver,
   ],
 })
 export class WorkflowModule {}

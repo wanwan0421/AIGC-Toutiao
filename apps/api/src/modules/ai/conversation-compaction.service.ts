@@ -2,7 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { z } from "zod";
 import { PrismaService } from "../../infra/prisma/prisma.service";
 import { ConversationArchiveService } from "./conversation-archive.service";
-import { ModelClientService, type ModelMessage } from "./model-client.service";
+import { ModelClientService, type ModelMessage, type ModelMessageContentPart } from "./model-client.service";
 import { completeStructured } from "./structured-output";
 
 const conversationSummarySchema = z.object({
@@ -167,7 +167,10 @@ export class ConversationCompactionService {
     ].join("\n");
   }
 
-  private estimateTokens(value: string) {
+  private estimateTokens(value: string | ModelMessageContentPart[]): number {
+    if (Array.isArray(value)) {
+      return value.reduce((total, part) => total + this.estimateTokens(part.type === "text" ? part.text : "[image]"), 0);
+    }
     let tokens = 0;
     let ascii = 0;
     for (const character of value) {

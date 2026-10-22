@@ -3,15 +3,34 @@ import { AiJobType } from "@aicp/shared";
 import { z } from "zod";
 
 const text = (max = 20_000) => z.string().trim().max(max);
+const materialText = z.string().max(120_000);
+const assetIds = (max: number) => z.array(text(128).min(1)).max(max);
 const base = z.object({
   contentId: text(128).optional(),
   conversationId: text(128).optional(),
   assistantMessageId: text(128).optional(),
 }).strict();
 
+const directGeneratePublic = base.extend({
+  theme: text().min(1), audience: text(500).optional(), style: text(500).optional(), viewpoint: text(2_000).optional(),
+  materialNotes: materialText.optional(), assets: assetIds(10).optional(),
+  attachmentAssetIds: assetIds(10).optional(), materialAssetIds: assetIds(3).optional(), referenceContentIds: assetIds(5).optional(),
+  writingStyle: z.object({ mode: z.enum(["off", "common", "topic"]), topicKey: text(80).optional() }).strict().optional(),
+  expectedVersionId: text(128).optional(),
+}).strict();
+
+const directGenerateNested = directGeneratePublic.extend({
+  source: z.literal("conversation"),
+  message: text().optional(), currentTitle: text(100).optional(), currentBody: text().optional(), historyText: text().optional(),
+}).strict();
+
 const schemas: Partial<Record<AiJobType, z.ZodTypeAny>> = {
   [AiJobType.CreativeChat]: base.extend({
-    message: text().min(1), currentTitle: text(100).optional(), currentBody: text().optional(), selectedText: text().optional(),
+    message: materialText.min(1), currentTitle: text(100).optional(), currentBody: text().optional(), selectedText: text().optional(),
+    materialNotes: materialText.optional(), attachmentAssetIds: assetIds(10).optional(),
+    materialAssetIds: assetIds(3).optional(), referenceContentIds: assetIds(5).optional(),
+    writingStyle: z.object({ mode: z.enum(["off", "common", "topic"]), topicKey: text(80).optional() }).strict().optional(),
+    expectedVersionId: text(128).optional(),
   }).strict(),
   [AiJobType.ConversationCompaction]: base.extend({
     conversationId: text(128).min(1),
@@ -22,11 +41,7 @@ const schemas: Partial<Record<AiJobType, z.ZodTypeAny>> = {
   [AiJobType.CreativeSelectionRewrite]: base.extend({
     selectedText: text().min(1), action: z.enum(["polish", "expand", "tone"]), surroundingContext: text().optional(), tone: text(100).optional(),
   }).strict(),
-  [AiJobType.CreativeDirectGenerate]: base.extend({
-    theme: text().min(1), audience: text(500).optional(), style: text(500).optional(), viewpoint: text(2_000).optional(),
-    materialNotes: text().optional(), assets: z.array(text(128)).max(10).optional(), source: z.enum(["button", "conversation"]).optional(),
-    message: text().optional(), currentTitle: text(100).optional(), currentBody: text().optional(), historyText: text().optional(),
-  }).strict(),
+  [AiJobType.CreativeDirectGenerate]: directGeneratePublic,
   [AiJobType.CreativeImageGenerate]: base.extend({ position: text(100).optional(), prompt: text().min(1) }).strict(),
   [AiJobType.ComplianceRewrite]: base.extend({ title: text(100).optional(), body: text().optional(), reasons: z.array(text(500)).max(10).optional() }).strict(),
   [AiJobType.ContentSubmitReview]: base.extend({
@@ -40,9 +55,11 @@ const schemas: Partial<Record<AiJobType, z.ZodTypeAny>> = {
 
 @Injectable()
 export class AiJobPayloadValidator {
-  parse(type: `${AiJobType}`, value: unknown) {
+  parse(type: `${AiJobType}`, value: unknown, options: { internalDirectGenerate?: boolean } = {}) {
     const generic = z.record(z.string(), z.unknown()).refine((record) => Object.keys(record).length <= 50, "too many payload fields");
-    const result = (schemas[type as AiJobType] ?? generic).safeParse(value);
+    const schema = type === AiJobType.CreativeDirectGenerate && options.internalDirectGenerate
+      ? directGenerateNested : schemas[type as AiJobType] ?? generic;
+    const result = schema.safeParse(value);
     if (!result.success) {
       throw new UnprocessableEntityException({
         message: "AI job payload validation failed",

@@ -47,7 +47,11 @@ describe("nested Skill jobs", () => {
       currentBody: "正文",
       historyText: "历史",
       conversationId: "conversation-1",
-    })).toMatchObject({ source: "conversation" });
+    }, { internalDirectGenerate: true })).toMatchObject({ source: "conversation" });
+
+    expect(() => validator.parse(AiJobType.CreativeDirectGenerate, {
+      theme: "主题", source: "conversation", historyText: "客户端伪造的聊天历史",
+    })).toThrow();
 
     expect(() => validator.parse(AiJobType.ContentSubmitReview, {
       contentId: "content-1",
@@ -55,6 +59,30 @@ describe("nested Skill jobs", () => {
       message: "审核",
       unexpected: true,
     })).toThrow();
+    expect(() => validator.parse(AiJobType.CreativeChat, {
+      message: "hello",
+      materialSnapshot: { schemaVersion: 1 },
+    })).toThrow();
+    expect(() => validator.parse(AiJobType.CreativeDirectGenerate, {
+      theme: "旅行",
+      materialSnapshot: { schemaVersion: 1 },
+    })).toThrow();
+  });
+
+  it("does not pass model-proposed materials to a nested article job", async () => {
+    const create = vi.fn(async (input) => input);
+    const runner = new WorkflowJobRunner(
+      {} as never, {} as never, {} as never, {} as never, {} as never,
+      {} as never, {} as never, { create } as never, { register: vi.fn() } as never,
+    );
+    await (runner as unknown as { createNestedJob: (...args: unknown[]) => Promise<unknown> }).createNestedJob(
+      "parent-1", "user-1", "conversation-1", "assistant-1",
+      { type: AiJobType.CreativeDirectGenerate, payload: { theme: "旅游", materialNotes: "模型伪造的经历", materialAssetIds: ["other-user-doc"], attachmentAssetIds: ["other-user-image"], writingStyle: { mode: "common" }, expectedVersionId: "model-version", writingStyleContext: "model-injected" } },
+    );
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      parentChatJobId: "parent-1",
+      payload: { theme: "旅游" },
+    }));
   });
 
   it("validates title, selection rewrite, and text moderation job payloads", () => {
