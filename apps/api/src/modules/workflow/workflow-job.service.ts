@@ -110,13 +110,21 @@ export class WorkflowJobService {
       // Legacy `assets` is an attachment alias, never material for a text model.
       delete frozenPayload.assets;
     }
-    await this.rateLimit.consume(input.userId, input.type === AiJobType.CreativeImageGenerate ? "image" : "ai");
-    const activeCount = await this.prisma.aiJob.count({
-      where: { userId: input.userId, status: { in: [DbAiJobStatus.queued, DbAiJobStatus.running] } },
-    });
-    if (activeCount >= 2) {
-      throw new AppError({ code: "AI_CONCURRENCY_LIMIT", message: "当前运行中的 AI 任务已达到上限", statusCode: 429, retryable: true, retryAfterMs: 5_000 });
+    // A nested direct-generation job is work performed by an already admitted
+    // creative-chat job. Counting it as a second user task can reject the
+    // chat's own requested action when the user's two logical slots are full.
+    if (!input.parentChatJobId) {
+      const activeCount = await this.prisma.aiJob.count({
+        where: {
+          userId: input.userId,
+          status: { in: [DbAiJobStatus.queued, DbAiJobStatus.running] },
+        },
+      });
+      if (activeCount >= 2) {
+        throw new AppError({ code: "AI_CONCURRENCY_LIMIT", message: "当前运行中的 AI 任务已达到上限", statusCode: 429, retryable: true, retryAfterMs: 5_000 });
+      }
     }
+    await this.rateLimit.consume(input.userId, input.type === AiJobType.CreativeImageGenerate ? "image" : "ai");
     const jobId = randomUUID();
     let created: { snapshot: AiJobSnapshot; event: AiJobEvent };
     try {
@@ -204,6 +212,19 @@ export class WorkflowJobService {
         where: { jobId, status: { not: AiJobDispatchStatus.dispatched } },
         data: { status: AiJobDispatchStatus.cancelled, lockedUntil: null },
       });
+      if (job.type === AiJobType.CreativeDirectGenerate && job.conversationId) {
+        await tx.aiMessage.upsert({
+          where: { dedupeKey: `creative-direct-generate:${job.id}:terminal` },
+          create: {
+            conversationId: job.conversationId,
+            dedupeKey: `creative-direct-generate:${job.id}:terminal`,
+            role: "assistant",
+            content: "图文生成已取消。",
+            metadata: { jobId: job.id, jobType: job.type, terminal: "cancelled" },
+          },
+          update: {},
+        });
+      }
       const snapshot = toAiJobSnapshot(job);
       const event = await this.events.createInTransaction(tx, jobId, {
         type: "error",
@@ -222,7 +243,8 @@ export class WorkflowJobService {
           conversationId: cancelledJob.conversationId,
           userId,
           role: "assistant",
-          content: "AI 任务已取消",
+          content: cancelledJob.type === AiJobType.CreativeDirectGenerate ? "图文生成已取消。" : "AI 任务已取消",
+          dedupeKey: cancelledJob.type === AiJobType.CreativeDirectGenerate ? `creative-direct-generate:${jobId}:terminal` : undefined,
           metadata: { jobId, jobType: cancelledJob.type, terminal: "cancelled" },
         }).catch(() => undefined);
       }

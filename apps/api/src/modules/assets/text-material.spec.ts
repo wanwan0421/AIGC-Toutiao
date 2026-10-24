@@ -307,6 +307,16 @@ describe("PDF/DOCX full-text extraction", () => {
       .rejects.toMatchObject({ code: "MATERIAL_DOCUMENT_TEXT_TOO_LONG" });
   });
 
+  it("rejects a PDF extension declared as an image before storing it", async () => {
+    const buffer = makePdf("travel");
+    const { service, storage, prisma } = setup({ buffer });
+    await expect(service.upload("author-one", {
+      originalname: "travel.pdf", mimetype: "image/png", buffer, size: buffer.length,
+    })).rejects.toMatchObject({ code: "MATERIAL_TYPE_UNSUPPORTED" });
+    expect(storage.saveBuffer).not.toHaveBeenCalled();
+    expect(prisma.asset.create).not.toHaveBeenCalled();
+  });
+
   it("rejects encrypted DOCX and applies the document byte limit", async () => {
     const encrypted = makeDocx("text");
     const central = encrypted.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));

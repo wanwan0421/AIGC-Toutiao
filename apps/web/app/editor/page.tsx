@@ -18,6 +18,7 @@ import {
   type ComplianceReplacement,
   type ComplianceRewriteResult,
   type ContentApprovalResult,
+  type ContentDetail,
   type ContentSummary,
   type ContentWorkflowState,
   type DirectGenerateResult,
@@ -34,6 +35,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
+  ApiError,
   attachCreativeConversation,
   buildWritingSkill,
   commitAiJobResult,
@@ -78,6 +80,8 @@ import {
 } from "../../lib/ai-job-session";
 import { useAiJob } from "../../lib/use-ai-job";
 import { useDraftAutosave, type EditorDraftCache } from "./use-draft-autosave";
+import { reconcileRestoredSelections, shouldRestoreLocalDraft } from "./draft-restore-validation";
+import { useAuth } from "../../components/auth-provider";
 import { CoverCropDialog } from "./cover-crop-dialog";
 import { isAiJobInEditorScope } from "../../lib/editor-ai-job-scope";
 import {
@@ -141,11 +145,32 @@ const RESTORABLE_EDITOR_JOB_TYPES = new Set<AiJobType>([
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
-  kind?: "chat" | "skill_status";
+  kind?: "chat" | "skill_status" | "skill_result";
   content: string;
   attachments?: string[];
   insertable?: boolean;
 };
+
+type GenerationStageView = {
+  phase?: string;
+  skillKey?: string;
+  completedImages?: number;
+  totalImages?: number;
+};
+
+const GENERATION_STAGE_LABELS: Record<string, string> = {
+  requirements: "分析需求",
+  article_draft: "写作正文",
+  visual_plan: "规划配图",
+  output_repair: "整理图文",
+  image_generation: "生成图片",
+};
+
+function generationImageProgress(stage: GenerationStageView) {
+  const total = Math.max(0, Number(stage.totalImages) || 0);
+  if (!total) return stage.phase === "image_generation" ? "暂无配图" : "规划中";
+  return `${Math.max(0, Number(stage.completedImages) || 0)}/${total}`;
+}
 
 type DraftCard = {
   id: string;
@@ -360,8 +385,7 @@ type GeneratedImageFallback = GeneratedImagePlacement & {
 };
 
 function generatedImageFigureHtml(asset: GeneratedImageAsset) {
-  const caption = asset.position || asset.fileName;
-  return `<figure><img src="${asset.url}" alt="${escapeHtml(asset.fileName)}" /><figcaption>${escapeHtml(caption)}</figcaption></figure>`;
+  return `<figure><img src="${asset.url}" alt="${escapeHtml(asset.fileName)}" /></figure>`;
 }
 
 function imageSlotPattern() {
@@ -556,8 +580,28 @@ function normalizeComparableText(value: string) {
     .toLowerCase();
 }
 
-function draftStorageKey(contentId: string | null) {
-  return `aicp:editor-draft:${contentId ?? "new"}`;
+function draftStorageKey(userId: string, contentId: string | null) {
+  return `aicp:editor-draft:${userId}:${contentId ?? "new"}`;
+}
+
+function migrateOwnedLegacyDraft(userId: string, contentId: string): DraftCache | null {
+  if (typeof window === "undefined") return null;
+  const legacyKey = `aicp:editor-draft:${contentId}`;
+  const raw = window.localStorage.getItem(legacyKey);
+  if (!raw) return null;
+  try {
+    const draft = JSON.parse(raw) as DraftCache;
+    if (draft.contentId !== contentId) return null;
+    try {
+      window.localStorage.setItem(draftStorageKey(userId, contentId), raw);
+      window.localStorage.removeItem(legacyKey);
+    } catch {
+      // The already authorized draft can still be restored if local storage is full.
+    }
+    return draft;
+  } catch {
+    return null;
+  }
 }
 
 function formatTime(value?: string) {
@@ -884,6 +928,7 @@ function snapshotFromCloudDraft(draft: CloudDraft, detail: ContentDetailForDraft
     chatMaterialIds: payloadStringArray(payload, "chatMaterialIds", []),
     referenceContentIds: payloadStringArray(payload, "referenceContentIds", []),
     writingStyleMode: payloadWritingStyleMode(payload),
+    writingStyleVersionId: payloadString(payload, "writingStyleVersionId"),
     writingTopicKey: payloadString(payload, "writingTopicKey"),
     conversationId: payloadString(payload, "conversationId") || undefined,
     audience: payloadString(payload, "audience"),
@@ -902,7 +947,8 @@ function snapshotFromCloudDraft(draft: CloudDraft, detail: ContentDetailForDraft
 export default function EditorPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { runJob, resumeJob, cancelJob, stopStreaming } = useAiJob();
+  const { profile: authProfile, status: authStatus } = useAuth();
+  const { runJob, resumeJob, cancelJob, stopStreaming, isRunning: isAiJobRunning } = useAiJob();
   const editingContentId = searchParams.get("contentId");
   const editorRef = useRef<RichTextEditorHandle | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
@@ -917,7 +963,12 @@ export default function EditorPage() {
   const draggedAssetRef = useRef<AssetSummary | null>(null);
   const uploadIntentRef = useRef<UploadIntent>("library");
   const snapshotRef = useRef<() => DraftCache>(() => snapshot());
+  const titleRef = useRef("");
   const bodyRef = useRef("");
+  const persistedQualityInputRef = useRef<{ contentId: string; title: string; body: string } | null>(null);
+  const reviewedAssetIdsRef = useRef<string[] | null>(null);
+  const reviewedHtmlRef = useRef<string | null>(null);
+  const reviewedTopicsRef = useRef<string[] | null>(null);
   const contentIdRef = useRef<string | null>(editingContentId);
   const coverAssetIdRef = useRef<string | null>(null);
   const coverPreviewRef = useRef("");
@@ -928,12 +979,15 @@ export default function EditorPage() {
   const restoredAiJobIdsRef = useRef(new Set<string>());
   const appliedRestoredAiJobIdsRef = useRef(new Set<string>());
   const editorInitializationOwnerRef = useRef(0);
+  const restoredDraftEpochRef = useRef(0);
+  const unverifiedCloudRecoveryRef = useRef<{ contentId: string; localSavedAt: string } | null>(null);
 
   const [contentId, setContentId] = useState<string | null>(editingContentId);
   const [editingStatus, setEditingStatus] = useState<ContentStatus | null>(
     null,
   );
   const [title, setTitle] = useState("");
+  titleRef.current = title;
   const [body, setBody] = useState("");
   const [briefTheme, setBriefTheme] = useState("");
   const [audience, setAudience] = useState("");
@@ -944,10 +998,15 @@ export default function EditorPage() {
   const [chatMaterials, setChatMaterials] = useState<AssetSummary[]>([]);
   const [referenceContentIds, setReferenceContentIds] = useState<string[]>([]);
   const [referenceChoices, setReferenceChoices] = useState<ContentSummary[]>([]);
-  const [referencePickerOpen, setReferencePickerOpen] = useState(false);
+  const [referencePickerTarget, setReferencePickerTarget] = useState<"brief" | "chat" | null>(null);
+  const referencePickerRefs = useRef<{ brief: HTMLDivElement | null; chat: HTMLDivElement | null }>({ brief: null, chat: null });
   const [invalidReferenceIds, setInvalidReferenceIds] = useState<string[]>([]);
   const [invalidBriefMaterialIds, setInvalidBriefMaterialIds] = useState<string[]>([]);
   const [invalidChatMaterialIds, setInvalidChatMaterialIds] = useState<string[]>([]);
+  const [invalidAttachmentLabels, setInvalidAttachmentLabels] = useState<string[]>([]);
+  const [invalidCoverLabel, setInvalidCoverLabel] = useState<string | null>(null);
+  const [invalidWritingStyleLabel, setInvalidWritingStyleLabel] = useState<string | null>(null);
+  const [invalidConversationLabel, setInvalidConversationLabel] = useState<string | null>(null);
   const [writingSkill, setWritingSkill] = useState<any>(null);
   const [writingStyleMode, setWritingStyleMode] = useState<WritingStyleSelection["mode"]>("off");
   const [writingTopicKey, setWritingTopicKey] = useState("");
@@ -988,11 +1047,27 @@ export default function EditorPage() {
       window.removeEventListener("keydown", closeOnEscape);
     };
   }, [writingStyleMenuOpen]);
+  useEffect(() => {
+    if (!referencePickerTarget) return;
+    const closeOutside = (event: MouseEvent) => {
+      if (!referencePickerRefs.current[referencePickerTarget]?.contains(event.target as Node)) setReferencePickerTarget(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setReferencePickerTarget(null);
+    };
+    document.addEventListener("mousedown", closeOutside);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOutside);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [referencePickerTarget]);
   const [generationMenuTarget, setGenerationMenuTarget] = useState<"brief" | "chat" | null>(null);
   const [prepTab, setPrepTab] = useState<PrepTab>("brief");
   const [chatInput, setChatInput] = useState("");
   const [conversationId, setConversationId] = useState<string | undefined>();
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [briefGenerationStage, setBriefGenerationStage] = useState<GenerationStageView | null>(null);
   const [isChatStreaming, setIsChatStreaming] = useState(false);
   const [titleCandidates, setTitleCandidates] = useState<
     Array<{ title: string; reason: string }>
@@ -1052,7 +1127,7 @@ export default function EditorPage() {
   const [searchKeyword, setSearchKeyword] = useState("");
   const [isSearchingLocation, setIsSearchingLocation] = useState(false);
   const busyOperation = activeOperation ?? restoringOperation;
-  const isBusy = busyOperation !== null;
+  const isBusy = busyOperation !== null || isAiJobRunning || isChatStreaming;
   const isOperation = (operation: EditorOperation) => busyOperation === operation;
 
   const imageAssets = useMemo(() => assets.filter(isImageAsset), [assets]);
@@ -1120,13 +1195,31 @@ export default function EditorPage() {
     ContentStatus.PendingReview,
     ContentStatus.Scheduled,
   ]);
-  const canRunQualityReview =
-    workflowState?.canScoreQuality ?? Boolean(editingStatus && qualityReadyStatuses.has(editingStatus));
-  const auditPassedForCurrentContent = Boolean(
-    reviewResult?.audit.passed && (workflowState?.currentAuditValid ?? true),
+  const persistedQualityInput = persistedQualityInputRef.current;
+  const localQualityInputMatchesPersisted = Boolean(persistedQualityInput
+    && persistedQualityInput.contentId === currentEditorContentId()
+    && persistedQualityInput.title === titleForSave(title)
+    && persistedQualityInput.body === editorText());
+  const localReviewInputMatches = Boolean(
+    localQualityInputMatchesPersisted
+    && reviewResult?.content.id === currentEditorContentId()
+    && reviewResult.content.updatedAt === lastContentSummary?.updatedAt
+    && (reviewResult.content.coverUrl ?? "") === (coverMode === "none" ? "" : coverPreview)
+    && reviewedHtmlRef.current !== null
+    && reviewedHtmlRef.current === editorHtml()
+    && reviewedTopicsRef.current?.join("\0") === normalizeTopicList(selectedTopics).join("\0")
+    && reviewedAssetIdsRef.current
+    && reviewedAssetIdsRef.current.join("\0") === buildContentAssetIds().sort().join("\0"),
   );
-  const auditResultIsStale = Boolean(
-    reviewResult?.audit.passed && workflowState && !workflowState.currentAuditValid,
+  const auditResultIsStale = Boolean(reviewResult?.audit.passed
+    && (!localReviewInputMatches || (workflowState && !workflowState.currentAuditValid)));
+  const auditPassedForCurrentContent = Boolean(reviewResult?.audit.passed && !auditResultIsStale);
+  const displayStatusMessage = auditResultIsStale && statusMessage.startsWith("安全审核通过")
+    ? "内容已修改，请重新进行内容审核"
+    : statusMessage;
+  const canRunQualityReview = Boolean(
+    (workflowState?.canScoreQuality ?? Boolean(editingStatus && qualityReadyStatuses.has(editingStatus)))
+    && localQualityInputMatchesPersisted && !auditResultIsStale,
   );
   const localCanPublishContent =
     editingStatus === ContentStatus.Approved ||
@@ -1136,9 +1229,15 @@ export default function EditorPage() {
   // Once the server has supplied workflow state, its audit/hash decision is
   // authoritative. Falling back to the local status here could show Publish
   // as enabled while quality review correctly remains blocked.
-  const canPublishContent = workflowState ? workflowState.canPublish : localCanPublishContent;
-  const publishBlockReason = workflowState?.publishBlockReason ?? "内容需要先通过安全审核后才能发布";
+  const canPublishContent = (workflowState ? workflowState.canPublish : localCanPublishContent)
+    && localQualityInputMatchesPersisted && !auditResultIsStale;
+  const publishBlockReason = auditResultIsStale || (persistedQualityInput && !localQualityInputMatchesPersisted)
+    ? "内容已修改，请保存并重新进行内容审核后再发布"
+    : workflowState?.publishBlockReason ?? "内容需要先通过安全审核后才能发布";
   const qualityBlockMessage = (() => {
+    if (auditResultIsStale || (persistedQualityInput && !localQualityInputMatchesPersisted)) {
+      return "内容尚未保存，或安全审核已因内容修改失效；请保存并重新进行内容审核。";
+    }
     switch (workflowState?.qualityBlockReason) {
       case "CONTENT_NOT_REVIEWED": return "请先对当前内容完成安全审核。";
       case "CONTENT_REJECTED": return "当前内容的安全审核未通过，请修改后重新审核。";
@@ -1168,7 +1267,7 @@ export default function EditorPage() {
   } = useDraftAutosave({
     editorReadyRef,
     snapshotRef,
-    draftStorageKey,
+    draftStorageKey: (id) => draftStorageKey(authProfile?.id ?? "unauthenticated", id),
     ensureContentForDraft,
     isMeaningful: (data) => Boolean(
       data.title.trim() || data.body.trim() || editorRef.current?.getText().trim()
@@ -1230,6 +1329,9 @@ export default function EditorPage() {
     setLastContentSummary(null);
     setWorkflowState(null);
     setReviewResult(null);
+    reviewedAssetIdsRef.current = null;
+    reviewedHtmlRef.current = null;
+    reviewedTopicsRef.current = null;
     setReviewRewrite(null);
     setQualityResult(null);
     setBriefMaterials([]);
@@ -1239,6 +1341,7 @@ export default function EditorPage() {
   }, [editingContentId, stopStreaming]);
 
   useEffect(() => {
+    if (authStatus !== "authenticated" || !authProfile?.id) return;
     const initializationOwner = editorInitializationOwnerRef.current + 1;
     editorInitializationOwnerRef.current = initializationOwner;
     if (editingContentId && skipNextEditorInitRef.current === editingContentId) {
@@ -1253,7 +1356,7 @@ export default function EditorPage() {
     void loadAssets();
     void loadTopics();
     void loadImageConfig();
-  }, [editingContentId]);
+  }, [editingContentId, authProfile?.id, authStatus]);
 
   // 恢复 AI 任务状态：先尝试本地缓存，再尝试从服务器恢复。恢复成功后，继续监听任务进度。
   useEffect(() => {
@@ -1313,16 +1416,41 @@ export default function EditorPage() {
         return;
       }
 
+      const restoredMetadata = candidate.type === AiJobType.CreativeDirectGenerate
+        ? await getAiJob(candidate.id).catch(() => null)
+        : null;
+      const restoredAssistantId = restoredMetadata?.assistantMessageId ?? undefined;
       restoreOwnerId = crypto.randomUUID();
       restoringOperationOwnerRef.current = restoreOwnerId;
       setRestoringOperation(editorOperationForJobType(candidate.type));
       setStatusMessage("检测到 AI 任务，正在从服务器恢复状态...");
       await resumeJob(candidate.id, {
         onProgress: (data) => { if (!disposed && typeof data.message === "string") setStatusMessage(data.message); },
+        onPartial: (data) => {
+          if (disposed || candidate.type !== AiJobType.CreativeDirectGenerate || data.kind !== "generationStage") return;
+          if (restoredAssistantId) setAssistantGenerationStage(restoredAssistantId, data.value);
+          else if (data.value && typeof data.value === "object") setBriefGenerationStage(data.value as GenerationStageView);
+        },
         onWarning: (message) => { if (!disposed) setStatusMessage(message); },
         onResultReady: (restoredJob, result, event) => disposed ? undefined : commitCreativeJobResult(restoredJob, result, event),
-        onDone: (restoredJob, result) => disposed ? undefined : handleEditorJobDone(restoredJob, result),
-        onError: (message) => { if (!disposed) setStatusMessage(`AI 任务恢复失败：${message}`); },
+        onDone: async (restoredJob, result) => {
+          if (disposed) return;
+          await handleEditorJobDone(restoredJob, result);
+          setBriefGenerationStage(null);
+          if (restoredJob.type === AiJobType.CreativeDirectGenerate && restoredJob.contentId && restoredJob.conversationId) {
+            const conversations = await getCreativeConversations(restoredJob.contentId).catch(() => []);
+            const latest = conversations[0];
+            if (latest && !disposed) setChatMessages(latest.messages.map((item, index) => ({ id: item.id ?? `${latest.id}-${index}`, role: item.role, kind: "chat", content: item.content, insertable: false })));
+          }
+        },
+        onError: (message, failedJob) => {
+          if (disposed) return;
+          setBriefGenerationStage(null);
+          setStatusMessage(`AI 任务恢复失败：${message}`);
+          if (restoredAssistantId && candidate.type === AiJobType.CreativeDirectGenerate && (failedJob?.status === "failed" || failedJob?.status === "cancelled")) {
+            setAssistantFinalReply(restoredAssistantId, failedJob.status === "cancelled" ? "图文生成已取消。" : `图文生成失败：${message}`);
+          }
+        },
       });
     })().catch((error) => {
       if (!disposed) setStatusMessage(error instanceof Error ? `AI 任务恢复失败：${error.message}` : "AI 任务恢复失败");
@@ -1497,6 +1625,7 @@ export default function EditorPage() {
       chatMaterialIds: chatMaterials.map((asset) => asset.id),
       referenceContentIds,
       writingStyleMode,
+      writingStyleVersionId: writingStyleMode === "off" ? "" : writingSkill?.activeVersion?.id ?? "",
       writingTopicKey,
       conversationId,
       publishTimeMode,
@@ -1510,35 +1639,49 @@ export default function EditorPage() {
   }
 
   // 草稿恢复的总出口，负责将数据赋回 React 各个散装的状态里
-  function applySnapshot(data: EditorSnapshotInput) {
+  async function applySnapshot(data: EditorSnapshotInput, knownConversations?: Awaited<ReturnType<typeof getCreativeConversations>>, requireValidation = false) {
+    const restoreEpoch = ++restoredDraftEpochRef.current;
     const nextBody = data.body ?? "";
     const nextHtml = resolveEditorHtml(
       nextBody,
       data.html,
       data.assetPreviews ?? [],
     );
+    const persistedQualityInput = persistedQualityInputRef.current;
+    if (persistedQualityInput && (
+      persistedQualityInput.contentId !== (data.contentId ?? "")
+      || persistedQualityInput.title !== titleForSave(data.title ?? "")
+      || persistedQualityInput.body !== nextBody
+    )) setQualityResult(null);
     setContentId(data.contentId ?? null);
     setTitle(data.title ?? "");
+    titleRef.current = data.title ?? "";
     setBody(nextBody);
     setBriefTheme(data.briefTheme ?? "");
     setAudience(data.audience ?? "");
     setStyle(data.style ?? "");
     setViewpoint(data.viewpoint ?? "");
     setMaterialNotes(data.materialNotes ?? "");
-    setWritingStyleMode(data.writingStyleMode ?? "off");
+    setWritingStyleMode("off");
     setWritingTopicKey(data.writingTopicKey ?? "");
-    setConversationId(data.conversationId || undefined);
-    void restoreGenerationMaterials(data.briefMaterialIds ?? [], "brief");
-    void restoreGenerationMaterials(data.chatMaterialIds ?? [], "chat");
-    void restoreReferenceContents(data.referenceContentIds ?? []);
+    setConversationId(undefined);
+    setBriefMaterials([]);
+    setChatMaterials([]);
+    setReferenceContentIds([]);
+    setAssetIds([]);
+    setInvalidBriefMaterialIds([]);
+    setInvalidChatMaterialIds([]);
+    setInvalidReferenceIds([]);
+    setInvalidAttachmentLabels([]);
+    setInvalidCoverLabel(null);
+    setInvalidWritingStyleLabel(null);
+    setInvalidConversationLabel(null);
     setSelectedTopics(normalizeTopicList(data.selectedTopics ?? []));
     coverUserTouchedRef.current = false;
-    coverPreviewRef.current = data.coverPreview ?? "";
-    setCoverPreview(data.coverPreview ?? "");
-    const nextCoverAssetId = data.coverAssetId || assetIdFromUrl(data.assetPreviews ?? assets, data.coverPreview ?? "");
-    rememberCoverAssetId(nextCoverAssetId);
+    coverPreviewRef.current = "";
+    setCoverPreview("");
+    rememberCoverAssetId(null);
     setCoverMode(data.coverMode ?? "single");
-    setAssetIds(buildContentAssetIds(data.assetIds ?? [], nextCoverAssetId, data.coverPreview ?? "", data.coverMode ?? "single"));
     setPublishTimeMode(data.publishTimeMode ?? "now");
     setScheduledAt(data.scheduledAt ?? "");
     setSelectedLocation(data.selectedLocation ?? "");
@@ -1547,6 +1690,77 @@ export default function EditorPage() {
     setContentStatement(data.contentStatement ?? "无声明");
     rememberGeneratedImageCandidates(data.generatedImageCandidates ?? []);
     writeEditorContent({ html: nextHtml, json: data.json ?? null, text: nextBody });
+    const savedReferenceIds = [...new Set((data.referenceContentIds ?? []).filter((id): id is string => typeof id === "string" && Boolean(id.trim())))];
+    const [assetsResult, contentsResult, styleResult, conversationsResult, referenceDetailsResult] = await Promise.allSettled([
+      getAssets(),
+      getContents(),
+      getWritingSkill(),
+      knownConversations && !data.conversationId ? Promise.resolve(knownConversations) : data.contentId ? getCreativeConversations(data.contentId) : Promise.resolve([]),
+      Promise.allSettled(savedReferenceIds.map((id) => getContentDetail(id))),
+    ]);
+    if (restoreEpoch !== restoredDraftEpochRef.current) return;
+    const assetSelectionSaved = Boolean(data.assetIds?.length || data.coverAssetId || data.coverPreview || data.briefMaterialIds?.length || data.chatMaterialIds?.length);
+    const referenceDetails = referenceDetailsResult.status === "fulfilled" ? referenceDetailsResult.value : [];
+    const referenceCheckFailed = referenceDetailsResult.status === "rejected" || referenceDetails.some((result) =>
+      result.status === "rejected" && !(result.reason instanceof ApiError && [403, 404].includes(result.reason.status)));
+    const requiredCheckFailed = (assetSelectionSaved && assetsResult.status === "rejected")
+      || (savedReferenceIds.length > 0 && referenceCheckFailed)
+      || (Boolean(data.writingStyleMode && data.writingStyleMode !== "off") && styleResult.status === "rejected")
+      || (Boolean(data.conversationId) && conversationsResult.status === "rejected");
+    if (requireValidation && requiredCheckFailed) {
+      throw new Error("草稿中的素材或写作选项暂无法核验，请联网后重新打开草稿");
+    }
+    const currentAssets = assetsResult.status === "fulfilled" ? assetsResult.value : [];
+    const currentContents = contentsResult.status === "fulfilled" ? contentsResult.value : [];
+    const verifiedReferences = referenceDetails.flatMap((result) => result.status === "fulfilled"
+      && result.value.status === "published" && countArticleCharacters(result.value.body) <= ARTICLE_BODY_MAX_LENGTH
+      ? [result.value] : []);
+    const currentStyle = styleResult.status === "fulfilled" ? styleResult.value : null;
+    const currentConversations = conversationsResult.status === "fulfilled" ? conversationsResult.value : [];
+    const restored = reconcileRestoredSelections(data, currentAssets, verifiedReferences, currentStyle, currentConversations);
+    setAssets(currentAssets);
+    setReferenceChoices([...new Map([...currentContents, ...verifiedReferences]
+      .filter((item) => item.status === "published").map((item) => [item.id, item])).values()]);
+    setBriefMaterials(restored.brief.selected);
+    setChatMaterials(restored.chat.selected);
+    setInvalidBriefMaterialIds(restored.brief.invalid);
+    setInvalidChatMaterialIds(restored.chat.invalid);
+    setReferenceContentIds(restored.validReferenceIds);
+    setInvalidReferenceIds(restored.invalidReferenceIds);
+    setAssetIds(restored.attachmentIds);
+    const assetById = new Map(currentAssets.map((asset) => [asset.id, asset]));
+    const validCandidates: GeneratedImageCandidate[] = [];
+    const invalidCandidates: string[] = [];
+    for (const candidate of data.generatedImageCandidates ?? []) {
+      const currentAsset = assetById.get(candidate.asset.id);
+      if (currentAsset && isImageAsset(currentAsset) && currentAsset.auditStatus !== "rejected") {
+        validCandidates.push({ ...candidate, asset: { ...candidate.asset, ...currentAsset } });
+      } else invalidCandidates.push(candidate.asset.fileName);
+    }
+    rememberGeneratedImageCandidates(validCandidates);
+    setInvalidAttachmentLabels([...new Set([...restored.invalidAttachmentIds, ...invalidCandidates])]);
+    setInvalidCoverLabel(restored.invalidCover);
+    setInvalidWritingStyleLabel(restored.invalidWritingStyle);
+    setInvalidConversationLabel(restored.invalidConversation);
+    generationAttachedImageIdsRef.current = new Set([...restored.brief.selected, ...restored.chat.selected]
+      .filter(isImageAsset).map((asset) => asset.id));
+    rememberCoverAssetId(restored.cover?.id ?? null);
+    coverPreviewRef.current = restored.cover?.url ?? "";
+    setCoverPreview(restored.cover?.url ?? "");
+    setWritingSkill(currentStyle);
+    setWritingStyleMode(restored.writingStyleMode);
+    setWritingTopicKey(restored.writingStyleMode === "topic" ? data.writingTopicKey ?? "" : "");
+    setConversationId(restored.conversation?.id);
+    setChatMessages(restored.conversation?.messages.map((item, index) => ({
+      id: item.id ?? `${restored.conversation?.id}-${index}`,
+      role: item.role,
+      kind: "chat" as const,
+      content: item.content,
+      insertable: false,
+    })) ?? []);
+    if ([assetsResult, contentsResult, styleResult, conversationsResult].some((result) => result.status === "rejected")) {
+      setStatusMessage("部分草稿选项暂无法验证，请联网后重新打开草稿");
+    }
   }
 
   function writeEditorContent(content: RichTextInitialContent) {
@@ -1561,79 +1775,22 @@ export default function EditorPage() {
     setEditorJsonContent((parsed?.json as Record<string, unknown> | undefined) ?? json);
     bodyRef.current = parsed?.text ?? nextText;
     setBody(bodyRef.current);
+    return parsed?.html ?? html;
   }
 
   function writeEditorMarkup(html: string, nextBody?: string) {
     writeEditorContent({ html, json: null, text: nextBody ?? textFromHtml(html) });
   }
 
-  async function openDraftCard(draftId: string) {
-    editorReadyRef.current = false;
-    setIsLoadingInitial(true);
+  function openDraftCard(draftId: string) {
+    if (editingContentId === draftId) return;
     router.push(`/studio/editor?contentId=${draftId}`, { scroll: false });
-    try {
-      const detail = await getContentDetail(draftId);
-      setEditingStatus(detail.status);
-      setLastContentSummary(detail);
-      setContentId(detail.id);
-      setTitle(detail.title);
-      setSelectedTopics(normalizeTopicList(detail.tags));
-      setAssetIds(detail.assets.map((item) => item.id));
-      coverUserTouchedRef.current = false;
-      coverPreviewRef.current = detail.coverUrl ?? "";
-      setCoverPreview(detail.coverUrl ?? "");
-      rememberCoverAssetId(assetIdFromUrl(detail.assets, detail.coverUrl));
-      setCoverMode(detail.coverUrl ? "single" : "none");
-      writeEditorContent({
-        html: detail.bodyHtml || contentToEditorHtml(detail.body, detail.assets),
-        json: detail.bodyJson ?? null,
-        text: detail.body,
-      });
-
-      const [draft, conversations, state] = await Promise.all([
-        getDraft(detail.id).catch(() => null),
-        getCreativeConversations(detail.id).catch(() => []),
-        getContentWorkflowState(detail.id).catch(() => null),
-      ]);
-      if (state) applyWorkflowState(state);
-
-      if (draft) {
-        applySnapshot(snapshotFromCloudDraft(draft, detail));
-      }
-
-      const latestConversation = conversations[0];
-      if (latestConversation) {
-        setConversationId(latestConversation.id);
-        setChatMessages(
-          latestConversation.messages.map((item) => ({
-            id: item.id ?? `${item.role}-${item.createdAt}`,
-            role: item.role,
-            kind: "chat",
-            content: item.content,
-            insertable: false,
-          })),
-        );
-      } else {
-        setChatMessages([]);
-      }
-
-      await loadAssets();
-      setStatusMessage("已打开草稿");
-    } catch (error) {
-      setStatusMessage(
-        error instanceof Error
-          ? `打开草稿失败：${error.message}`
-          : "打开草稿失败",
-      );
-    } finally {
-      editorReadyRef.current = true;
-      setIsLoadingInitial(false);
-    }
   }
 
   // 首次进入空白编辑页
   async function initializeEditor(targetContentId: string | null, initializationOwner: number) {
     editorReadyRef.current = false;
+    unverifiedCloudRecoveryRef.current = null;
     setIsLoadingInitial(true);
     let initialized = false;
     const isCurrentInitialization = () => editorInitializationOwnerRef.current === initializationOwner;
@@ -1645,6 +1802,9 @@ export default function EditorPage() {
         setEditingStatus(detail.status);
         setLastContentSummary(detail);
         setTitle(detail.title);
+        titleRef.current = detail.title;
+        persistedQualityInputRef.current = { contentId: detail.id, title: detail.title, body: detail.body };
+        reviewedAssetIdsRef.current = detail.assets.map((item) => item.id).sort();
         setSelectedTopics(normalizeTopicList(detail.tags));
         setAssetIds(detail.assets.map((item) => item.id));
         coverUserTouchedRef.current = false;
@@ -1652,15 +1812,16 @@ export default function EditorPage() {
         setCoverPreview(detail.coverUrl ?? "");
         rememberCoverAssetId(assetIdFromUrl(detail.assets, detail.coverUrl));
         setCoverMode(detail.coverUrl ? "single" : "none");
-        writeEditorContent({
+        reviewedHtmlRef.current = writeEditorContent({
           html: detail.bodyHtml || contentToEditorHtml(detail.body, detail.assets),
           json: detail.bodyJson ?? null,
           text: detail.body,
         });
+        reviewedTopicsRef.current = normalizeTopicList(detail.tags);
 
         // 再获取草稿数据
-        const [draft, conversations, state] = await Promise.all([
-          getDraft(detail.id).catch(() => null),
+        const [draftResult, conversations, state] = await Promise.all([
+          getDraft(detail.id).then((draft) => ({ draft, error: null as unknown })).catch((error: unknown) => ({ draft: null, error })),
           getCreativeConversations(detail.id).catch(() => []),
           getContentWorkflowState(detail.id).catch(() => null),
         ]);
@@ -1668,32 +1829,31 @@ export default function EditorPage() {
         if (state) applyWorkflowState(state);
 
         // 如果草稿存在，比较草稿和服务器内容的时间戳，优先恢复较新的内容，避免用户在编辑过程中丢失修改内容
-        if (draft) {
-          const cloudTime = new Date(draft.savedAt).getTime();
-          const local = readLocalDraft(targetContentId);
-          const scopedLocal = local?.contentId === targetContentId ? local : null;
-          if (local && !scopedLocal) removeLocalDraft(targetContentId);
-          const localTime = scopedLocal ? new Date(scopedLocal.savedAt).getTime() : 0;
-          if (scopedLocal && localTime >= cloudTime) {
-            applySnapshot(scopedLocal);
-            setStatusMessage("已恢复本地离线草稿");
-          } else {
-            applySnapshot(snapshotFromCloudDraft(draft, detail));
-            setStatusMessage("已恢复云端草稿");
-          }
+        const { draft, error: draftError } = draftResult;
+        const local = readLocalDraft(targetContentId) ?? migrateOwnedLegacyDraft(authProfile!.id, targetContentId);
+        const scopedLocal = local?.contentId === targetContentId ? local : null;
+        if (local && !scopedLocal) removeLocalDraft(targetContentId);
+        if (scopedLocal && shouldRestoreLocalDraft(scopedLocal.savedAt, draft, Boolean(draftError))) {
+          await applySnapshot(scopedLocal, conversations, true);
+          if (draftError) unverifiedCloudRecoveryRef.current = { contentId: targetContentId, localSavedAt: scopedLocal.savedAt };
+          setStatusMessage(draftError ? "云端草稿暂不可读取，已恢复本地草稿" : "已恢复本地离线草稿");
+        } else if (draft) {
+          await applySnapshot(snapshotFromCloudDraft(draft, detail), conversations, true);
+          setStatusMessage("已恢复云端草稿");
+        } else if (draftError) {
+          throw draftError;
         }
-        const latestConversation = conversations[0];
-        if (latestConversation) {
-          setConversationId(latestConversation.id);
-          setChatMessages(
-            latestConversation.messages.map((item) => ({
-              id: item.id ?? `${item.role}-${item.createdAt}`,
-              role: item.role,
-              kind: "chat",
-              content: item.content,
-              insertable: false,
-            })),
-          );
+        if (!isCurrentInitialization()) return;
+        if (!draft && !scopedLocal) {
+          const latestConversation = conversations[0];
+          setConversationId(latestConversation?.id);
+          setChatMessages(latestConversation?.messages.map((item) => ({
+            id: item.id ?? `${item.role}-${item.createdAt}`,
+            role: item.role,
+            kind: "chat",
+            content: item.content,
+            insertable: false,
+          })) ?? []);
         }
         await loadAssets();
       } else {
@@ -1703,7 +1863,7 @@ export default function EditorPage() {
 
         // 如果存在缓存，映射到编辑器状态，恢复编辑内容和选项设置，并提示用户已恢复未发布的草稿
         if (local) {
-          applySnapshot(local);
+          await applySnapshot(local, undefined, true);
           setStatusMessage("已恢复本地未发布草稿");
         }
       }
@@ -1725,8 +1885,10 @@ export default function EditorPage() {
 
   // 打开新内容编辑页时重置所有状态，确保不会有旧内容残留，避免用户误操作导致内容混乱
   function resetEditorForNewContent() {
+    restoredDraftEpochRef.current += 1;
     setEditingStatus(null);
     setTitle("");
+    titleRef.current = "";
     setBody("");
     setBriefTheme("");
     setAudience("");
@@ -1737,9 +1899,13 @@ export default function EditorPage() {
     setChatMaterials([]);
     setInvalidBriefMaterialIds([]);
     setInvalidChatMaterialIds([]);
+    setInvalidAttachmentLabels([]);
+    setInvalidCoverLabel(null);
+    setInvalidWritingStyleLabel(null);
+    setInvalidConversationLabel(null);
     setReferenceContentIds([]);
     setInvalidReferenceIds([]);
-    setReferencePickerOpen(false);
+    setReferencePickerTarget(null);
     setWritingStyleMode("off");
     setWritingTopicKey("");
     setSelectedTopics([]);
@@ -1748,9 +1914,14 @@ export default function EditorPage() {
     setCoverMode("single");
     setConversationId(undefined);
     setChatMessages([]);
+    setBriefGenerationStage(null);
     setShowPreview(false);
     setPreviewHtml("");
     setLastContentSummary(null);
+    persistedQualityInputRef.current = null;
+    reviewedAssetIdsRef.current = null;
+    reviewedHtmlRef.current = null;
+    reviewedTopicsRef.current = null;
     setWorkflowState(null);
     setReviewResult(null);
     setReviewRewrite(null);
@@ -1784,12 +1955,16 @@ export default function EditorPage() {
     setWorkflowState(state);
     setEditingStatus(state.content.status);
     setLastContentSummary(state.content);
-    if (state.latestAudit) {
-      setReviewResult({ content: state.content, audit: state.latestAudit.audit });
-      setReviewRewrite(state.latestAudit.rewrite ?? null);
-    }
-    if (state.latestQuality) {
+    setReviewResult(state.latestAudit ? { content: state.content, audit: state.latestAudit.audit } : null);
+    setReviewRewrite(state.latestAudit?.rewrite ?? null);
+    const currentQualityInput = persistedQualityInputRef.current;
+    const qualityInputIsCurrent = currentQualityInput?.contentId === state.content.id
+      && currentQualityInput.title === titleForSave(titleRef.current)
+      && currentQualityInput.body === editorText();
+    if (state.latestQuality && qualityInputIsCurrent) {
       setQualityResult(state.latestQuality);
+    } else {
+      setQualityResult(null);
     }
   }
 
@@ -1938,6 +2113,7 @@ export default function EditorPage() {
       const updated = await updateContent(targetContentId, payload);
       setEditingStatus(updated.status);
       setLastContentSummary(updated);
+      persistedQualityInputRef.current = { contentId: updated.id, title: payload.title, body: payload.body };
       return updated;
     }
     const created = await createContent(payload);
@@ -1945,6 +2121,7 @@ export default function EditorPage() {
     setContentId(created.id);
     setEditingStatus(created.status);
     setLastContentSummary(created);
+    persistedQualityInputRef.current = { contentId: created.id, title: payload.title, body: payload.body };
     if (conversationId) {
       await attachCreativeConversation(conversationId, created.id).catch(
         () => undefined,
@@ -1955,9 +2132,25 @@ export default function EditorPage() {
     return created;
   }
 
+  function rememberReviewInput(content: ContentDetail, submittedHtml: string) {
+    reviewedAssetIdsRef.current = content.assets.map((item) => item.id).sort();
+    reviewedHtmlRef.current = submittedHtml;
+    reviewedTopicsRef.current = normalizeTopicList(content.tags);
+  }
+
   // 确保草稿在云端有对应的内容记录，返回 contentId
   async function ensureContentForDraft(data: DraftCache) {
-    if (data.contentId) return data.contentId;
+    if (data.contentId) {
+      const recovery = unverifiedCloudRecoveryRef.current;
+      if (recovery?.contentId === data.contentId) {
+        const remote = await getDraft(data.contentId);
+        if (!shouldRestoreLocalDraft(recovery.localSavedAt, remote, false)) {
+          throw new Error("云端草稿比恢复的本地草稿更新；本地修改已保留，请重新打开并核对");
+        }
+        unverifiedCloudRecoveryRef.current = null;
+      }
+      return data.contentId;
+    }
 
     // 如果没有 contentId，说明是新草稿，先创建一个内容记录再进行后续的自动保存，避免后续自动保存时频繁创建内容记录
     const created = await createContent({
@@ -1999,6 +2192,7 @@ export default function EditorPage() {
     setEditorJsonContent(json);
     bodyRef.current = text;
     setBody(text);
+    setQualityResult(null);
     scheduleLocalDraftSave();
     scheduleCloudAutosave();
     setStatusMessage(
@@ -2014,6 +2208,7 @@ export default function EditorPage() {
     setEditorJsonContent(value.json as Record<string, unknown>);
     bodyRef.current = value.text;
     setBody(value.text);
+    setQualityResult(null);
     scheduleLocalDraftSave();
     scheduleCloudAutosave();
     if (message) setStatusMessage(message);
@@ -2068,59 +2263,6 @@ export default function EditorPage() {
     void loadAssets();
   }
 
-  async function restoreGenerationMaterials(ids: string[], target: "brief" | "chat") {
-    const uniqueIds = Array.from(new Set(ids.filter((id) => typeof id === "string" && id.length > 0)));
-    if (!uniqueIds.length) {
-      if (target === "brief") { setBriefMaterials([]); setInvalidBriefMaterialIds([]); }
-      else { setChatMaterials([]); setInvalidChatMaterialIds([]); }
-      return;
-    }
-    try {
-      const currentAssets = await getAssets();
-      setAssets(currentAssets);
-      const byId = new Map(currentAssets.map((asset) => [asset.id, asset]));
-      const restored: AssetSummary[] = [];
-      const invalid: string[] = [];
-      for (const id of uniqueIds) {
-        const asset = byId.get(id);
-        const document = asset && isGenerationDocument(asset);
-        const image = asset && isImageAsset(asset);
-        const hasStoredSource = asset?.source === "uploaded" && typeof asset.metadata?.storageKey === "string";
-        const validAudit = asset?.auditStatus === "approved" || (image && asset?.auditStatus === "pending");
-        if (!asset || (!document && !image) || (document && !hasStoredSource) || (document && asset.auditStatus !== "approved") || !validAudit) {
-          invalid.push(asset?.fileName ?? `素材 ${id}`);
-          continue;
-        }
-        restored.push(asset);
-      }
-      if (target === "brief") { setBriefMaterials(restored); setInvalidBriefMaterialIds(invalid); }
-      else { setChatMaterials(restored); setInvalidChatMaterialIds(invalid); }
-    } catch {
-      const invalid = uniqueIds.map((id) => `素材 ${id}`);
-      if (target === "brief") { setBriefMaterials([]); setInvalidBriefMaterialIds(invalid); }
-      else { setChatMaterials([]); setInvalidChatMaterialIds(invalid); }
-    }
-  }
-
-  async function restoreReferenceContents(ids: string[]) {
-    if (!ids.length) {
-      setReferenceContentIds([]);
-      setInvalidReferenceIds([]);
-      return;
-    }
-    try {
-      const current = await getContents();
-      const published = current.filter((item) => item.status === "published");
-      setReferenceChoices(published);
-      const available = new Set(published.map((item) => item.id));
-      setReferenceContentIds(ids.filter((id) => available.has(id)).slice(0, 5));
-      setInvalidReferenceIds(ids.filter((id) => !available.has(id)));
-    } catch {
-      setReferenceContentIds([]);
-      setInvalidReferenceIds(ids);
-    }
-  }
-
   function toggleReferenceContent(id: string) {
     if (referenceContentIds.includes(id)) setReferenceContentIds((items) => items.filter((item) => item !== id));
     else if (referenceContentIds.length >= 5) {
@@ -2131,13 +2273,13 @@ export default function EditorPage() {
     scheduleCloudAutosave();
   }
 
-  function temporaryReferenceControl() {
+  function temporaryReferenceControl(target: "brief" | "chat") {
     return (
-      <div className="relative">
-        <button type="button" onClick={() => setReferencePickerOpen((open) => !open)} className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:border-slate-300">
+      <div ref={(node) => { referencePickerRefs.current[target] = node; }} className="relative">
+        <button type="button" aria-expanded={referencePickerTarget === target} onClick={() => setReferencePickerTarget((open) => open === target ? null : target)} className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:border-slate-300">
           参考旧文{referenceContentIds.length ? ` · ${referenceContentIds.length}` : ""}
         </button>
-        {referencePickerOpen ? (
+        {referencePickerTarget === target ? (
           <div className="absolute bottom-full left-0 z-40 mb-2 max-h-64 w-72 overflow-y-auto rounded-xl border border-slate-200 bg-white p-2 shadow-xl">
             {referenceChoices.length ? referenceChoices.map((item) => (
               <label key={item.id} className="flex cursor-pointer items-start gap-2 rounded-lg px-2 py-2 text-xs text-slate-700 hover:bg-slate-50">
@@ -2145,7 +2287,6 @@ export default function EditorPage() {
                 <span className="line-clamp-2">{item.title || "未命名作品"}</span>
               </label>
             )) : <p className="px-2 py-3 text-xs text-slate-400">没有可参考的已发布文章</p>}
-            {invalidReferenceIds.map((id) => <div key={id} className="flex items-center justify-between gap-2 px-2 py-2 text-xs text-amber-700"><span>已失效的参考文章</span><button type="button" onClick={() => { setInvalidReferenceIds((items) => items.filter((item) => item !== id)); scheduleCloudAutosave(); }} aria-label="移除失效参考文章">移除</button></div>)}
           </div>
         ) : null}
       </div>
@@ -2205,12 +2346,12 @@ export default function EditorPage() {
         const isLargeDocument = /\.(?:pdf|docx)$/i.test(file.name);
         const isImage = /\.(jpe?g|png|webp|gif|avif|bmp)$/i.test(file.name);
         if (!isDocument && !isImage) {
-          errors.push(`${file.name}：仅支持 TXT、MD 和图片`);
+          errors.push(`${file.name}：仅支持 TXT、MD、PDF、DOCX 和图片`);
           continue;
         }
         const maxBytes = isLargeDocument ? 10 * 1024 * 1024 : 2 * 1024 * 1024;
         if (isDocument && file.size > maxBytes) {
-          errors.push(`${file.name}：TXT/MD 文件不能超过 2 MB`);
+          errors.push(`${file.name}：${isLargeDocument ? "PDF/DOCX 文件不能超过 10 MB" : "TXT/MD 文件不能超过 2 MB"}`);
           continue;
         }
         if (isDocument && documentCount >= 3) {
@@ -2275,10 +2416,10 @@ export default function EditorPage() {
   function generationMaterialTags(target: "brief" | "chat") {
     const selected = target === "brief" ? briefMaterials : chatMaterials;
     const invalid = target === "brief" ? invalidBriefMaterialIds : invalidChatMaterialIds;
-    if (!selected.length && !invalid.length && !referenceContentIds.length && !invalidReferenceIds.length) return <div>{temporaryReferenceControl()}</div>;
+    if (!selected.length && !invalid.length && !referenceContentIds.length && !invalidReferenceIds.length) return <div>{temporaryReferenceControl(target)}</div>;
     return (
       <div className="flex flex-wrap gap-2" aria-label="已选择的文件">
-        {temporaryReferenceControl()}
+        {temporaryReferenceControl(target)}
         {selected.map((asset) => (
           <span key={asset.id} className="inline-flex max-w-full items-center gap-1 rounded-full border border-slate-200 bg-white py-1 pl-2.5 pr-1 text-xs text-slate-700">
             {isImageAsset(asset) ? <ImagePlus size={13} /> : <FileText size={13} />}
@@ -2309,7 +2450,7 @@ export default function EditorPage() {
           disabled={isUploadingGenerationMaterials || isBusy || target === "chat" && isChatStreaming}
           aria-label={target === "brief" ? "添加本次生成文件" : "添加聊天文件"}
           aria-expanded={generationMenuTarget === target}
-          title="添加 TXT/MD 或图片"
+          title="添加 TXT、MD、PDF、DOCX 或图片"
           className={`inline-flex items-center justify-center border border-slate-200 bg-white text-slate-700 hover:border-[#ff2442] hover:text-[#ff2442] disabled:opacity-50 ${target === "brief" ? "size-11 rounded-2xl" : "size-10 rounded-xl"}`}
         >
           <Plus size={target === "brief" ? 20 : 19} />
@@ -2381,7 +2522,7 @@ export default function EditorPage() {
 
     if (pendingCommit?.resultEventId === event.id) {
       next = snapshotFromPendingCommit(pendingCommit.content);
-      applySnapshot(next);
+      await applySnapshot(next);
     } else if (resultJob.type === AiJobType.CreativeDirectGenerate) {
       const generated = result as DirectGenerateResult;
       finishGeneratedDraft(generated, partialAssetIds);
@@ -2450,6 +2591,11 @@ export default function EditorPage() {
     setContentId(committed.content.id);
     setEditingStatus(committed.content.status);
     setLastContentSummary(committed.content);
+    persistedQualityInputRef.current = {
+      contentId: committed.content.id,
+      title: titleForSave(next.title),
+      body: next.body,
+    };
     skipNextEditorInitRef.current = committed.content.id;
     window.history.replaceState(null, "", `/studio/editor?contentId=${committed.content.id}`);
     appliedRestoredAiJobIdsRef.current.add(resultJob.id);
@@ -2463,7 +2609,8 @@ export default function EditorPage() {
       if (!doneJob.contentId) return;
       const [detail, cloudDraft] = await Promise.all([getContentDetail(doneJob.contentId), getDraft(doneJob.contentId)]);
       contentIdRef.current = doneJob.contentId;
-      applySnapshot(snapshotFromCloudDraft(cloudDraft, detail));
+      await applySnapshot(snapshotFromCloudDraft(cloudDraft, detail));
+      persistedQualityInputRef.current = { contentId: detail.id, title: detail.title, body: detail.body };
       setEditingStatus(detail.status);
       setLastContentSummary(detail);
       window.history.replaceState(null, "", `/studio/editor?contentId=${doneJob.contentId}`);
@@ -2489,6 +2636,7 @@ export default function EditorPage() {
       chatMaterialIds: data.chatMaterialIds ?? [],
       referenceContentIds: data.referenceContentIds ?? [],
       writingStyleMode: data.writingStyleMode ?? "off",
+      writingStyleVersionId: data.writingStyleVersionId ?? "",
       writingTopicKey: data.writingTopicKey ?? "",
       conversationId: data.conversationId ?? "",
       audience: data.audience,
@@ -2622,6 +2770,8 @@ export default function EditorPage() {
   // 完成生成的草稿内容的收尾工作，包括设置标题、话题、封面图，注册生成的图片素材，写入编辑器内容，以及提示用户后续需要确认的生成图片
   function finishGeneratedDraft(generated: DirectGenerateResult, generatedAssetIds: string[]) {
     setTitle(generated.title);
+    titleRef.current = generated.title;
+    setQualityResult(null);
     setSelectedTopics(normalizeTopicList(generated.tags));
     setTitleCandidates(generated.titleCandidates.filter((candidate) => candidate.title !== generated.title));
     setShowTitleCandidates(false);
@@ -2806,6 +2956,7 @@ export default function EditorPage() {
     });
 
     setActiveOperation("draft");
+    setBriefGenerationStage(null);
     rememberGeneratedImageCandidates([]);
     setStatusMessage("AI 正在生成结构化图文...");
     try {
@@ -2831,6 +2982,10 @@ export default function EditorPage() {
             if (typeof data.message === "string") setStatusMessage(data.message);
           },
           onPartial: (data) => {
+            if (data.kind === "generationStage" && data.value && typeof data.value === "object") {
+              setBriefGenerationStage(data.value as GenerationStageView);
+              return;
+            }
             if (data.kind === "draft") {
               setStatusMessage("AI 初稿和配图方案已生成，正在生成图片...");
             }
@@ -2858,6 +3013,7 @@ export default function EditorPage() {
           : "AI 生成失败",
       );
     } finally {
+      setBriefGenerationStage(null);
       setActiveOperation(null);
     }
   }
@@ -3036,23 +3192,43 @@ export default function EditorPage() {
 
   function setAssistantSkillStatus(assistantId: string, text: string) {
     if (!text.trim()) return;
-    setChatMessages((items) =>
-      items.map((item) =>
-        item.id === assistantId
+    setChatMessages((items) => items.some((item) => item.id === assistantId)
+      ? items.map((item) =>
+        item.id === assistantId && item.kind !== "skill_result"
           ? { ...item, kind: "skill_status", content: text, insertable: false }
           : item,
-      ),
-    );
+      )
+      : [...items, { id: assistantId, role: "assistant", kind: "skill_status", content: text, insertable: false }]);
+  }
+
+  function setAssistantFinalReply(assistantId: string, text: string) {
+    setChatMessages((items) => items.some((item) => item.id === assistantId)
+      ? items.map((item) => item.id === assistantId
+      ? { ...item, kind: "skill_result", content: text, insertable: false }
+      : item)
+      : [...items, { id: assistantId, role: "assistant", kind: "skill_result", content: text, insertable: false }]);
+  }
+
+  function setAssistantGenerationStage(assistantId: string, value: unknown) {
+    if (!value || typeof value !== "object") return;
+    const stage = value as GenerationStageView;
+    const label = stage.phase ? GENERATION_STAGE_LABELS[stage.phase] : undefined;
+    if (!label) return;
+    const topic = writingStyleMode === "topic"
+      ? writingSkill?.activeVersion?.profile?.topics?.find((item: { key: string; label: string }) => item.key === writingTopicKey)?.label
+      : undefined;
+    const skill = stage.skillKey === "content-production-line" ? "完整图文创作 Skill" : stage.skillKey ?? "完整图文创作 Skill";
+    setAssistantSkillStatus(assistantId, `**${label}**\n\n使用：${skill}${topic ? ` · ${topic}写作风格` : ""}\n\n配图：${generationImageProgress(stage)}`);
   }
 
   function shouldOfferChatActions(message: ChatMessage) {
-    return message.role === "assistant" && message.kind !== "skill_status" && Boolean(message.content.trim());
+    return message.role === "assistant" && (message.kind ?? "chat") === "chat" && Boolean(message.content.trim());
   }
 
   // 对话式 AI 生成：由对话中的 AI Agent 触发，可能是生成初稿、生成图片等多种技能
   // 整个过程在对话气泡里展示进度和结果，用户可以在对话里直接确认生成的图片并插入到编辑器中
   async function runConversationDraftJob(event: CreativeChatSkillEvent, assistantId: string) {
-    if (!event.job || isBusy) return;
+    if (!event.job || busyOperation !== null) return;
     const generatedAssetIds: string[] = [];
     setActiveOperation("draft");
     rememberGeneratedImageCandidates([]);
@@ -3065,44 +3241,52 @@ export default function EditorPage() {
           onProgress: (data) => {
             if (typeof data.message === "string") {
               setStatusMessage(data.message);
-              setAssistantSkillStatus(assistantId, data.message);
             }
           },
           onPartial: (data) => {
+            if (data.kind === "generationStage") {
+              setAssistantGenerationStage(assistantId, data.value);
+              return;
+            }
             if (data.kind === "draft") {
               setStatusMessage("AI 初稿和配图方案已生成，正在生成图片...");
-              setAssistantSkillStatus(assistantId, "正文和配图方案已生成，正在生成封面与正文配图。");
             }
             if (data.kind === "imageAsset") {
               const value = data.value as { asset?: GeneratedImageAsset; cover?: boolean; position?: string; slotId?: string };
               if (value.asset && !generatedAssetIds.includes(value.asset.id)) generatedAssetIds.push(value.asset.id);
               const label = value.cover ? "封面图" : value.position ?? value.asset?.position ?? "正文配图";
               setStatusMessage(`${label}已生成，正在等待完整图文完成...`);
-              setAssistantSkillStatus(assistantId, `${label}已生成，继续整理完整图文。`);
             }
           },
           onWarning: (message) => {
             setStatusMessage(message);
-            setAssistantSkillStatus(assistantId, `提示：${message}`);
           },
           onResultReady: async (job, result, event) => {
             await commitCreativeJobResult(job, result, event, generatedAssetIds);
-            setAssistantSkillStatus(assistantId, "完整图文已写入编辑器；正文配图已自动插入，少数无法定位的图片会留在候选区。");
           },
-          onError: (message) => {
+          onError: (message, failedJob) => {
             setStatusMessage(`AI 生成失败：${message}`);
-            setAssistantSkillStatus(assistantId, `生成失败：${message}`);
+            if (failedJob?.status === "failed" || failedJob?.status === "cancelled") {
+              setAssistantFinalReply(assistantId, failedJob.status === "cancelled" ? "图文生成已取消。" : `图文生成失败：${message}`);
+            }
           },
         },
       );
-      if (job.status !== "succeeded") {
-        throw new Error(job.errorMessage ?? "AI 生成失败");
+      if (job.status === "cancelled") {
+        setAssistantFinalReply(assistantId, "图文生成已取消。");
+        return;
       }
+      if (job.status === "failed") {
+        setAssistantFinalReply(assistantId, `图文生成失败：${job.errorMessage ?? "AI 生成失败"}`);
+        return;
+      }
+      if (job.status !== "succeeded") return;
+      setAssistantFinalReply(assistantId, "图文已生成，正文和配图已回填。");
       await loadAssets();
     } catch (error) {
       const message = error instanceof Error ? error.message : "AI 生成失败";
       setStatusMessage(`AI 生成失败：${message}`);
-      setAssistantSkillStatus(assistantId, `生成失败：${message}`);
+      setAssistantFinalReply(assistantId, `图文生成失败：${message}`);
     } finally {
       setActiveOperation(null);
     }
@@ -3111,7 +3295,7 @@ export default function EditorPage() {
   // 内容安全审核流程：由对话中的 AI Agent 触发，执行后会把审核结果同步到发布流转面板的内容详情里
   // 用户可以根据审核反馈调整内容后继续提交审核，直到通过为止
   async function runConversationReviewJob(event: CreativeChatSkillEvent, assistantId: string) {
-    if (!event.job || isBusy) return;
+    if (!event.job || busyOperation !== null) return;
     setActiveOperation("audit");
     setReviewRewrite(null);
     setStatusMessage("AI Agent 已选择内容安全审核，正在执行...");
@@ -3152,12 +3336,14 @@ export default function EditorPage() {
   }
 
   async function runConversationReviewAfterPersist(assistantId: string) {
-    if (isBusy) return;
+    if (busyOperation !== null) return;
     setActiveOperation("audit");
     setReviewRewrite(null);
     setAssistantSkillStatus(assistantId, "正在先保存当前内容，再执行安全审核。");
     try {
+      const submittedHtml = editorHtml();
       const saved = await persistContent();
+      rememberReviewInput(saved, submittedHtml);
       const reviewJob = await runJob(
         () => startSubmitReviewJob(saved.id),
         {
@@ -3220,7 +3406,7 @@ export default function EditorPage() {
   // it does not cancel the old server task.
   async function sendCreativeChatMessage() {
     const message = chatInput.trim();
-    if (!message || isChatStreaming || streamLockRef.current || isUploadingGenerationMaterials) return;
+    if (!message || isBusy || isChatStreaming || streamLockRef.current || isUploadingGenerationMaterials) return;
     if (writingStyleMode === "topic" && !writingTopicKey) {
       setStatusMessage("请先在创作简报中选择要使用的主题写法");
       return;
@@ -3293,7 +3479,7 @@ export default function EditorPage() {
                   ? (() => {
                       const insertable = shouldOfferChatActions(item);
                       hasInsertableMessage = hasInsertableMessage || insertable;
-                      return item.kind === "skill_status"
+                      return item.kind === "skill_status" || item.kind === "skill_result"
                         ? { ...item, insertable: false }
                         : { ...item, id: event.messageId ?? item.id, insertable };
                     })()
@@ -3303,15 +3489,22 @@ export default function EditorPage() {
             setStatusMessage(hasInsertableMessage ? "AI 回复完成，可插入正文或生成配图" : "AI 回复完成");
             chatJobIdRef.current = null;
           },
-          onError: (text) => setStatusMessage(text),
+          onError: (text) => {
+            setStatusMessage(text);
+            setChatMessages((items) => items.map((item) => item.id === assistantId
+              ? { ...item, kind: "chat", content: item.content.trim() ? `${item.content}\n\n${text}` : `本次 AI 请求失败：${text}`, insertable: false }
+              : item));
+            chatJobIdRef.current = null;
+          },
         },
       );
     } catch (error) {
-      setStatusMessage(
-        error instanceof Error
-          ? `AI 对话失败：${error.message}`
-          : "AI 对话失败",
-      );
+      const failure = error instanceof Error ? `AI 对话失败：${error.message}` : "AI 对话失败";
+      setStatusMessage(failure);
+      setChatMessages((items) => items.map((item) => item.id === assistantId
+        ? { ...item, kind: "chat", content: item.content.trim() ? `${item.content}\n\n${failure}` : failure, insertable: false }
+        : item));
+      chatJobIdRef.current = null;
     } finally {
       streamLockRef.current = false;
       setIsChatStreaming(false);
@@ -3374,6 +3567,12 @@ export default function EditorPage() {
     uploadIntentRef.current = "library";
     if (intent === "cover") {
       setCoverCropFile(file);
+      return;
+    }
+    const isLargeDocument = /\.(?:pdf|docx)$/i.test(file.name);
+    const isTextDocument = /\.(?:txt|md|markdown)$/i.test(file.name);
+    if ((isLargeDocument && file.size > 10 * 1024 * 1024) || (isTextDocument && file.size > 2 * 1024 * 1024)) {
+      setStatusMessage(`${file.name}：${isLargeDocument ? "PDF/DOCX 文件不能超过 10 MB" : "TXT/MD 文件不能超过 2 MB"}`);
       return;
     }
     setIsUploadingAsset(true);
@@ -3566,7 +3765,9 @@ export default function EditorPage() {
     setReviewRewrite(null);
     setStatusMessage("正在保存内容，准备内容审核...");
     try {
+      const submittedHtml = editorHtml();
       const saved = await persistContent();
+      rememberReviewInput(saved, submittedHtml);
       setStatusMessage("内容已保存，正在内容审核...");
       const reviewJob = await runJob(
         () => startSubmitReviewJob(saved.id),
@@ -3610,29 +3811,28 @@ export default function EditorPage() {
   }
 
   async function runQualityAssessment() {
-    const targetId = contentId ?? lastContentSummary?.id;
-    if (!targetId) {
-      setStatusMessage("请先保存并内容审核后，再进行质量评估");
-      return;
-    }
-    if (!canRunQualityReview) {
-      setStatusMessage("内容需要先通过安全审核，才可以进行质量评估");
-      return;
-    }
     if (isBusy) return;
 
     setActiveOperation("quality");
-    setStatusMessage("正在进行质量评估与打分...");
+    setQualityResult(null);
+    setStatusMessage("正在保存当前内容，准备质量评估...");
     try {
+      const saved = await persistContent();
+      const evaluatedTitle = titleForSave(title);
+      const evaluatedBody = editorText();
+      const currentState = await refreshWorkflowState(saved.id);
+      if (!currentState?.canScoreQuality) {
+        throw new Error("当前内容尚未通过有效的安全审核，请重新进行内容审核后再评估。");
+      }
+      setStatusMessage("内容已保存，正在进行质量评估与打分...");
       const job = await runJob(
-        () => startQualityScoreJob(targetId),
+        () => startQualityScoreJob(saved.id),
         {
           onProgress: (data) => {
             if (typeof data.message === "string") setStatusMessage(data.message);
           },
           onPartial: (data) => {
             if (data.kind === "quality") {
-              setQualityResult(data.value as QualityScoreResult);
               setStatusMessage("质量评估已生成，正在更新作品状态");
             }
             if (data.kind === "content") {
@@ -3651,7 +3851,10 @@ export default function EditorPage() {
       const approved = job.result as ContentApprovalResult;
       setLastContentSummary(approved.content);
       setEditingStatus(approved.content.status);
-      setQualityResult(approved.quality);
+      const editorStillMatchesEvaluatedVersion = titleForSave(titleRef.current) === evaluatedTitle
+        && editorText() === evaluatedBody;
+      if (editorStillMatchesEvaluatedVersion) setQualityResult(approved.quality);
+      else setQualityResult(null);
       setWorkflowState((current) =>
         current
           ? {
@@ -3671,8 +3874,11 @@ export default function EditorPage() {
           : current,
       );
       await refreshWorkflowState(approved.content.id).catch(() => null);
-      setStatusMessage(`质量评估完成，综合得分 ${approved.quality.total}`);
+      setStatusMessage(editorStillMatchesEvaluatedVersion
+        ? `质量评估完成，综合得分 ${approved.quality.total}`
+        : "质量评估完成，但评估期间内容有变更；当前报告已隐藏，请对最新内容重新评估。");
     } catch (error) {
+      setQualityResult(null);
       setStatusMessage(
         error instanceof Error
           ? `质量评估失败：${error.message}`
@@ -3688,31 +3894,29 @@ export default function EditorPage() {
       setStatusMessage("请先完成封面裁剪和上传，再发布内容");
       return;
     }
+    if (isBusy) return;
     const targetId = contentId ?? lastContentSummary?.id;
     if (!targetId) {
       setStatusMessage("请先保存内容后再发布");
       return;
     }
-    const latestState = await refreshWorkflowState(targetId).catch(() => null);
-    if (latestState && !latestState.canPublish) {
-      setStatusMessage(latestState.publishBlockReason ?? "内容需要先通过安全审核后才能发布");
-      return;
-    }
-    if (!latestState && !canPublishContent) {
-      setStatusMessage(publishBlockReason);
-      return;
-    }
-    if (isBusy) return;
-
     setActiveOperation("publish");
-    setStatusMessage("正在发布内容...");
+    setStatusMessage("正在保存当前内容，准备发布...");
     try {
+      const saved = await persistContent();
+      const latestState = await refreshWorkflowState(saved.id);
+      if (!latestState) throw new Error("无法读取最新审核状态，请稍后重试");
+      if (!latestState.canPublish) {
+        setStatusMessage(latestState.publishBlockReason ?? "内容需要先通过安全审核后才能发布");
+        return;
+      }
+      setStatusMessage("内容已保存，正在发布...");
       const publishScheduledAt = publishTimeMode === "scheduled" && scheduledAt ? scheduledAt : null;
       if (publishTimeMode === "scheduled" && !publishScheduledAt) {
         setStatusMessage("请先选择定时发布时间");
         return;
       }
-      const published = await publishContent(targetId, {
+      const published = await publishContent(saved.id, {
         visibility,
         scheduledAt: publishScheduledAt,
       });
@@ -3805,6 +4009,8 @@ export default function EditorPage() {
 
     if (changed > 0 || nextTitle !== title) {
       setTitle(nextTitle);
+      titleRef.current = nextTitle;
+      setQualityResult(null);
     }
     if (changed > 0) {
       setProcessedRiskItemIds((prev) => {
@@ -3821,7 +4027,11 @@ export default function EditorPage() {
   function applyReplacementByRiskItem(replacement: ComplianceReplacement, riskItem?: AuditRiskItem) {
     if (riskItem?.field === "title") {
       const result = replaceInTextByRiskItem(title, replacement, riskItem);
-      if (result.changed) setTitle(result.text);
+      if (result.changed) {
+        setTitle(result.text);
+        titleRef.current = result.text;
+        setQualityResult(null);
+      }
       return result.changed;
     }
 
@@ -4026,6 +4236,13 @@ export default function EditorPage() {
         </aside>
 
         <main className="space-y-5">
+          {briefGenerationStage && isOperation("draft") ? (
+            <section aria-live="polite" className="flex flex-wrap items-center gap-x-5 gap-y-2 rounded-2xl border border-rose-100 bg-rose-50 px-5 py-3 text-sm text-slate-700">
+              <span className="font-semibold text-[#ff2442]">{GENERATION_STAGE_LABELS[briefGenerationStage.phase ?? ""] ?? "生成图文"}</span>
+              <span>使用：{briefGenerationStage.skillKey === "content-production-line" ? "完整图文创作 Skill" : briefGenerationStage.skillKey ?? "完整图文创作 Skill"}</span>
+              <span>配图：{generationImageProgress(briefGenerationStage)}</span>
+            </section>
+          ) : null}
           {drafts.length ? (
             <section className="rounded-[28px] border border-slate-100 bg-white px-5 py-4 shadow-sm">
               <div className="flex items-center gap-4">
@@ -4087,7 +4304,7 @@ export default function EditorPage() {
           <section className="relative rounded-3xl border border-slate-100 bg-white p-5 shadow-sm">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-400">
               <span>
-                {isOnline ? "在线编辑" : "离线编辑"} · {statusMessage}
+                {isOnline ? "在线编辑" : "离线编辑"} · {displayStatusMessage}
               </span>
               <div className="flex flex-wrap items-center gap-2">
                 <div ref={writingStyleMenuRef} className="relative">
@@ -4118,10 +4335,24 @@ export default function EditorPage() {
               </div>
             </div>
 
+            {(invalidAttachmentLabels.length > 0 || invalidReferenceIds.length > 0 || invalidCoverLabel || invalidWritingStyleLabel || invalidConversationLabel) && (
+              <div className="mb-4 flex flex-wrap gap-2" aria-label="草稿中已失效的选项">
+                {invalidAttachmentLabels.map((label) => <span key={label} className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 py-1 pl-3 pr-1 text-xs text-amber-800">{label} · 已失效<button type="button" onClick={() => setInvalidAttachmentLabels((items) => items.filter((item) => item !== label))} aria-label={`移除失效图片 ${label}`} className="rounded-full p-1 hover:bg-amber-100"><X size={13} /></button></span>)}
+                {invalidReferenceIds.map((id) => <span key={id} className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 py-1 pl-3 pr-1 text-xs text-amber-800">参考旧文已失效<button type="button" onClick={() => setInvalidReferenceIds((items) => items.filter((item) => item !== id))} aria-label="移除失效参考旧文" className="rounded-full p-1 hover:bg-amber-100"><X size={13} /></button></span>)}
+                {invalidCoverLabel && <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 py-1 pl-3 pr-1 text-xs text-amber-800">{invalidCoverLabel}<button type="button" onClick={() => setInvalidCoverLabel(null)} aria-label="移除失效封面提示" className="rounded-full p-1 hover:bg-amber-100"><X size={13} /></button></span>}
+                {invalidWritingStyleLabel && <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 py-1 pl-3 pr-1 text-xs text-amber-800">{invalidWritingStyleLabel}<button type="button" onClick={() => setInvalidWritingStyleLabel(null)} aria-label="移除失效写作风格提示" className="rounded-full p-1 hover:bg-amber-100"><X size={13} /></button></span>}
+                {invalidConversationLabel && <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 py-1 pl-3 pr-1 text-xs text-amber-800">{invalidConversationLabel}<button type="button" onClick={() => setInvalidConversationLabel(null)} aria-label="移除失效聊天提示" className="rounded-full p-1 hover:bg-amber-100"><X size={13} /></button></span>}
+              </div>
+            )}
+
             <div className="relative">
               <input
                 value={title}
-                onChange={(event) => setTitle(event.target.value)}
+                onChange={(event) => {
+                  setTitle(event.target.value);
+                  titleRef.current = event.target.value;
+                  setQualityResult(null);
+                }}
                 placeholder="填写标题会有更多赞哦"
                 aria-invalid={titleTooLong}
                 aria-describedby="article-title-count"
@@ -4149,6 +4380,8 @@ export default function EditorPage() {
                     type="button"
                     onClick={() => {
                       setTitle(candidate.title);
+                      titleRef.current = candidate.title;
+                      setQualityResult(null);
                       setShowTitleCandidates(false);
                     }}
                     className="rounded-xl bg-white px-3 py-2 text-left text-sm transition hover:text-[#ff2442]"
@@ -4814,7 +5047,7 @@ export default function EditorPage() {
               </p>
             ) : null}
 
-            {reviewResult ? (
+            {reviewResult && !auditResultIsStale ? (
               <div
                 className={`mt-3 rounded-2xl p-3 text-sm ${
                   auditPassedForCurrentContent
@@ -4825,7 +5058,7 @@ export default function EditorPage() {
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <p className="font-bold">
                     {auditPassedForCurrentContent
-                      ? "安全审核通过（文字与图片均已审核）"
+                      ? "安全审核通过"
                       : auditResultIsStale
                         ? "上次审核结果已失效，请重新审核当前内容与图片"
                       : "安全审核未通过"}
@@ -4963,7 +5196,7 @@ export default function EditorPage() {
                   </p>
                 </div>
               </div>
-            ) : lastContentSummary?.qualityScore ? (
+            ) : localQualityInputMatchesPersisted && lastContentSummary?.qualityScore ? (
               <div className="mt-3 rounded-2xl bg-emerald-50 p-3 text-sm text-emerald-800">
                 当前质量分：<strong>{lastContentSummary.qualityScore}</strong>
               </div>
@@ -5056,7 +5289,9 @@ export default function EditorPage() {
             </div>
 
             <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50 p-2">
-              {writingStyleMode !== "off" && writingSkill?.activeVersion?.id && !writingSkill?.pauseReason && <div className="mb-2 flex items-center justify-between gap-2 rounded-xl bg-white px-3 py-2 text-xs text-slate-600"><span>完整图文生成将使用{writingStyleMode === "topic" ? `「${writingSkill.activeVersion.profile?.topics?.find((item: any) => item.key === writingTopicKey)?.label ?? "所选主题"}」` : "通用写法"}</span><button type="button" onClick={() => setWritingStyleMode("off")} className="font-medium text-[#ff2442]">关闭</button></div>}
+              {writingStyleMode !== "off" && writingSkill?.activeVersion?.id && !writingSkill?.pauseReason && <div className="mb-2 flex items-center justify-between gap-2 rounded-xl bg-white px-3 py-2 text-xs text-slate-600">
+                <span>完整图文生成将使用{writingStyleMode === "topic" ? `「${writingSkill.activeVersion.profile?.topics?.find((item: any) => item.key === writingTopicKey)?.label ?? "所选主题"}」` : "通用写法"}写作风格</span>
+                <button type="button" onClick={() => setWritingStyleMode("off")} className="font-medium text-[#ff2442]">关闭</button></div>}
               <textarea
                 value={chatInput}
                 onChange={(event) => setChatInput(event.target.value)}
@@ -5070,7 +5305,7 @@ export default function EditorPage() {
                 <button
                   type="button"
                   onClick={() => void (isChatStreaming ? stopCreativeChat() : sendCreativeChatMessage())}
-                  disabled={isBusy || isUploadingGenerationMaterials}
+                  disabled={(isBusy && !isChatStreaming) || isUploadingGenerationMaterials}
                   className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-[#ff2442] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   <Sparkles size={16} />

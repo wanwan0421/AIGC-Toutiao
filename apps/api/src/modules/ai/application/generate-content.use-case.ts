@@ -44,7 +44,18 @@ export class GenerateContentUseCase {
           signal: hooks.signal,
           aiJobId: input.operationId,
           conversationId: context.conversationId,
+          onStage: async (phase, status) => {
+            const stages = {
+              requirements: { progress: 10, label: "分析需求" },
+              article_draft: { progress: 25, label: "写作正文" },
+              visual_plan: { progress: 40, label: "规划配图" },
+              output_repair: { progress: 48, label: "整理图文" },
+            };
+            if (status === "started") await hooks.progress?.(stages[phase].progress, stages[phase].label, `正在${stages[phase].label}`);
+            await hooks.partial?.("generationStage", { phase, status, skillKey: "content-production-line", completedImages: 0, totalImages: 0 });
+          },
         });
+    if (cachedDraft) await hooks.partial?.("generationStage", { phase: "visual_plan", status: "completed", skillKey: "content-production-line", completedImages: 0, totalImages: 0 });
     if (!cachedDraft) {
       await hooks.saveCheckpoint?.("draft", draft);
       await hooks.partial?.("draft", draft);
@@ -52,7 +63,9 @@ export class GenerateContentUseCase {
     await hooks.assertNotCancelled?.();
 
     const imageTasks = this.buildImageTasks(draft);
+    await hooks.partial?.("generationStage", { phase: "image_generation", status: "started", skillKey: "content-production-line", completedImages: 0, totalImages: imageTasks.length });
     const imageResults = await this.generateImages(imageTasks, request, context, operationId, hooks);
+    await hooks.partial?.("generationStage", { phase: "image_generation", status: "completed", skillKey: "content-production-line", completedImages: imageResults.length, totalImages: imageTasks.length });
 
     let coverAsset: GeneratedImageAsset | undefined;
     const imageAssets: GeneratedImageAsset[] = [];
@@ -86,6 +99,7 @@ export class GenerateContentUseCase {
     const concurrency = Math.min(2, total);
     let nextIndex = 0;
     let completed = 0;
+    let completedImages = 0;
 
     const worker = async () => {
       while (nextIndex < total) {
@@ -95,8 +109,8 @@ export class GenerateContentUseCase {
         const task = imageTasks[index];
         await hooks.progress?.(
           50 + Math.round((completed / total) * 40),
-          `生成${task.position}`,
-          `正在生成图片 ${index + 1}/${total}：${task.position}`
+          "生成图片",
+          `正在生成图片 ${index + 1}/${total}`
         );
 
         try {
@@ -128,6 +142,8 @@ export class GenerateContentUseCase {
             prompt: task.prompt,
             slotId: task.slotId,
           });
+          completedImages += 1;
+          await hooks.partial?.("generationStage", { phase: "image_generation", status: "running", skillKey: "content-production-line", completedImages, totalImages: total });
         } catch (error) {
           throwIfAborted(hooks.signal);
           await hooks.warning?.(`${task.position}生成失败：${(error as Error).message}`);

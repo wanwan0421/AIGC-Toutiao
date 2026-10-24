@@ -8,11 +8,12 @@ describe("ContentWorkflowEngine quality scoring", () => {
     const now = new Date("2026-08-26T06:31:15.000Z");
     let status: ContentStatus = ContentStatus.draft;
     let qualityScore = 0;
+    let body = "Body";
     const content = () => ({
       id: "content-1",
       authorId: "user-1",
       title: "Title",
-      body: "Body",
+      body,
       bodyHtml: "<p>Body</p>",
       bodyJson: { type: "doc", content: [] },
       excerpt: "Body",
@@ -37,13 +38,16 @@ describe("ContentWorkflowEngine quality scoring", () => {
       dimensions: { structure: 18, clarity: 18, value: 18, attraction: 17, compliance: 17 },
       reason: "good",
     };
+    const qualityRecords: Array<Record<string, unknown>> = [];
     const prisma = {
       content: {
         findUnique: vi.fn(async () => content()),
-        updateMany: vi.fn(async () => {
-          status = ContentStatus.approved;
+        updateMany: vi.fn(async ({ data }: { data: { status?: ContentStatus; qualityScore?: number } }) => {
+          if (data.status) status = data.status;
+          if (data.qualityScore !== undefined) qualityScore = data.qualityScore;
           return { count: 1 };
         }),
+        findUniqueOrThrow: vi.fn(async () => content()),
         update: vi.fn(async () => {
           qualityScore = quality.total;
           return content();
@@ -51,9 +55,16 @@ describe("ContentWorkflowEngine quality scoring", () => {
       },
       qualityScore: {
         findUnique: vi.fn(async () => null),
-        create: vi.fn(async () => ({ id: "quality-1" })),
+        findFirst: vi.fn(async ({ where }: { where: { contentId: string; contentHash: string } }) =>
+          qualityRecords.find((item) => item.contentId === where.contentId && item.contentHash === where.contentHash) ?? null),
+        create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+          const record = { id: `quality-${qualityRecords.length + 1}`, ...data, createdAt: now };
+          qualityRecords.push(record);
+          return record;
+        }),
       },
-      $transaction: vi.fn(async (operations: Array<Promise<unknown>>) => Promise.all(operations)),
+      $transaction: vi.fn(async (work: ((tx: unknown) => Promise<unknown>) | Array<Promise<unknown>>) =>
+        typeof work === "function" ? work(prisma) : Promise.all(work)),
     };
     const reviewPolicy = {
       getCurrentAuditState: vi.fn(async () => ({ valid: true, currentHash: "same-hash" })),
@@ -83,6 +94,14 @@ describe("ContentWorkflowEngine quality scoring", () => {
     expect(qualityScoring.run).toHaveBeenCalledOnce();
     expect(result.content.status).toBe(ContentStatus.approved);
     expect(result.quality.total).toBe(88);
+
+    const cachedResult = await engine.scoreQuality("user-1", "content-1", { aiJobId: "job-2" });
+    expect(qualityScoring.run).toHaveBeenCalledOnce();
+    expect(cachedResult.quality.total).toBe(88);
+
+    body = "Edited body";
+    await engine.scoreQuality("user-1", "content-1", { aiJobId: "job-3" });
+    expect(qualityScoring.run).toHaveBeenCalledTimes(2);
   });
 });
 

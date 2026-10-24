@@ -30,23 +30,23 @@ export type AiJobRunHandlers = {
 export function useAiJob() {
   const [job, setJob] = useState<AiJobSnapshot | null>(null);
   const [isRunning, setIsRunning] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
+  const activeControllersRef = useRef(new Map<string, AbortController>());
   const mountedRef = useRef(false);
   const terminalHandledJobIdsRef = useRef(new Set<string>());
 
   useEffect(() => {
     mountedRef.current = true;
     const handleAuthCleared = () => {
-      abortRef.current?.abort();
-      abortRef.current = null;
+      for (const controller of activeControllersRef.current.values()) controller.abort();
+      activeControllersRef.current.clear();
       if (mountedRef.current) setIsRunning(false);
     };
     window.addEventListener("aicp:auth-cleared", handleAuthCleared);
     return () => {
       mountedRef.current = false;
       window.removeEventListener("aicp:auth-cleared", handleAuthCleared);
-      abortRef.current?.abort();
-      abortRef.current = null;
+      for (const controller of activeControllersRef.current.values()) controller.abort();
+      activeControllersRef.current.clear();
     };
   }, []);
 
@@ -65,7 +65,7 @@ export function useAiJob() {
       const updateLatest = (nextJob: AiJobSnapshot) => {
         latest = nextJob;
         if (!isTerminalJob(nextJob)) persistAiJobSession(nextJob, lastEventId);
-        if (mountedRef.current && abortRef.current === controller) setJob(nextJob);
+        if (mountedRef.current && activeControllersRef.current.get(started.id) === controller) setJob(nextJob);
       };
 
       const handleDone = async (doneJob: AiJobSnapshot, result: unknown) => {
@@ -188,23 +188,25 @@ export function useAiJob() {
 
   const runJob = useCallback(
     async (start: () => Promise<AiJobSnapshot>, handlers: AiJobRunHandlers = {}) => {
-      abortRef.current?.abort();
       const controller = new AbortController();
-      abortRef.current = controller;
 
       let started: AiJobSnapshot;
       try {
         // 执行传入的启动函数，获取已启动的 AI 任务快照
         started = await start();
       } catch (error) {
-        if (abortRef.current === controller) abortRef.current = null;
+        if (mountedRef.current) setIsRunning(activeControllersRef.current.size > 0);
         throw error;
       }
+
+      const existing = activeControllersRef.current.get(started.id);
+      if (existing) existing.abort();
+      activeControllersRef.current.set(started.id, controller);
 
       // 将已启动的 AI 任务快照持久化到本地存储中，以便在页面刷新或关闭后能够恢复任务状态
       persistAiJobSession(started);
       handlers.onSnapshot?.(started);
-      if (mountedRef.current && abortRef.current === controller) {
+      if (mountedRef.current) {
         setJob(started);
         setIsRunning(true);
       }
@@ -215,8 +217,10 @@ export function useAiJob() {
         if (!isAbortError(error)) throw error;
         return getAiJob(started.id).catch(() => started);
       } finally {
-        if (mountedRef.current && abortRef.current === controller) setIsRunning(false);
-        if (abortRef.current === controller) abortRef.current = null;
+        if (activeControllersRef.current.get(started.id) === controller) {
+          activeControllersRef.current.delete(started.id);
+        }
+        if (mountedRef.current) setIsRunning(activeControllersRef.current.size > 0);
       }
     },
     [consumeJob]
@@ -225,9 +229,7 @@ export function useAiJob() {
   // 恢复任务
   const resumeJob = useCallback(
     async (jobId: string, handlers: AiJobRunHandlers = {}) => {
-      abortRef.current?.abort();
       const controller = new AbortController();
-      abortRef.current = controller;
       const stored = listStoredAiJobs().find((item) => item.jobId === jobId);
 
       let started: AiJobSnapshot;
@@ -235,12 +237,16 @@ export function useAiJob() {
         started = await getAiJob(jobId);
       } catch (error) {
         if (isMissingJobError(error)) removeStoredAiJob(jobId);
-        if (abortRef.current === controller) abortRef.current = null;
+        if (mountedRef.current) setIsRunning(activeControllersRef.current.size > 0);
         throw error;
       }
 
+      const existing = activeControllersRef.current.get(started.id);
+      if (existing) existing.abort();
+      activeControllersRef.current.set(started.id, controller);
+
       persistAiJobSession(started, stored?.lastEventId);
-      if (mountedRef.current && abortRef.current === controller) {
+      if (mountedRef.current) {
         setJob(started);
         setIsRunning(!isTerminalJob(started));
       }
@@ -261,16 +267,18 @@ export function useAiJob() {
         if (!isAbortError(error)) throw error;
         return getAiJob(started.id).catch(() => started);
       } finally {
-        if (mountedRef.current && abortRef.current === controller) setIsRunning(false);
-        if (abortRef.current === controller) abortRef.current = null;
+        if (activeControllersRef.current.get(started.id) === controller) {
+          activeControllersRef.current.delete(started.id);
+        }
+        if (mountedRef.current) setIsRunning(activeControllersRef.current.size > 0);
       }
     },
     [consumeJob]
   );
 
   const stopStreaming = useCallback(() => {
-    abortRef.current?.abort();
-    abortRef.current = null;
+    for (const controller of activeControllersRef.current.values()) controller.abort();
+    activeControllersRef.current.clear();
     if (mountedRef.current) setIsRunning(false);
   }, []);
 
@@ -288,11 +296,12 @@ export function useAiJob() {
     const targetId = jobId ?? job?.id;
     if (!targetId) return null;
     const cancelled = await cancelAiJob(targetId);
-    abortRef.current?.abort();
+    activeControllersRef.current.get(targetId)?.abort();
+    activeControllersRef.current.delete(targetId);
     removeStoredAiJob(targetId);
     if (mountedRef.current) {
       setJob(cancelled);
-      setIsRunning(false);
+      setIsRunning(activeControllersRef.current.size > 0);
     }
     return cancelled;
   }, [job?.id]);

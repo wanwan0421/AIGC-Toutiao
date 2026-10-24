@@ -28,6 +28,7 @@ export type EditorDraftCache = {
   chatMaterialIds?: string[];
   referenceContentIds?: string[];
   writingStyleMode?: "off" | "common" | "topic";
+  writingStyleVersionId?: string;
   writingTopicKey?: string;
   conversationId?: string;
   publishTimeMode: "now" | "scheduled";
@@ -163,6 +164,11 @@ export function useDraftAutosave(options: UseDraftAutosaveOptions) {
     setIsCloudSaving(true);
     try {
       const savedContentId = await current.ensureContentForDraft(data);
+      if (data.contentId !== savedContentId) {
+        // A new content row can be created even if the following cloud draft
+        // write fails. Keep a recoverable local copy under its new URL ID.
+        saveLocalDraftNow({ ...data, contentId: savedContentId });
+      }
       await autosaveDraft(savedContentId, {
         title: data.title,
         body: data.body,
@@ -180,6 +186,7 @@ export function useDraftAutosave(options: UseDraftAutosaveOptions) {
           chatMaterialIds: data.chatMaterialIds ?? [],
           referenceContentIds: data.referenceContentIds ?? [],
           writingStyleMode: data.writingStyleMode ?? "off",
+          writingStyleVersionId: data.writingStyleVersionId ?? "",
           writingTopicKey: data.writingTopicKey ?? "",
           conversationId: data.conversationId ?? "",
           audience: data.audience,

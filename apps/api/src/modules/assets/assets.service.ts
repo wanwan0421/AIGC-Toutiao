@@ -187,6 +187,9 @@ export class AssetsService {
 
     const originalName = this.normalizeFileName(file.originalname);
     let mimeType = this.normalizeMimeType(file.mimetype, originalName);
+    if (/\.(?:txt|md|markdown|pdf|docx)$/i.test(originalName) && !this.isTextMimeType(mimeType)) {
+      throw new AppError({ code: "MATERIAL_TYPE_UNSUPPORTED", message: "文件实际类型与文档扩展名不一致", statusCode: 422 });
+    }
     let safeBuffer = file.buffer;
     let imageMetadata: Record<string, unknown> = {};
     if (this.isImageMimeType(mimeType)) {

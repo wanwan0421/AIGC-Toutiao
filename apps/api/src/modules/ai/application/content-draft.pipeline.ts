@@ -1,6 +1,6 @@
 import { Injectable, Logger } from "@nestjs/common";
 import type { DirectGenerateRequest, DirectGenerateResult } from "@aicp/shared";
-import { ModelClientService } from "../model-client.service";
+import { ModelClientService, type ModelThinkingMode } from "../model-client.service";
 import { PromptTemplateService } from "../prompt-template.service";
 import { AI_PROMPT_NAMES } from "../prompt-names";
 import { promptTemperature } from "../prompt-model-options";
@@ -18,8 +18,11 @@ type ArticleDraft = Partial<
 
 type VisualPlan = Partial<Pick<DirectGenerateResult, "bodyMarkdown" | "coverSuggestion" | "imagePrompts">>;
 
+export type ProductionStageName = "requirements" | "article_draft" | "visual_plan" | "output_repair";
+
 type StageOptions = {
   model?: string;
+  thinking: ModelThinkingMode;
   temperature: number;
   promptKey?: string;
   promptVersionId?: string;
@@ -29,6 +32,9 @@ type StageOptions = {
   contentId?: string;
   conversationId?: string;
   repairAttempts?: number;
+  stage?: ProductionStageName;
+  onStage?: (stage: ProductionStageName, status: "started" | "completed") => Promise<void>;
+  maxOutputTokens?: number;
 };
 
 @Injectable()
@@ -42,13 +48,14 @@ export class ContentDraftPipeline {
   ) {}
 
   // 执行内容生产线，返回最终归一化结果
-  async run(input: DirectGenerateRequest, options: { signal?: AbortSignal; aiJobId?: string; conversationId?: string } = {}): Promise<DirectGenerateResult> {
+  async run(input: DirectGenerateRequest, options: { signal?: AbortSignal; aiJobId?: string; conversationId?: string; onStage?: StageOptions["onStage"] } = {}): Promise<DirectGenerateResult> {
     const renderSettings = await this.prompts.render(
       AI_PROMPT_NAMES.directGenerate,
       input as unknown as Record<string, unknown>
     );
     const stageOptions: StageOptions = {
       model: renderSettings.model,
+      thinking: this.thinkingMode(),
       temperature: promptTemperature(renderSettings.modelOptions, 0.7),
       promptKey: renderSettings.promptKey,
       promptVersionId: renderSettings.promptVersionId,
@@ -57,6 +64,7 @@ export class ContentDraftPipeline {
       aiJobId: options.aiJobId,
       contentId: input.contentId,
       conversationId: options.conversationId,
+      onStage: options.onStage,
     };
 
     const requirement = await this.runStage<RequirementAnalysis>(
@@ -65,7 +73,7 @@ export class ContentDraftPipeline {
       {
         request: input,
       },
-      { ...stageOptions, temperature: Math.min(stageOptions.temperature, 0.45) }, requirementAnalysisSchema
+      { ...stageOptions, stage: "requirements", maxOutputTokens: 1600, temperature: Math.min(stageOptions.temperature, 0.45) }, requirementAnalysisSchema
     );
 
     const draft = await this.runStage<ArticleDraft>(
@@ -75,7 +83,7 @@ export class ContentDraftPipeline {
         request: input,
         requirement,
       },
-      stageOptions, articleDraftSchema
+      { ...stageOptions, stage: "article_draft", maxOutputTokens: 6000 }, articleDraftSchema
     );
 
     const visualPlan = await this.runStage<VisualPlan>(
@@ -86,7 +94,7 @@ export class ContentDraftPipeline {
         requirement,
         draft,
       },
-      { ...stageOptions, temperature: Math.min(stageOptions.temperature, 0.65) }, visualPlanSchema
+      { ...stageOptions, stage: "visual_plan", maxOutputTokens: 4000, temperature: Math.min(stageOptions.temperature, 0.65) }, visualPlanSchema
     );
 
     const candidate = this.mergeStageOutputs(draft, visualPlan);
@@ -121,7 +129,7 @@ export class ContentDraftPipeline {
         "04 输出归一化",
         this.resources.loadOutputRepair(),
         payload,
-        { ...options, temperature: Math.min(options.temperature, 0.25), repairAttempts: 0 }, directGenerateSchema
+        { ...options, stage: "output_repair", maxOutputTokens: 6000, temperature: Math.min(options.temperature, 0.25), repairAttempts: 0 }, directGenerateSchema
       );
     } catch (error) {
       throwIfAborted(options.signal);
@@ -138,14 +146,17 @@ export class ContentDraftPipeline {
     options: StageOptions,
     schema: ZodType
   ): Promise<T> {
+    if (options.stage) await options.onStage?.(options.stage, "started");
     const result = await completeStructured({
       modelClient: this.modelClient,
       name: stageName.replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_-]/g, "stage"),
       schema,
       model: options.model,
+      thinking: options.thinking,
       temperature: options.temperature,
       telemetry: {
         scene: AI_PROMPT_NAMES.directGenerate,
+        stage: options.stage ?? "content_generation",
         promptKey: options.promptKey,
         promptVersionId: options.promptVersionId,
         inputSummary: this.stageInputSummary(stageName, payload),
@@ -156,6 +167,7 @@ export class ContentDraftPipeline {
       apiStyle: this.apiStyle(),
       cacheStrategy: this.cacheEnabled() ? "prefix" : "off",
       store: false,
+      maxOutputTokens: options.maxOutputTokens,
       messages: [
         {
           role: "system",
@@ -169,6 +181,7 @@ export class ContentDraftPipeline {
       signal: options.signal,
       repairAttempts: options.repairAttempts,
     });
+    if (options.stage) await options.onStage?.(options.stage, "completed");
     return result as T;
   }
 
@@ -180,6 +193,13 @@ export class ContentDraftPipeline {
 
   private cacheEnabled() {
     return process.env.AI_CONTENT_PRODUCTION_CACHE_ENABLED?.trim().toLowerCase() !== "false";
+  }
+
+  private thinkingMode(): ModelThinkingMode {
+    const configured = process.env.AI_CONTENT_PRODUCTION_THINKING_MODE?.trim().toLowerCase();
+    if (!configured || configured === "enabled") return "enabled";
+    if (configured === "disabled") return "disabled";
+    throw new Error("AI_CONTENT_PRODUCTION_THINKING_MODE must be enabled or disabled");
   }
 
   private stageInputSummary(stageName: string, payload: Record<string, unknown>) {

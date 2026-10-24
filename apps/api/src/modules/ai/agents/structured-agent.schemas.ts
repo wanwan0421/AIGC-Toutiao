@@ -20,14 +20,20 @@ export const imageModerationSchema = z.object({
   types: z.array(z.enum(["pornography", "gambling", "drug", "sensitive", "violence", "fraud", "none"])).max(8),
 }).strict();
 export const requirementAnalysisSchema = z.object({
-  needsClarification: z.boolean(), clarificationQuestion: z.string(), theme: z.string(), audience: z.string(), style: z.string(), viewpoint: z.string(), materialNotes: z.string(), sourceSummary: z.string(),
+  needsClarification: z.boolean(), clarificationQuestion: z.string().max(200), theme: z.string().max(100), audience: z.string().max(200), style: z.string().max(300), viewpoint: z.string().max(300), materialNotes: z.string().max(1600), sourceSummary: z.string().max(800),
 }).strict();
-const titleCandidate = z.object({ title: articleTitle, reason: z.string() }).strict();
-const outlineItem = z.object({ heading: text, summary: z.string() }).strict();
-const imagePrompt = z.object({ slotId: z.string().nullable(), position: text, prompt: text }).strict();
-export const articleDraftSchema = z.object({ title: articleTitle, titleCandidates: z.array(titleCandidate), bodyMarkdown: text, tags: z.array(text), outline: z.array(outlineItem) }).strict();
-export const visualPlanSchema = z.object({ bodyMarkdown: text, coverSuggestion: text, imagePrompts: z.array(imagePrompt) }).strict();
-export const directGenerateSchema = z.object({ title: articleTitle, titleCandidates: z.array(titleCandidate), bodyMarkdown: text, tags: z.array(text), coverSuggestion: text, imagePrompts: z.array(imagePrompt), outline: z.array(outlineItem) }).strict();
+const titleCandidate = z.object({ title: articleTitle, reason: z.string().max(100) }).strict();
+const outlineItem = z.object({ heading: text.max(60), summary: z.string().max(160) }).strict();
+const imagePrompt = z.object({ slotId: z.string().max(80).nullable(), position: text.max(80), prompt: text.max(900) }).strict();
+const titleCandidates = z.array(titleCandidate).max(3);
+const articleBody = text.max(6000);
+const tags = z.array(text.max(40)).max(10);
+const outline = z.array(outlineItem).max(6);
+const imagePrompts = z.array(imagePrompt).max(3);
+const coverPrompt = text.max(900);
+export const articleDraftSchema = z.object({ title: articleTitle, titleCandidates, bodyMarkdown: articleBody, tags, outline }).strict();
+export const visualPlanSchema = z.object({ bodyMarkdown: articleBody, coverSuggestion: coverPrompt, imagePrompts }).strict();
+export const directGenerateSchema = z.object({ title: articleTitle, titleCandidates, bodyMarkdown: articleBody, tags, coverSuggestion: coverPrompt, imagePrompts, outline }).strict();
 export const skillRouterSchema = z.object({
   action: z.enum(["chat", "run_skill", "edit_current_content", "ask_clarification"]),
   skillKey: z.enum(["content-production-line", "content-safety-reviewer"]).nullable(),

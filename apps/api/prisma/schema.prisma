@@ -481,16 +481,20 @@ model QualityScore {
   id          String   @id @default(cuid())
   contentId   String
   aiJobId     String?  @unique
+  contentHash String?
   total       Int
   dimensions  Json
   reason      String
   rawResponse Json?
   createdAt   DateTime @default(now())
   content     Content  @relation(fields: [contentId], references: [id])
+
+  @@unique([contentId, contentHash])
 }
 
 model AiCallLog {
   id           String   @id @default(cuid())
+  /// Business operation; independent of the model's thinking mode.
   scene        String
   model        String?
   provider     String?
@@ -503,7 +507,12 @@ model AiCallLog {
   conversationId String?
   promptKey    String?
   promptVersionId String?
+  /// Optional pipeline step. Standalone calls do not have a stage.
+  stage        String?
+  attempt      Int      @default(1)
+  /// SHA-256 and character count of model messages or image prompt; never raw author content.
   inputSummary String?
+  /// Output fingerprint metadata; null if no output was received.
   output       Json?
   latencyMs    Int?
   inputTokens  Int?
@@ -516,6 +525,8 @@ model AiCallLog {
   sessionRebuilt Boolean?
   rebuildReason String?
   traceEnabled Boolean?
+  thinkingMode String?
+  pricingSnapshot Json?
   success      Boolean
   errorMessage String?
   createdAt    DateTime @default(now())

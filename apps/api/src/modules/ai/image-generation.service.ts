@@ -383,7 +383,7 @@ export class ImageGenerationService {
   }
 
   private async logGeneration(
-    input: { prompt: string; contentId?: string; aiJobId?: string; conversationId?: string },
+    input: { prompt: string; position?: string; contentId?: string; aiJobId?: string; conversationId?: string },
     latencyMs: number,
     success: boolean,
     output?: unknown,
@@ -398,7 +398,10 @@ export class ImageGenerationService {
       aiJobId: input.aiJobId,
       contentId: input.contentId,
       conversationId: input.conversationId,
-      inputSummary: input.prompt.replace(/\s+/g, " ").slice(0, 200),
+      stage: input.position?.trim() === "封面" ? "cover_image" : "inline_image",
+      attempt: 1,
+      billingUnits: 1,
+      inputSummary: input.prompt,
       output,
       latencyMs,
       cacheStrategy: "off",

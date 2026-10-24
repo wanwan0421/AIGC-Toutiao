@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException, Optional } from "@nestjs/common";
 import { createHash } from "node:crypto";
+import { qualityScoreContentHash } from "./quality-score-fingerprint";
 import type {
   AuditResult,
   AuditRiskType,
@@ -230,35 +231,96 @@ export class ContentWorkflowEngine {
       await this.reviewPolicy.assertCurrentContentAuditPassed(content);
     }
 
+    const contentHash = qualityScoreContentHash(content.title, content.body);
     const existing = options.aiJobId
       ? await this.prisma.qualityScore.findUnique({ where: { aiJobId: options.aiJobId } })
       : null;
     if (existing) {
+      if (existing.contentHash !== contentHash) {
+        throw new AppError({
+          code: "CONTENT_CHANGED_DURING_QUALITY_SCORE",
+          message: "质量评估任务对应的文章版本已变化，请重新评估当前内容",
+          statusCode: 409,
+          retryable: false,
+          details: { contentId: id },
+        });
+      }
       return {
         content: await this.toNormalizedContentSummary(content),
         quality: this.qualityResultFromRecord(existing),
       };
     }
+
+    const cached = await this.prisma.qualityScore.findFirst({
+      where: { contentId: id, contentHash },
+      orderBy: { createdAt: "desc" },
+    });
+    if (cached) {
+      const latest = await this.getOwnedContent(userId, id);
+      if (qualityScoreContentHash(latest.title, latest.body) !== contentHash) {
+        throw new AppError({
+          code: "CONTENT_CHANGED_DURING_QUALITY_SCORE",
+          message: "文章在质量评估期间发生变化，请保存后重新评估",
+          statusCode: 409,
+          retryable: false,
+          details: { contentId: id },
+        });
+      }
+      return {
+        content: await this.toNormalizedContentSummary(latest),
+        quality: this.qualityResultFromRecord(cached),
+      };
+    }
+
     const quality = await this.qualityScoring.run(
       { title: content.title, body: content.body },
       { signal: options.signal, aiJobId: options.aiJobId, contentId: id }
     );
 
-    const [, updated] = await this.prisma.$transaction([
-      this.createQualityScoreRecord(id, quality, options.aiJobId),
-      this.prisma.content.update({
-        where: { id },
-        data: {
-          qualityScore: quality.total,
-        },
-        include: contentInclude,
-      }),
-    ]);
-
-    return {
-      content: await this.toNormalizedContentSummary(updated),
-      quality,
-    };
+    try {
+      const persisted = await this.prisma.$transaction(async (tx) => {
+        const changed = await tx.content.updateMany({
+          where: { id, authorId: userId, updatedAt: content.updatedAt },
+          data: { qualityScore: quality.total },
+        });
+        if (changed.count === 0) {
+          throw new AppError({
+            code: "CONTENT_CHANGED_DURING_QUALITY_SCORE",
+            message: "文章在质量评估期间发生变化，请保存后重新评估",
+            statusCode: 409,
+            retryable: false,
+            details: { contentId: id },
+          });
+        }
+        await this.createQualityScoreRecord(tx, id, contentHash, quality, options.aiJobId);
+        return tx.content.findUniqueOrThrow({ where: { id }, include: contentInclude });
+      });
+      return {
+        content: await this.toNormalizedContentSummary(persisted),
+        quality,
+      };
+    } catch (error) {
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") throw error;
+      const latest = await this.getOwnedContent(userId, id);
+      if (qualityScoreContentHash(latest.title, latest.body) !== contentHash) {
+        throw new AppError({
+          code: "CONTENT_CHANGED_DURING_QUALITY_SCORE",
+          message: "文章在质量评估期间发生变化，请保存后重新评估",
+          statusCode: 409,
+          retryable: false,
+          details: { contentId: id },
+        });
+      }
+      const concurrentResult = await this.prisma.qualityScore.findFirst({
+        where: { contentId: id, contentHash },
+        orderBy: { createdAt: "desc" },
+      });
+      if (!concurrentResult) throw error;
+      return {
+        content: await this.toNormalizedContentSummary(latest),
+        quality: this.qualityResultFromRecord(concurrentResult),
+      };
+    }
   }
 
   // 根据审核结果和改写建议创建审核记录
@@ -347,11 +409,12 @@ export class ContentWorkflowEngine {
       : this.prisma.auditRecord.create({ data });
   }
 
-  private createQualityScoreRecord(contentId: string, quality: QualityScoreResult, aiJobId?: string) {
-    return this.prisma.qualityScore.create({
+  private createQualityScoreRecord(tx: Prisma.TransactionClient, contentId: string, contentHash: string, quality: QualityScoreResult, aiJobId?: string) {
+    return tx.qualityScore.create({
       data: {
         contentId,
         aiJobId,
+        contentHash,
         total: quality.total,
         dimensions: quality.dimensions as unknown as Prisma.InputJsonValue,
         reason: quality.reason,

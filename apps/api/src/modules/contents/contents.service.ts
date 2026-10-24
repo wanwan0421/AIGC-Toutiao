@@ -24,6 +24,7 @@ import { PrismaService } from "../../infra/prisma/prisma.service";
 import { WritingSkillService } from "../ai/writing-skill.service";
 import { ContentHeatScoreService } from "../content-metrics/content-heat-score.service";
 import { ContentReviewPolicyService } from "../workflow/content-review-policy.service";
+import { qualityScoreContentHash } from "../workflow/quality-score-fingerprint";
 import { ContentAccessPolicyService } from "./content-access-policy.service";
 
 const contentInclude = {
@@ -216,16 +217,18 @@ export class ContentsService {
   async workflowState(userId: string, id: string): Promise<ContentWorkflowState> {
     const content = await this.getContent(userId, id);
     const summary = await this.toNormalizedContentSummary(content);
+    const currentQualityHash = qualityScoreContentHash(content.title, content.body);
     const [auditRecord, qualityRecord] = await Promise.all([
       this.prisma.auditRecord.findFirst({
         where: { contentId: id },
         orderBy: { createdAt: "desc" },
       }),
       this.prisma.qualityScore.findFirst({
-        where: { contentId: id },
+        where: { contentId: id, contentHash: currentQualityHash },
         orderBy: { createdAt: "desc" },
       }),
     ]);
+    const latestQuality = qualityRecord ? this.qualityResultFromRecord(qualityRecord) : undefined;
     const publishState = this.reviewPolicy.evaluatePublishState(content, auditRecord);
     let articleBlockReason: string | undefined;
     try {
@@ -261,7 +264,7 @@ export class ContentsService {
             checkedAt: auditRecord.createdAt.toISOString(),
           }
         : undefined,
-      latestQuality: qualityRecord ? this.qualityResultFromRecord(qualityRecord) : undefined,
+      latestQuality,
       currentAuditValid: auditState.valid,
       currentAuditBlockReason: auditState.valid ? undefined : auditState.reason,
       canScoreQuality,
@@ -405,6 +408,7 @@ export class ContentsService {
     }) : null;
     if (!article) validatePublicVisibilityTransition(current, toDbContentVisibility(body.visibility));
     const nextBody = hasBodyInput ? article!.body : current.body;
+    const qualityInputChanged = nextTitle !== current.title || nextBody !== current.body;
     const nextRichHtml = hasBodyInput ? article!.richText.html ?? null : current.bodyHtml;
     const nextRichJson = hasBodyInput ? article!.richText.json ?? null : current.bodyJson;
     const nextAssetIds = body.assetIds !== undefined ? ((await this.ownedAssetIds(userId, body.assetIds)) ?? []) : undefined;
@@ -428,7 +432,21 @@ export class ContentsService {
       visibility: toDbContentVisibility(body.visibility),
       scheduledAt: safetySensitiveEdit ? null : toDateOrNull(body.scheduledAt),
       ...reviewStatusData,
+      qualityScore: qualityInputChanged ? 0 : undefined,
     };
+
+    const sameRequestedFields =
+      (body.title === undefined || nextTitle === current.title) &&
+      (!hasBodyInput || (
+        nextBody === current.body &&
+        nextRichHtml === current.bodyHtml &&
+        this.sameJson(nextRichJson, current.bodyJson ?? null)
+      )) &&
+      (body.tags === undefined || this.sameStringArray(body.tags, current.tags)) &&
+      (nextAssetIds === undefined || this.sameStringArray(nextAssetIds, current.assets.map((item) => item.assetId))) &&
+      (body.visibility === undefined || toDbContentVisibility(body.visibility) === current.visibility) &&
+      (body.scheduledAt === undefined || toDateOrNull(body.scheduledAt)?.getTime() === current.scheduledAt?.getTime());
+    if (sameRequestedFields) return this.toNormalizedContentSummary(current);
 
     const updated = await this.prisma.$transaction(async (tx) => {
       await this.createVersion(tx, current.id, current.title, current.body, current.bodyHtml, current.bodyJson);

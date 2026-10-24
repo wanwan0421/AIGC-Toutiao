@@ -246,6 +246,8 @@ export default function ContentPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [message, setMessage] = useState("正在加载作品...");
   const [loadError, setLoadError] = useState("");
+  const listRequestIdRef = useRef(0);
+  const deletedContentIdsRef = useRef(new Set<string>());
 
   const filteredContents = useMemo(() => {
     if (isDraftWorkbenchFilter) {
@@ -255,18 +257,22 @@ export default function ContentPage() {
   }, [contents, isDraftWorkbenchFilter, statusFilter]);
 
   const loadContents = useCallback(async (options: { silent?: boolean } = {}) => {
+    const requestId = ++listRequestIdRef.current;
     if (!options.silent) setLoading(true);
     setLoadError("");
     try {
       const response = await getContents();
-      setContents(response);
-      setMessage(`已加载 ${response.length} 篇作品`);
+      if (requestId !== listRequestIdRef.current) return;
+      const currentContents = response.filter((item) => !deletedContentIdsRef.current.has(item.id));
+      setContents(currentContents);
+      if (!options.silent) setMessage(`已加载 ${currentContents.length} 篇作品`);
     } catch (error) {
+      if (requestId !== listRequestIdRef.current) return;
       const nextMessage = error instanceof Error ? `加载失败：${error.message}` : "加载失败";
       setLoadError(nextMessage);
       setMessage(nextMessage);
     } finally {
-      if (!options.silent) setLoading(false);
+      if (requestId === listRequestIdRef.current) setLoading(false);
     }
   }, []);
 
@@ -296,6 +302,7 @@ export default function ContentPage() {
     setBusyId(content.id);
     try {
       await deleteContent(content.id);
+      deletedContentIdsRef.current.add(content.id);
       setContents((items) => items.filter((item) => item.id !== content.id));
       setMessage(`已删除「${content.title || "未命名作品"}」`);
     } catch (error) {

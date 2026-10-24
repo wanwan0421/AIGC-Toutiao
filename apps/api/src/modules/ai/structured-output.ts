@@ -25,16 +25,19 @@ export async function completeStructured<T extends ZodType>(options: {
 
   for (let attempt = 0; attempt <= maxRepairs; attempt += 1) {
     // 调用模型生成输出
-    const completion = await options.modelClient.completeWithMetadata({
+    const request = {
       messages: currentMessages, model: options.model, temperature: options.temperature,
       thinking: options.thinking, timeoutMs: options.timeoutMs, signal: options.signal,
-      responseFormat: { type: "json_schema", name: options.name, strict: true, schema: jsonSchema },
-      telemetry: { scene: options.name, ...options.telemetry },
+      responseFormat: { type: "json_schema" as const, name: options.name, strict: true, schema: jsonSchema },
+      telemetry: { scene: options.name, attempt: attempt + 1, ...options.telemetry },
       apiStyle: options.apiStyle,
       cacheStrategy: options.cacheStrategy,
       store: options.store,
       maxOutputTokens: options.maxOutputTokens,
-    });
+    };
+    const completion = options.telemetry?.stage
+      ? await options.modelClient.completeStreamingWithMetadata(request)
+      : await options.modelClient.completeWithMetadata(request);
     const content = completion.text;
 
     let candidate: unknown;

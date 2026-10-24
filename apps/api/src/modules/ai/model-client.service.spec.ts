@@ -108,6 +108,7 @@ describe("ModelClientService thinking mode", () => {
       conversationId: "conversation-1",
       provider: "volcengine_ark",
       apiStyle: "chat_completions",
+      inputSummary: JSON.stringify([{ role: "user", content: "return json" }]),
       inputTokens: 10,
       outputTokens: 3,
       totalTokens: 13,
@@ -244,6 +245,44 @@ describe("ModelClientService thinking mode", () => {
         metadata: expect.objectContaining({ responseId: "resp-stream", usage: expect.objectContaining({ cachedInputTokens: 8 }) }),
       }),
     ]);
+  });
+
+  it("streams structured generation stages and records stage TTFT, attempt, and output cap", async () => {
+    process.env.ARK_RESPONSES_API_URL = "https://example.test/api/v3/responses";
+    const sse = [
+      'event: response.created\ndata: {"type":"response.created","response":{"id":"resp-stage","status":"in_progress"}}\n\n',
+      `event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":${JSON.stringify(JSON.stringify({ value: "ok" }))}}\n\n`,
+      'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp-stage","status":"completed","model":"doubao-seed-evolving","usage":{"input_tokens":20,"output_tokens":8,"output_tokens_details":{"reasoning_tokens":2},"total_tokens":28}}}\n\n',
+      "data: [DONE]\n\n",
+    ].join("");
+    const fetchMock = vi.fn(async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(sse));
+        controller.close();
+      },
+    }), { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const callLogs = { log: vi.fn(async () => ({ id: "stage-log" })), attachResult: vi.fn(async () => ({ count: 1 })) };
+
+    await completeStructured({
+      modelClient: new ModelClientService(callLogs as never),
+      name: "article_draft",
+      schema: z.object({ value: z.string() }),
+      telemetry: { scene: "direct_generate", stage: "article_draft", attempt: 1 },
+      apiStyle: "responses",
+      maxOutputTokens: 1200,
+      messages: [{ role: "user", content: "return json" }],
+    });
+
+    expect(requestBody(fetchMock)).toMatchObject({ stream: true, max_output_tokens: 1200 });
+    expect(callLogs.log).toHaveBeenCalledWith(expect.objectContaining({
+      stage: "article_draft",
+      attempt: 1,
+      inputSummary: JSON.stringify([{ role: "user", content: "return json" }]),
+      firstTokenLatencyMs: expect.any(Number),
+      outputTokens: 8,
+    }));
+    expect(callLogs.attachResult).toHaveBeenCalledWith("stage-log", { value: "ok" }, { success: true });
   });
 
   it("keeps an interrupted Responses stream retryable instead of committing partial text", async () => {

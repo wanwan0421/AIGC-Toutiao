@@ -60,6 +60,9 @@ describe("ContentProductionResourceOrchestrator", () => {
   });
 
   it("does not load repair resources when server validation succeeds", async () => {
+    const previousThinkingMode = process.env.AI_CONTENT_PRODUCTION_THINKING_MODE;
+    process.env.AI_CONTENT_PRODUCTION_THINKING_MODE = "disabled";
+    const streamOptions: Array<{ thinking?: string }> = [];
     const complete = vi.fn()
       .mockResolvedValueOnce(JSON.stringify({
         needsClarification: false,
@@ -100,17 +103,33 @@ describe("ContentProductionResourceOrchestrator", () => {
     const pipeline = new ContentDraftPipeline(
       {
         completeWithMetadata: vi.fn(async (options) => ({ text: await complete(options) })),
+        completeStreamingWithMetadata: vi.fn(async (options) => {
+          streamOptions.push(options);
+          return { text: await complete(options) };
+        }),
         attachStructuredResult: vi.fn(),
       } as never,
       { render: vi.fn(() => ({ model: "model", modelOptions: {}, promptKey: "key" })) } as never,
       resources as never
     );
+    const onStage = vi.fn(async () => undefined);
 
-    await pipeline.run({ userId: "user", theme: "theme" });
+    try {
+      await pipeline.run({ userId: "user", theme: "theme" }, { onStage });
+    } finally {
+      if (previousThinkingMode === undefined) delete process.env.AI_CONTENT_PRODUCTION_THINKING_MODE;
+      else process.env.AI_CONTENT_PRODUCTION_THINKING_MODE = previousThinkingMode;
+    }
 
     expect(complete).toHaveBeenCalledTimes(3);
+    expect(streamOptions.map((options) => options.thinking)).toEqual(["disabled", "disabled", "disabled"]);
     expect(resources.loadOutputRepair).not.toHaveBeenCalled();
     expect(resources.validateOutput).toHaveBeenCalledTimes(1);
+    expect(onStage.mock.calls).toEqual([
+      ["requirements", "started"], ["requirements", "completed"],
+      ["article_draft", "started"], ["article_draft", "completed"],
+      ["visual_plan", "started"], ["visual_plan", "completed"],
+    ]);
   });
 
   it.each([true, false])("allows at most two server-validated output repairs (second succeeds: %s)", async (secondSucceeds) => {
@@ -139,7 +158,7 @@ describe("ContentProductionResourceOrchestrator", () => {
         .mockReturnValueOnce(secondSucceeds ? valid : invalid),
     };
     const pipeline = new ContentDraftPipeline(
-      { completeWithMetadata: vi.fn(async (options) => ({ text: await complete(options) })), attachStructuredResult: vi.fn() } as never,
+      { completeWithMetadata: vi.fn(async (options) => ({ text: await complete(options) })), completeStreamingWithMetadata: vi.fn(async (options) => ({ text: await complete(options) })), attachStructuredResult: vi.fn() } as never,
       { render: vi.fn(() => ({ model: "model", modelOptions: {}, promptKey: "key" })) } as never,
       resources as never
     );

@@ -15,6 +15,7 @@
     "build": "nest build",
     "lint": "eslint \"src/**/*.ts\"",
     "eval:high-risk": "node scripts/evaluate-high-risk-accuracy.cjs",
+    "eval:writing-style": "node scripts/writing-style-eval.cjs",
     "eval:high-risk:full": "ts-node -r tsconfig-paths/register src/scripts/run-high-risk-eval.ts",
     "migrate:ai-images": "ts-node -r tsconfig-paths/register src/scripts/migrate-ai-image-assets.ts",
     "seed:prompts": "ts-node -r tsconfig-paths/register src/scripts/seed-production-prompts.ts",

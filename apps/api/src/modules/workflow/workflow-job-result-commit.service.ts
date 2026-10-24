@@ -10,6 +10,8 @@ import { toAiJobSnapshot } from "./workflow-job.mapper";
 import { GenerationMaterialResolver } from "./generation-material-resolver.service";
 import { WritingStyleContextResolver } from "./writing-style-context-resolver.service";
 import { generationMaterialSnapshotSchema } from "../ai/generation-material.snapshot";
+import { MemoryService } from "../ai/memory.service";
+import { ConversationSessionService } from "../ai/conversation-session.service";
 
 const COMMIT_TYPES = new Set<string>([AiJobType.CreativeDirectGenerate, AiJobType.CreativeImageGenerate]);
 
@@ -21,6 +23,8 @@ export class WorkflowJobResultCommitService {
     private readonly events: WorkflowJobEventsService,
     @Optional() private readonly materialResolver?: GenerationMaterialResolver,
     @Optional() private readonly writingStyleResolver?: WritingStyleContextResolver,
+    @Optional() private readonly memory?: MemoryService,
+    @Optional() private readonly conversationSessions?: ConversationSessionService,
   ) {}
 
   async commit(userId: string, jobId: string, request: AiJobResultCommitRequest): Promise<AiJobResultCommitResponse> {
@@ -83,6 +87,21 @@ export class WorkflowJobResultCommitService {
         payload: request.content.payload,
         clientHash: payloadHash,
       });
+      if (job.type === AiJobType.CreativeDirectGenerate && job.conversationId) {
+        await tx.aiConversation.updateMany({
+          where: { id: job.conversationId, userId },
+          data: { contentId: persisted.content.id },
+        });
+        await tx.aiMessage.create({
+          data: {
+            conversationId: job.conversationId,
+            dedupeKey: `creative-direct-generate:${job.id}:terminal`,
+            role: "assistant",
+            content: "图文已生成，正文和配图已回填。",
+            metadata: { jobId: job.id, jobType: job.type, contentId: persisted.content.id, terminal: "succeeded" },
+          },
+        });
+      }
       const changed = await tx.aiJob.updateMany({
         where: { id: jobId, userId, status: AiJobStatus.awaiting_commit, appliedAt: null },
         data: {
@@ -109,6 +128,12 @@ export class WorkflowJobResultCommitService {
     });
 
     if (outcome.draft) await this.persistence.cacheDraft(userId, outcome.draft);
+    if (outcome.event && outcome.job.type === AiJobType.CreativeDirectGenerate && outcome.job.conversationId) {
+      await Promise.allSettled([
+        this.memory?.invalidateConversation(outcome.job.conversationId),
+        this.conversationSessions?.invalidate(outcome.job.conversationId, "skill_completion"),
+      ]);
+    }
     if (outcome.event) await this.events.notify(jobId, outcome.event);
     return { job: toAiJobSnapshot(outcome.job), content: toContentDetail(outcome.content) };
   }

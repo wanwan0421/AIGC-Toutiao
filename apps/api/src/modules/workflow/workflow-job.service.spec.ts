@@ -37,6 +37,42 @@ describe("WorkflowJobService", () => {
     expect(dispatchJob).not.toHaveBeenCalled();
   });
 
+  it("does not consume a separate concurrency slot for nested direct generation", async () => {
+    const activeCount = vi.fn(async () => 2);
+    const consume = vi.fn(async () => undefined);
+    const persistenceError = new Error("persistence reached");
+    const prisma = {
+      aiJob: {
+        findFirst: vi.fn(async () => null),
+        count: activeCount,
+      },
+      $transaction: vi.fn(async () => { throw persistenceError; }),
+    };
+    const service = new WorkflowJobService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      { parse: vi.fn((_type, payload) => payload) } as never,
+      { consume } as never,
+      {} as never,
+      { resolve: vi.fn(async () => ({ materialNotes: "", attachmentAssetIds: [], materialDocuments: [], referenceContents: [], currentRequest: "生成一篇文章" })) } as never,
+      { resolve: vi.fn(async () => undefined) } as never,
+    );
+
+    await expect(service.create({
+      userId: "user-1",
+      type: AiJobType.CreativeDirectGenerate,
+      payload: { message: "生成一篇文章" },
+      parentChatJobId: "parent-chat-job",
+      idempotencyKey: "nested-generation-1",
+    })).rejects.toBe(persistenceError);
+
+    expect(activeCount).not.toHaveBeenCalled();
+    expect(consume).toHaveBeenCalledOnce();
+  });
+
   it("assigns a persisted server fallback when a legacy caller omits its idempotency key", async () => {
     let createdData: Record<string, unknown> | undefined;
     const now = new Date();

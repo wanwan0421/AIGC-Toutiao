@@ -133,7 +133,7 @@ function normalizeExtractedDocumentText(text: string) {
 }
 
 function assertExtractedDocumentText(text: string) {
-  if (!text.trim()) throw materialError("MATERIAL_DOCUMENT_NO_TEXT", "文档中没有可提取的文字；扫描件暂不支持 OCR");
+  if (!text.trim()) throw materialError("MATERIAL_DOCUMENT_NO_TEXT", "文档中没有可提取的文字；扫描件暂不支持 OCR，可改用 TXT/MD 上传文字");
   const actual = countArticleCharacters(text);
   if (actual > MAX_EXTRACTED_DOCUMENT_CHARACTERS) {
     throw new AppError({
@@ -180,7 +180,10 @@ export async function extractTextMaterial(buffer: Buffer, fileName: string, decl
       return { mimeType, fullText };
     } catch (error) {
       if (error instanceof AppError) throw error;
-      throw materialError("MATERIAL_PDF_PARSE_FAILED", "PDF 文件无法读取，请确认文件未损坏且包含可复制的文字");
+      if (error instanceof Error && /password|encrypted|加密|口令/iu.test(`${error.name} ${error.message}`)) {
+        throw materialError("MATERIAL_PDF_ENCRYPTED", "PDF 已加密，请解除密码保护后重新上传");
+      }
+      throw materialError("MATERIAL_PDF_PARSE_FAILED", "PDF 文件无法读取，请确认文件未损坏且包含可复制的文字，或改用 TXT/MD");
     } finally {
       await parser.destroy().catch(() => undefined);
     }
@@ -194,7 +197,7 @@ export async function extractTextMaterial(buffer: Buffer, fileName: string, decl
     return { mimeType, fullText };
   } catch (error) {
     if (error instanceof AppError) throw error;
-    throw materialError("MATERIAL_DOCX_PARSE_FAILED", "DOCX 文件无法读取，请确认文档未损坏");
+    throw materialError("MATERIAL_DOCX_PARSE_FAILED", "DOCX 文件无法读取，请确认文档未损坏，或改用 TXT/MD");
   }
 }
 

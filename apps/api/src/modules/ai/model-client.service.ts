@@ -1,4 +1,5 @@
 import { Injectable, Logger, Optional } from "@nestjs/common";
+import { createHash } from "node:crypto";
 import { AppError, combineAbortSignals, throwIfAborted } from "../../common/app-error";
 import { AiCallLogService } from "./ai-call-log.service";
 
@@ -27,6 +28,8 @@ export type ModelCacheStrategy = "off" | "session" | "prefix";
 
 export type ModelTelemetryContext = {
   scene?: string;
+  stage?: string;
+  attempt?: number;
   promptKey?: string;
   promptVersionId?: string;
   inputSummary?: string;
@@ -55,7 +58,7 @@ export type ModelResponseMetadata = {
 export type ModelStreamEvent =
   | { type: "created"; metadata: ModelResponseMetadata }
   | { type: "delta"; text: string }
-  | { type: "completed"; metadata: ModelResponseMetadata };
+  | { type: "completed"; metadata: ModelResponseMetadata; callLogId?: string };
 
 export type CompleteOptions = {
   messages: ModelMessage[];
@@ -204,7 +207,7 @@ export class ModelClientService {
         output: result,
         latencyMs: Date.now() - startedAt,
         success: true,
-        options: { apiStyle: "chat_completions", telemetry: options.telemetry },
+        options: { apiStyle: "chat_completions", telemetry: options.telemetry, messages: options.messages, thinking: options.thinking },
       });
       return result;
     } catch (error) {
@@ -215,7 +218,7 @@ export class ModelClientService {
         latencyMs: Date.now() - startedAt,
         success: false,
         errorMessage: error instanceof Error ? error.message : "Ark tool call failed",
-        options: { apiStyle: "chat_completions", telemetry: options.telemetry },
+        options: { apiStyle: "chat_completions", telemetry: options.telemetry, messages: options.messages, thinking: options.thinking },
       });
       throw error;
     }
@@ -236,6 +239,11 @@ export class ModelClientService {
 
     const base64 = imageBuffer.toString("base64");
     const dataUri = `data:${mimeType};base64,${base64}`;
+    const imageInputSummary = JSON.stringify({
+      prompt,
+      mimeType,
+      imageSha256: createHash("sha256").update(imageBuffer).digest("hex"),
+    });
     const startedAt = Date.now();
     let responsePayload: Record<string, unknown> | undefined;
 
@@ -248,7 +256,7 @@ export class ModelClientService {
 
       if (!response.ok) {
         await this.recordModelCall({
-          telemetry: { ...telemetry, scene: "image_description" },
+          telemetry: { ...telemetry, scene: "image_description", inputSummary: imageInputSummary },
           latencyMs: Date.now() - startedAt,
           success: false,
           errorMessage: `Describe image request failed: ${response.status}`,
@@ -263,7 +271,7 @@ export class ModelClientService {
       const description = this.extractText(result);
       await this.recordModelCall({
         payload: result,
-        telemetry: { ...telemetry, scene: "image_description" },
+        telemetry: { ...telemetry, scene: "image_description", inputSummary: imageInputSummary },
         output: description ? { text: description } : undefined,
         latencyMs: Date.now() - startedAt,
         success: Boolean(description),
@@ -275,7 +283,7 @@ export class ModelClientService {
     } catch (error) {
       if (!responsePayload) {
         await this.recordModelCall({
-          telemetry: { ...telemetry, scene: "image_description" },
+          telemetry: { ...telemetry, scene: "image_description", inputSummary: imageInputSummary },
           latencyMs: Date.now() - startedAt,
           success: false,
           errorMessage: error instanceof Error ? error.message : "Describe image failed",
@@ -293,6 +301,21 @@ export class ModelClientService {
     }
   }
 
+  async completeStreamingWithMetadata(options: CompleteOptions): Promise<{ text: string; callLogId?: string; metadata: ModelResponseMetadata }> {
+    let text = "";
+    let callLogId: string | undefined;
+    let metadata: ModelResponseMetadata = {};
+    for await (const event of this.streamWithMetadata(options)) {
+      if (event.type === "delta") text += event.text;
+      if (event.type === "completed") {
+        callLogId = event.callLogId;
+        metadata = event.metadata;
+      }
+    }
+    if (!text) throw new AppError({ code: "UPSTREAM_INVALID_RESPONSE", message: "响应中未包含文本输出", statusCode: 502, retryable: true });
+    return { text, callLogId, metadata };
+  }
+
   async *streamWithMetadata(options: CompleteOptions): AsyncGenerator<ModelStreamEvent> {
     this.assertConfigured(options.model);
     const startedAt = Date.now();
@@ -302,6 +325,7 @@ export class ModelClientService {
     let outputText = "";
     let firstTokenLatencyMs: number | undefined;
     let latestMetadata: ModelResponseMetadata = {};
+    let callLogId: string | undefined;
     let createdEmitted = false;
     let completedEmitted = false;
     const apiStyle = this.resolveApiStyle(options.apiStyle);
@@ -381,7 +405,6 @@ export class ModelClientService {
             if (/response\.completed/i.test(payloadType)) {
               completedEmitted = true;
               succeeded = true;
-              yield { type: "completed", metadata: latestMetadata };
             }
           } catch (error) {
             if (error instanceof AppError) throw error;
@@ -408,7 +431,7 @@ export class ModelClientService {
       }
       throw error;
     } finally {
-      await this.recordModelCall({
+      callLogId = await this.recordModelCall({
         payload: responsePayload,
         model: options.model,
         telemetry: options.telemetry,
@@ -420,6 +443,7 @@ export class ModelClientService {
         options,
       });
     }
+    if (succeeded) yield { type: "completed", metadata: latestMetadata, callLogId };
   }
 
   async retrieveResponse(responseId: string, options: Pick<CompleteOptions, "model" | "timeoutMs" | "signal"> = {}) {
@@ -466,7 +490,7 @@ export class ModelClientService {
     success: boolean;
     errorMessage?: string;
     firstTokenLatencyMs?: number;
-    options?: Pick<CompleteOptions, "apiStyle" | "cacheStrategy" | "previousResponseId" | "responseFormat" | "telemetry">;
+    options?: Pick<CompleteOptions, "apiStyle" | "cacheStrategy" | "previousResponseId" | "responseFormat" | "telemetry" | "thinking"> & { messages?: ModelMessage[] };
   }) {
     if (!this.callLogs) return undefined;
     const root = input.payload ? this.responseRoot(input.payload) : undefined;
@@ -491,7 +515,9 @@ export class ModelClientService {
         conversationId: telemetry?.conversationId,
         promptKey: telemetry?.promptKey,
         promptVersionId: telemetry?.promptVersionId,
-        inputSummary: telemetry?.inputSummary,
+        stage: telemetry?.stage,
+        attempt: telemetry?.attempt,
+        inputSummary: input.options?.messages ? JSON.stringify(input.options.messages) : telemetry?.inputSummary,
         output: input.output,
         latencyMs: input.latencyMs,
         inputTokens: this.numberValue(usage?.input_tokens ?? usage?.prompt_tokens),
@@ -504,6 +530,7 @@ export class ModelClientService {
         sessionRebuilt: telemetry?.sessionRebuilt,
         rebuildReason: telemetry?.rebuildReason,
         traceEnabled: this.fornaxTraceEnabled(apiStyle),
+        thinkingMode: input.options?.thinking ?? "enabled",
         success: input.success,
         errorMessage: input.errorMessage,
       });
@@ -680,6 +707,7 @@ export class ModelClientService {
       return {
         ...base,
         messages: options.messages,
+        ...(options.maxOutputTokens ? { max_tokens: options.maxOutputTokens } : {}),
         ...(stream ? { stream_options: { include_usage: true } } : {}),
         ...(options.responseFormat
           ? {
@@ -830,7 +858,15 @@ export class ModelClientService {
   private extractStreamError(payload: Record<string, unknown>) {
     const root = this.responseRoot(payload);
     const error = this.asRecord(root.error) ?? this.asRecord(payload.error);
-    return typeof error?.message === "string" ? error.message : "";
+    const statusDetails = this.asRecord(root.status_details) ?? this.asRecord(root.statusDetails);
+    const nestedError = this.asRecord(statusDetails?.error);
+    const message = [
+      typeof error?.code === "string" ? error.code : typeof error?.type === "string" ? error.type : "",
+      typeof error?.message === "string" ? error.message : typeof root.message === "string" ? root.message : "",
+      typeof statusDetails?.reason === "string" ? statusDetails.reason : "",
+      typeof nestedError?.message === "string" ? nestedError.message : "",
+    ].filter(Boolean).join(": ");
+    return message.replace(/\s+/g, " ").slice(0, 500);
   }
 
   private mergeMetadata(current: ModelResponseMetadata, next: ModelResponseMetadata): ModelResponseMetadata {

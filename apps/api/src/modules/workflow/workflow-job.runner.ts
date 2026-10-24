@@ -587,6 +587,19 @@ export class WorkflowJobRunner {
       const changed = await tx.aiJob.updateMany({ where: { id: jobId, status: DbAiJobStatus.running, runToken }, data });
       if (changed.count === 0) return null;
       const job = await tx.aiJob.findUniqueOrThrow({ where: { id: jobId } });
+      if (type === "error" && job.type === AiJobType.CreativeDirectGenerate && job.conversationId) {
+        await tx.aiMessage.upsert({
+          where: { dedupeKey: `creative-direct-generate:${job.id}:terminal` },
+          create: {
+            conversationId: job.conversationId,
+            dedupeKey: `creative-direct-generate:${job.id}:terminal`,
+            role: "assistant",
+            content: `图文生成失败：${job.errorMessage ?? "AI 任务执行失败"}`,
+            metadata: { jobId: job.id, jobType: job.type, code: job.errorCode, terminal: "failed" },
+          },
+          update: {},
+        });
+      }
       const event = await this.events.createInTransaction(tx, jobId, { type, data: eventData(job) });
       return { job, event };
     });
@@ -644,7 +657,9 @@ export class WorkflowJobRunner {
     const conversationId = job.conversationId ?? this.stringPayload(job.input, "conversationId");
     if (!conversationId) return;
     await this.conversations.appendMessage({
-      conversationId, userId: job.userId, role: "assistant", content,
+      conversationId, userId: job.userId, role: "assistant",
+      content: job.type === AiJobType.CreativeDirectGenerate ? `图文生成失败：${content}` : content,
+      dedupeKey: job.type === AiJobType.CreativeDirectGenerate ? `creative-direct-generate:${job.id}:terminal` : undefined,
       metadata: { jobId: job.id, jobType: job.type, code, terminal: "failed" },
     }).then(() => this.conversationSessions?.invalidate(conversationId, "skill_failure")).catch(() => undefined);
   }

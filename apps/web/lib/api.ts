@@ -389,7 +389,7 @@ export async function updateUserProfile(body: UpdateUserProfileRequest) {
 }
 
 export async function getContents(): Promise<ContentSummary[]> {
-  return apiRequest<ContentSummary[]>("/contents", {}, true);
+  return apiRequest<ContentSummary[]>("/contents", {}, true, true, "no-store");
 }
 
 export async function getRankings(
