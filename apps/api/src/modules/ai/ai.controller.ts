@@ -237,6 +237,11 @@ export class AiController {
     return this.workflow.creativeConversations(contentId, user.id);
   }
 
+  @Get("creative/conversations/:id")
+  creativeConversation(@CurrentUser() user: UserProfileSummary, @Param("id") id: string) {
+    return this.workflow.creativeConversation(id, user.id);
+  }
+
   @Patch("creative/conversations/:id/attach")
   attachCreativeConversation(
     @CurrentUser() user: UserProfileSummary,

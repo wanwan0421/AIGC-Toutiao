@@ -302,7 +302,9 @@ export class WorkflowJobService {
             const read = await this.events.readStream(reader, jobId, redisCursor, 15_000);
             redisCursor = read.cursor;
           } catch (error) {
-            this.logger.debug(`AI job Redis wait failed; using PostgreSQL polling: ${error instanceof Error ? error.message : String(error)}`);
+            if (!signal?.aborted) {
+              this.logger.debug(`AI job Redis wait failed; using PostgreSQL polling: ${error instanceof Error ? error.message : String(error)}`);
+            }
             redisAvailable = false;
             reader.disconnect();
           }

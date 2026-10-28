@@ -49,6 +49,7 @@ import {
   getContentWorkflowState,
   getContents,
   getCreativeConversations,
+  getCreativeConversation,
   getCreativeImageConfigStatus,
   getDraft,
   getAiJob,
@@ -1067,8 +1068,10 @@ export default function EditorPage() {
   const [chatInput, setChatInput] = useState("");
   const [conversationId, setConversationId] = useState<string | undefined>();
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatHistoryError, setChatHistoryError] = useState("");
   const [briefGenerationStage, setBriefGenerationStage] = useState<GenerationStageView | null>(null);
   const [isChatStreaming, setIsChatStreaming] = useState(false);
+  const [pendingCreativeCommitJobId, setPendingCreativeCommitJobId] = useState<string | null>(null);
   const [titleCandidates, setTitleCandidates] = useState<
     Array<{ title: string; reason: string }>
   >([]);
@@ -1127,8 +1130,6 @@ export default function EditorPage() {
   const [searchKeyword, setSearchKeyword] = useState("");
   const [isSearchingLocation, setIsSearchingLocation] = useState(false);
   const busyOperation = activeOperation ?? restoringOperation;
-  const isBusy = busyOperation !== null || isAiJobRunning || isChatStreaming;
-  const isOperation = (operation: EditorOperation) => busyOperation === operation;
 
   const imageAssets = useMemo(() => assets.filter(isImageAsset), [assets]);
   const textAssets = useMemo(() => assets.filter(isTextAsset), [assets]);
@@ -1261,6 +1262,7 @@ export default function EditorPage() {
     localSaveError,
     scheduleLocalDraftSave,
     scheduleCloudAutosave,
+    saveLocalDraftNow,
     readLocalDraft,
     removeLocalDraft,
     autoSaveDraft,
@@ -1272,12 +1274,15 @@ export default function EditorPage() {
     isMeaningful: (data) => Boolean(
       data.title.trim() || data.body.trim() || editorRef.current?.getText().trim()
       || data.materialNotes?.trim() || data.briefMaterialIds?.length || data.chatMaterialIds?.length || data.referenceContentIds?.length
-      || data.writingStyleMode && data.writingStyleMode !== "off",
+      || (data.writingStyleMode && data.writingStyleMode !== "off") || data.conversationId,
     ),
+    shouldDeferCloudSave: () => streamLockRef.current || busyOperation !== null || isAiJobRunning || isChatStreaming || pendingCreativeCommitJobId !== null,
     cloudSyncBlockReason: (data) => articleLengthBlockReason(data.title, data.body),
     onStatus: setStatusMessage,
     onCloudSaved: loadDraftCards,
   });
+  const isBusy = busyOperation !== null || isAiJobRunning || isChatStreaming || pendingCreativeCommitJobId !== null;
+  const isOperation = (operation: EditorOperation) => busyOperation === operation;
 
   useEffect(() => {
     bodyRef.current = body;
@@ -1290,6 +1295,13 @@ export default function EditorPage() {
   useEffect(() => {
     conversationIdRef.current = conversationId;
   }, [conversationId]);
+
+  function rememberConversationId(nextId: string | undefined) {
+    const changed = nextId !== conversationIdRef.current;
+    conversationIdRef.current = nextId;
+    setConversationId(nextId);
+    if (nextId && changed) saveLocalDraftNow({ ...snapshotRef.current(), conversationId: nextId });
+  }
 
   useEffect(() => {
     coverPreviewRef.current = coverPreview;
@@ -1323,12 +1335,19 @@ export default function EditorPage() {
   useEffect(() => {
     // Switching works detaches local subscriptions only. Durable jobs remain
     // active and are discoverable from the server when the user returns.
+    // Creating a cloud ID for this same editor is not a work switch.
+    if (editingContentId && skipNextEditorInitRef.current === editingContentId) {
+      contentIdRef.current = editingContentId;
+      setContentId(editingContentId);
+      return;
+    }
     stopStreaming();
     contentIdRef.current = editingContentId;
     setContentId(editingContentId);
     setLastContentSummary(null);
     setWorkflowState(null);
     setReviewResult(null);
+    setChatHistoryError("");
     reviewedAssetIdsRef.current = null;
     reviewedHtmlRef.current = null;
     reviewedTopicsRef.current = null;
@@ -1369,7 +1388,10 @@ export default function EditorPage() {
       const local = listStoredAiJobs().find(
         (item) => RESTORABLE_EDITOR_JOB_TYPES.has(item.type) && (expectedContentId ? item.contentId === expectedContentId : !item.contentId)
       );
-      const serverJobs = !local && expectedContentId ? await recoverAiJobs({ contentId: expectedContentId, limit: 20 }).catch(() => []) : [];
+      const recoveryScope = conversationIdRef.current
+        ? { conversationId: conversationIdRef.current, limit: 20 }
+        : expectedContentId ? { contentId: expectedContentId, limit: 20 } : null;
+      const serverJobs = !local && recoveryScope ? await recoverAiJobs(recoveryScope).catch(() => []) : [];
       const restorableServerJobs = serverJobs.filter((item) => RESTORABLE_EDITOR_JOB_TYPES.has(item.type));
       // 服务端自动恢复只接管非终态任务。终态任务只有在当前标签页仍保留
       // sessionStorage 指针时才恢复一次，避免每次刷新都重放最近的已完成任务。
@@ -1388,7 +1410,10 @@ export default function EditorPage() {
             if (disposed) return;
             if (data.kind !== "creativeChatEvent" || !data.value || typeof data.value !== "object") return;
             const event = data.value as { type?: string; data?: Record<string, unknown> };
-            if (event.type === "meta" && typeof event.data?.conversationId === "string") setConversationId(event.data.conversationId);
+            if (event.type === "meta" && typeof event.data?.conversationId === "string") {
+              rememberConversationId(event.data.conversationId);
+              setChatHistoryError("");
+            }
             if (event.type !== "delta") return;
             const delta = typeof event.data?.text === "string" ? event.data.text : "";
             setChatMessages((items) => {
@@ -1399,12 +1424,31 @@ export default function EditorPage() {
                 : [...items, { id, role: "assistant", kind: "chat", content: delta }];
             });
           },
-          onDone: async () => {
+          onDone: async (finishedJob, result) => {
             if (disposed) return;
-            if (expectedContentId) {
-              const conversations = await getCreativeConversations(expectedContentId).catch(() => []);
-              const latest = conversations[0];
-              if (latest) setChatMessages(latest.messages.map((item, index) => ({ id: item.id ?? `${latest.id}-${index}`, role: item.role, kind: "chat", content: item.content })));
+            const finishedConversationId = (result as { conversationId?: string } | null)?.conversationId
+              ?? finishedJob.conversationId ?? conversationIdRef.current;
+            if (expectedContentId || finishedConversationId) {
+              try {
+                const conversations = await loadRestorableConversations(expectedContentId, finishedConversationId);
+                const latest = conversations[0];
+                if (latest && !disposed) {
+                  rememberConversationId(latest.id);
+                  setChatMessages(latest.messages.map((item, index) => ({ id: item.id ?? `${latest.id}-${index}`, role: item.role, kind: "chat", content: item.content })));
+                  setInvalidConversationLabel(null);
+                  setChatHistoryError("");
+                }
+              } catch {
+                if (!disposed) setChatHistoryError("聊天记录暂时无法加载，请重试");
+              }
+            }
+            if (disposed || !finishedConversationId || !finishedJob.assistantMessageId) return;
+            const relatedJobs = await recoverAiJobs({ conversationId: finishedConversationId, limit: 20 }).catch(() => []);
+            const childJob = relatedJobs.find((item) => item.type === AiJobType.CreativeDirectGenerate
+              && item.assistantMessageId === finishedJob.assistantMessageId);
+            if (childJob && !disposed) {
+              chatJobIdRef.current = childJob.id;
+              await runConversationDraftJob({ type: "job_started", skillKey: "content-production-line", job: childJob }, finishedJob.assistantMessageId);
             }
           },
           onError: (message) => { if (!disposed) setStatusMessage(message); },
@@ -1424,7 +1468,7 @@ export default function EditorPage() {
       restoringOperationOwnerRef.current = restoreOwnerId;
       setRestoringOperation(editorOperationForJobType(candidate.type));
       setStatusMessage("检测到 AI 任务，正在从服务器恢复状态...");
-      await resumeJob(candidate.id, {
+      const restoredJob = await resumeJob(candidate.id, {
         onProgress: (data) => { if (!disposed && typeof data.message === "string") setStatusMessage(data.message); },
         onPartial: (data) => {
           if (disposed || candidate.type !== AiJobType.CreativeDirectGenerate || data.kind !== "generationStage") return;
@@ -1436,22 +1480,39 @@ export default function EditorPage() {
         onDone: async (restoredJob, result) => {
           if (disposed) return;
           await handleEditorJobDone(restoredJob, result);
+          setPendingCreativeCommitJobId(null);
           setBriefGenerationStage(null);
           if (restoredJob.type === AiJobType.CreativeDirectGenerate && restoredJob.contentId && restoredJob.conversationId) {
-            const conversations = await getCreativeConversations(restoredJob.contentId).catch(() => []);
-            const latest = conversations[0];
-            if (latest && !disposed) setChatMessages(latest.messages.map((item, index) => ({ id: item.id ?? `${latest.id}-${index}`, role: item.role, kind: "chat", content: item.content, insertable: false })));
+            try {
+              const conversations = await loadRestorableConversations(restoredJob.contentId, restoredJob.conversationId);
+              const latest = conversations[0];
+              if (latest && !disposed) {
+                rememberConversationId(latest.id);
+                setChatMessages(latest.messages.map((item, index) => ({ id: item.id ?? `${latest.id}-${index}`, role: item.role, kind: "chat", content: item.content, insertable: false })));
+                setInvalidConversationLabel(null);
+                setChatHistoryError("");
+              }
+            } catch {
+              if (!disposed) setChatHistoryError("聊天记录暂时无法加载，请重试");
+            }
           }
         },
         onError: (message, failedJob) => {
           if (disposed) return;
           setBriefGenerationStage(null);
+          if (failedJob?.status === "awaiting_commit") {
+            setPendingCreativeCommitJobId(failedJob.id);
+            setStatusMessage(`图文已生成，但保存失败：${message}`);
+            if (restoredAssistantId) setAssistantSkillStatus(restoredAssistantId, `图文已生成，但保存失败：${message}。请点击“继续保存图文”。`);
+            return;
+          }
           setStatusMessage(`AI 任务恢复失败：${message}`);
           if (restoredAssistantId && candidate.type === AiJobType.CreativeDirectGenerate && (failedJob?.status === "failed" || failedJob?.status === "cancelled")) {
             setAssistantFinalReply(restoredAssistantId, failedJob.status === "cancelled" ? "图文生成已取消。" : `图文生成失败：${message}`);
           }
         },
       });
+      if (!disposed && restoredJob.status === "awaiting_commit") setPendingCreativeCommitJobId(restoredJob.id);
     })().catch((error) => {
       if (!disposed) setStatusMessage(error instanceof Error ? `AI 任务恢复失败：${error.message}` : "AI 任务恢复失败");
     }).finally(() => {
@@ -1506,6 +1567,7 @@ export default function EditorPage() {
     scheduledAt,
     selectedLocation,
     selectedTopics,
+    conversationId,
     scheduleCloudAutosave,
     scheduleLocalDraftSave,
     style,
@@ -1627,7 +1689,7 @@ export default function EditorPage() {
       writingStyleMode,
       writingStyleVersionId: writingStyleMode === "off" ? "" : writingSkill?.activeVersion?.id ?? "",
       writingTopicKey,
-      conversationId,
+      conversationId: conversationIdRef.current,
       publishTimeMode,
       scheduledAt,
       selectedLocation,
@@ -1639,6 +1701,60 @@ export default function EditorPage() {
   }
 
   // 草稿恢复的总出口，负责将数据赋回 React 各个散装的状态里
+  async function loadRestorableConversations(
+    targetContentId: string | null | undefined,
+    requestedConversationId?: string,
+    knownConversations?: Awaited<ReturnType<typeof getCreativeConversations>>,
+  ) {
+    let conversations = knownConversations ?? [];
+    let listError: unknown;
+    if (!knownConversations && targetContentId) {
+      try {
+        conversations = await getCreativeConversations(targetContentId);
+      } catch (error) {
+        listError = error;
+      }
+    }
+    if (requestedConversationId && !conversations.some((item) => item.id === requestedConversationId)) {
+      try {
+        const conversation = await getCreativeConversation(requestedConversationId);
+        if (targetContentId && !conversation.contentId) {
+          const attached = await attachCreativeConversation(conversation.id, targetContentId);
+          return [await getCreativeConversation(attached.conversationId)];
+        }
+        if (!targetContentId || conversation.contentId === targetContentId) return [conversation];
+      } catch (error) {
+        if (!(error instanceof ApiError && error.status === 404)) throw error;
+      }
+    }
+    if (conversations.length) return conversations;
+    if (listError) throw listError;
+    return conversations;
+  }
+
+  async function refreshChatHistory() {
+    const targetContentId = currentEditorContentId();
+    const requestedConversationId = conversationIdRef.current;
+    if (!targetContentId && !requestedConversationId) return;
+    try {
+      const conversations = await loadRestorableConversations(targetContentId, requestedConversationId);
+      if (targetContentId !== currentEditorContentId() || requestedConversationId !== conversationIdRef.current) return;
+      const latest = conversations[0];
+      if (!latest) {
+        setChatHistoryError("未找到这篇作品的聊天记录");
+        return;
+      }
+      rememberConversationId(latest.id);
+      setChatMessages(latest.messages.map((item, index) => ({
+        id: item.id ?? `${latest.id}-${index}`, role: item.role, kind: "chat", content: item.content, insertable: false,
+      })));
+      setInvalidConversationLabel(null);
+      setChatHistoryError("");
+    } catch {
+      setChatHistoryError("聊天记录暂时无法加载，请重试");
+    }
+  }
+
   async function applySnapshot(data: EditorSnapshotInput, knownConversations?: Awaited<ReturnType<typeof getCreativeConversations>>, requireValidation = false) {
     const restoreEpoch = ++restoredDraftEpochRef.current;
     const nextBody = data.body ?? "";
@@ -1664,7 +1780,7 @@ export default function EditorPage() {
     setMaterialNotes(data.materialNotes ?? "");
     setWritingStyleMode("off");
     setWritingTopicKey(data.writingTopicKey ?? "");
-    setConversationId(undefined);
+    rememberConversationId(undefined);
     setBriefMaterials([]);
     setChatMaterials([]);
     setReferenceContentIds([]);
@@ -1695,7 +1811,7 @@ export default function EditorPage() {
       getAssets(),
       getContents(),
       getWritingSkill(),
-      knownConversations && !data.conversationId ? Promise.resolve(knownConversations) : data.contentId ? getCreativeConversations(data.contentId) : Promise.resolve([]),
+      loadRestorableConversations(data.contentId, data.conversationId, knownConversations),
       Promise.allSettled(savedReferenceIds.map((id) => getContentDetail(id))),
     ]);
     if (restoreEpoch !== restoredDraftEpochRef.current) return;
@@ -1705,8 +1821,7 @@ export default function EditorPage() {
       result.status === "rejected" && !(result.reason instanceof ApiError && [403, 404].includes(result.reason.status)));
     const requiredCheckFailed = (assetSelectionSaved && assetsResult.status === "rejected")
       || (savedReferenceIds.length > 0 && referenceCheckFailed)
-      || (Boolean(data.writingStyleMode && data.writingStyleMode !== "off") && styleResult.status === "rejected")
-      || (Boolean(data.conversationId) && conversationsResult.status === "rejected");
+      || (Boolean(data.writingStyleMode && data.writingStyleMode !== "off") && styleResult.status === "rejected");
     if (requireValidation && requiredCheckFailed) {
       throw new Error("草稿中的素材或写作选项暂无法核验，请联网后重新打开草稿");
     }
@@ -1741,7 +1856,8 @@ export default function EditorPage() {
     setInvalidAttachmentLabels([...new Set([...restored.invalidAttachmentIds, ...invalidCandidates])]);
     setInvalidCoverLabel(restored.invalidCover);
     setInvalidWritingStyleLabel(restored.invalidWritingStyle);
-    setInvalidConversationLabel(restored.invalidConversation);
+    setInvalidConversationLabel(conversationsResult.status === "rejected" ? null : restored.invalidConversation);
+    setChatHistoryError(conversationsResult.status === "rejected" ? "聊天记录暂时无法加载，请重试" : "");
     generationAttachedImageIdsRef.current = new Set([...restored.brief.selected, ...restored.chat.selected]
       .filter(isImageAsset).map((asset) => asset.id));
     rememberCoverAssetId(restored.cover?.id ?? null);
@@ -1750,7 +1866,7 @@ export default function EditorPage() {
     setWritingSkill(currentStyle);
     setWritingStyleMode(restored.writingStyleMode);
     setWritingTopicKey(restored.writingStyleMode === "topic" ? data.writingTopicKey ?? "" : "");
-    setConversationId(restored.conversation?.id);
+    rememberConversationId(restored.conversation?.id ?? (conversationsResult.status === "rejected" ? data.conversationId : undefined));
     setChatMessages(restored.conversation?.messages.map((item, index) => ({
       id: item.id ?? `${restored.conversation?.id}-${index}`,
       role: item.role,
@@ -1820,12 +1936,14 @@ export default function EditorPage() {
         reviewedTopicsRef.current = normalizeTopicList(detail.tags);
 
         // 再获取草稿数据
-        const [draftResult, conversations, state] = await Promise.all([
+        const [draftResult, conversationsResult, state] = await Promise.all([
           getDraft(detail.id).then((draft) => ({ draft, error: null as unknown })).catch((error: unknown) => ({ draft: null, error })),
-          getCreativeConversations(detail.id).catch(() => []),
+          getCreativeConversations(detail.id).then((items) => ({ items, error: null as unknown }))
+            .catch((error: unknown) => ({ items: [], error })),
           getContentWorkflowState(detail.id).catch(() => null),
         ]);
         if (!isCurrentInitialization()) return;
+        const conversations = conversationsResult.items;
         if (state) applyWorkflowState(state);
 
         // 如果草稿存在，比较草稿和服务器内容的时间戳，优先恢复较新的内容，避免用户在编辑过程中丢失修改内容
@@ -1834,11 +1952,11 @@ export default function EditorPage() {
         const scopedLocal = local?.contentId === targetContentId ? local : null;
         if (local && !scopedLocal) removeLocalDraft(targetContentId);
         if (scopedLocal && shouldRestoreLocalDraft(scopedLocal.savedAt, draft, Boolean(draftError))) {
-          await applySnapshot(scopedLocal, conversations, true);
+          await applySnapshot(scopedLocal, conversationsResult.error ? undefined : conversations, true);
           if (draftError) unverifiedCloudRecoveryRef.current = { contentId: targetContentId, localSavedAt: scopedLocal.savedAt };
           setStatusMessage(draftError ? "云端草稿暂不可读取，已恢复本地草稿" : "已恢复本地离线草稿");
         } else if (draft) {
-          await applySnapshot(snapshotFromCloudDraft(draft, detail), conversations, true);
+          await applySnapshot(snapshotFromCloudDraft(draft, detail), conversationsResult.error ? undefined : conversations, true);
           setStatusMessage("已恢复云端草稿");
         } else if (draftError) {
           throw draftError;
@@ -1846,7 +1964,7 @@ export default function EditorPage() {
         if (!isCurrentInitialization()) return;
         if (!draft && !scopedLocal) {
           const latestConversation = conversations[0];
-          setConversationId(latestConversation?.id);
+          rememberConversationId(latestConversation?.id);
           setChatMessages(latestConversation?.messages.map((item) => ({
             id: item.id ?? `${item.role}-${item.createdAt}`,
             role: item.role,
@@ -1854,6 +1972,7 @@ export default function EditorPage() {
             content: item.content,
             insertable: false,
           })) ?? []);
+          setChatHistoryError(conversationsResult.error ? "聊天记录暂时无法加载，请重试" : "");
         }
         await loadAssets();
       } else {
@@ -1903,6 +2022,7 @@ export default function EditorPage() {
     setInvalidCoverLabel(null);
     setInvalidWritingStyleLabel(null);
     setInvalidConversationLabel(null);
+    setChatHistoryError("");
     setReferenceContentIds([]);
     setInvalidReferenceIds([]);
     setReferencePickerTarget(null);
@@ -1912,7 +2032,7 @@ export default function EditorPage() {
     setAssetIds([]);
     clearCover();
     setCoverMode("single");
-    setConversationId(undefined);
+    rememberConversationId(undefined);
     setChatMessages([]);
     setBriefGenerationStage(null);
     setShowPreview(false);
@@ -2114,6 +2234,7 @@ export default function EditorPage() {
       setEditingStatus(updated.status);
       setLastContentSummary(updated);
       persistedQualityInputRef.current = { contentId: updated.id, title: payload.title, body: payload.body };
+      await attachCurrentConversation(updated.id);
       return updated;
     }
     const created = await createContent(payload);
@@ -2122,14 +2243,23 @@ export default function EditorPage() {
     setEditingStatus(created.status);
     setLastContentSummary(created);
     persistedQualityInputRef.current = { contentId: created.id, title: payload.title, body: payload.body };
-    if (conversationId) {
-      await attachCreativeConversation(conversationId, created.id).catch(
-        () => undefined,
-      );
-    }
+    await attachCurrentConversation(created.id);
     skipNextEditorInitRef.current = created.id;
     window.history.replaceState(null, "", `/studio/editor?contentId=${created.id}`);
     return created;
+  }
+
+  async function attachCurrentConversation(targetContentId: string) {
+    const currentConversationId = conversationIdRef.current;
+    if (!currentConversationId) return;
+    try {
+      const linked = await attachCreativeConversation(currentConversationId, targetContentId);
+      rememberConversationId(linked.conversationId);
+      setInvalidConversationLabel(null);
+      setChatHistoryError("");
+    } catch {
+      setChatHistoryError("聊天记录暂未关联到作品，请稍后重试");
+    }
   }
 
   function rememberReviewInput(content: ContentDetail, submittedHtml: string) {
@@ -2172,12 +2302,7 @@ export default function EditorPage() {
     window.history.replaceState(null, "", `/studio/editor?contentId=${created.id}`);
 
     // 如果之前已经有 conversationId，说明用户在编辑过程中进行了聊天交互，此时需要把这个 conversation 关联到新创建的内容上
-    if (conversationIdRef.current) {
-      await attachCreativeConversation(
-        conversationIdRef.current,
-        created.id,
-      ).catch(() => undefined);
-    }
+    await attachCurrentConversation(created.id);
     return created.id;
   }
 
@@ -3228,8 +3353,22 @@ export default function EditorPage() {
   // 对话式 AI 生成：由对话中的 AI Agent 触发，可能是生成初稿、生成图片等多种技能
   // 整个过程在对话气泡里展示进度和结果，用户可以在对话里直接确认生成的图片并插入到编辑器中
   async function runConversationDraftJob(event: CreativeChatSkillEvent, assistantId: string) {
-    if (!event.job || busyOperation !== null) return;
+    if (!event.job) return;
+    if (event.job.status === "succeeded") {
+      try {
+        await handleEditorJobDone(event.job, event.job.result);
+        setAssistantFinalReply(assistantId, "图文已生成，正文和配图已回填。");
+      } catch (error) {
+        setAssistantFinalReply(assistantId, `图文已生成，但恢复编辑器失败：${error instanceof Error ? error.message : "请刷新页面重试"}`);
+      }
+      return;
+    }
+    if (event.job.status === "failed" || event.job.status === "cancelled") {
+      setAssistantFinalReply(assistantId, event.job.status === "cancelled" ? "图文生成已取消。" : `图文生成失败：${event.job.errorMessage ?? "AI 生成失败"}`);
+      return;
+    }
     const generatedAssetIds: string[] = [];
+    let commitError: string | null = null;
     setActiveOperation("draft");
     rememberGeneratedImageCandidates([]);
     setStatusMessage("AI Agent 已选择一键图文生成，正在执行...");
@@ -3263,8 +3402,16 @@ export default function EditorPage() {
           },
           onResultReady: async (job, result, event) => {
             await commitCreativeJobResult(job, result, event, generatedAssetIds);
+            setPendingCreativeCommitJobId(null);
           },
           onError: (message, failedJob) => {
+            if (failedJob?.status === "awaiting_commit") {
+              commitError = message;
+              setPendingCreativeCommitJobId(failedJob.id);
+              setStatusMessage(`图文已生成，但保存失败：${message}`);
+              setAssistantSkillStatus(assistantId, `图文已生成，但保存失败：${message}。请点击“继续保存图文”。`);
+              return;
+            }
             setStatusMessage(`AI 生成失败：${message}`);
             if (failedJob?.status === "failed" || failedJob?.status === "cancelled") {
               setAssistantFinalReply(assistantId, failedJob.status === "cancelled" ? "图文生成已取消。" : `图文生成失败：${message}`);
@@ -3280,7 +3427,16 @@ export default function EditorPage() {
         setAssistantFinalReply(assistantId, `图文生成失败：${job.errorMessage ?? "AI 生成失败"}`);
         return;
       }
-      if (job.status !== "succeeded") return;
+      if (job.status === "awaiting_commit") {
+        setPendingCreativeCommitJobId(job.id);
+        if (!commitError) setAssistantSkillStatus(assistantId, "图文已生成，等待保存。请点击“继续保存图文”。");
+        return;
+      }
+      if (job.status !== "succeeded") {
+        setAssistantFinalReply(assistantId, "图文任务连接中断，生成仍可能在后台继续。请刷新页面恢复任务状态。");
+        return;
+      }
+      setPendingCreativeCommitJobId(null);
       setAssistantFinalReply(assistantId, "图文已生成，正文和配图已回填。");
       await loadAssets();
     } catch (error) {
@@ -3289,6 +3445,46 @@ export default function EditorPage() {
       setAssistantFinalReply(assistantId, `图文生成失败：${message}`);
     } finally {
       setActiveOperation(null);
+    }
+  }
+
+  async function continuePendingCreativeCommit() {
+    const jobId = pendingCreativeCommitJobId;
+    if (!jobId || busyOperation !== null || isAiJobRunning || isChatStreaming) return;
+    setActiveOperation("draft");
+    setStatusMessage("正在继续保存已生成的图文...");
+    try {
+      const job = await resumeJob(jobId, {
+        onResultReady: (readyJob, result, event) => commitCreativeJobResult(readyJob, result, event),
+        onDone: async (doneJob, result) => {
+          await handleEditorJobDone(doneJob, result);
+          if (doneJob.assistantMessageId) setAssistantFinalReply(doneJob.assistantMessageId, "图文已生成，正文和配图已回填。");
+          setPendingCreativeCommitJobId(null);
+        },
+        onError: (message, failedJob) => {
+          setStatusMessage(`图文保存失败：${message}`);
+          if (failedJob?.status === "awaiting_commit") setPendingCreativeCommitJobId(failedJob.id);
+        },
+      });
+      if (job.status === "awaiting_commit") setPendingCreativeCommitJobId(job.id);
+      else if (job.status === "succeeded") setPendingCreativeCommitJobId(null);
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? `图文保存失败：${error.message}` : "图文保存失败，请重试");
+    } finally {
+      setActiveOperation(null);
+    }
+  }
+
+  async function discardPendingCreativeCommit() {
+    const jobId = pendingCreativeCommitJobId;
+    if (!jobId || busyOperation !== null || isAiJobRunning || isChatStreaming) return;
+    try {
+      const cancelled = await cancelJob(jobId);
+      if (cancelled?.assistantMessageId) setAssistantFinalReply(cancelled.assistantMessageId, "图文生成结果已放弃。");
+      setPendingCreativeCommitJobId(null);
+      setStatusMessage("已放弃待保存的图文结果");
+    } catch (error) {
+      setStatusMessage(error instanceof Error ? `取消待保存结果失败：${error.message}` : "取消待保存结果失败");
     }
   }
 
@@ -3377,20 +3573,20 @@ export default function EditorPage() {
     }
   }
 
-  function handleCreativeChatSkillEvent(event: CreativeChatSkillEvent, assistantId: string) {
+  function handleCreativeChatSkillEvent(event: CreativeChatSkillEvent, assistantId: string): Promise<void> | undefined {
     if (event.type === "skill_started") {
       setAssistantSkillStatus(assistantId, event.message ?? `已选择：${event.skillKey}`);
       if (event.skillKey === "content-safety-reviewer" && event.data?.requiresContent) {
-        void runConversationReviewAfterPersist(assistantId);
+        return runConversationReviewAfterPersist(assistantId);
       }
       return;
     }
 
     if (event.type === "job_started") {
       if (event.skillKey === "content-production-line") {
-        void runConversationDraftJob(event, assistantId);
+        return runConversationDraftJob(event, assistantId);
       } else if (event.skillKey === "content-safety-reviewer") {
-        void runConversationReviewJob(event, assistantId);
+        return runConversationReviewJob(event, assistantId);
       }
       return;
     }
@@ -3421,6 +3617,7 @@ export default function EditorPage() {
     setIsChatStreaming(true);
     const userId = `user-${Date.now()}`;
     const assistantId = `assistant-${Date.now()}`;
+    const skillTasks: Promise<void>[] = [];
     setChatMessages((items) => [
       ...items,
       { id: userId, role: "user", content: message, attachments: submittedMaterials.map((item) => item.fileName) },
@@ -3430,24 +3627,25 @@ export default function EditorPage() {
       await runJob(
         () => startAiJob({
           type: AiJobType.CreativeChat,
-          conversationId,
+          conversationId: conversationIdRef.current,
           assistantMessageId: assistantId,
-          contentId: contentId ?? undefined,
+          contentId: contentIdRef.current ?? undefined,
           payload: {
-          conversationId,
-          contentId: contentId ?? undefined,
-          message,
-          currentTitle: title,
-          currentBody: editorText(),
-          selectedText: selectionMenu?.text,
-          ...generationMaterialIds(submittedMaterials),
-          referenceContentIds,
-          ...(writingStyleMode !== "off" && writingSkill?.activeVersion?.id && !writingSkill?.pauseReason ? {
-            writingStyle: { mode: writingStyleMode, ...(writingStyleMode === "topic" ? { topicKey: writingTopicKey } : {}) },
-            expectedVersionId: writingSkill.activeVersion.id,
-          } : {}),
-          assistantMessageId: assistantId,
-        }}),
+            conversationId: conversationIdRef.current,
+            contentId: contentIdRef.current ?? undefined,
+            message,
+            currentTitle: title,
+            currentBody: editorText(),
+            selectedText: selectionMenu?.text,
+            ...generationMaterialIds(submittedMaterials),
+            referenceContentIds,
+            ...(writingStyleMode !== "off" && writingSkill?.activeVersion?.id && !writingSkill?.pauseReason ? {
+              writingStyle: { mode: writingStyleMode, ...(writingStyleMode === "topic" ? { topicKey: writingTopicKey } : {}) },
+              expectedVersionId: writingSkill.activeVersion.id,
+            } : {}),
+            assistantMessageId: assistantId,
+          },
+        }),
         {
           onSnapshot: (snapshot) => {
             chatJobIdRef.current = snapshot.id;
@@ -3456,7 +3654,10 @@ export default function EditorPage() {
           onPartial: (data) => {
             if (data.kind !== "creativeChatEvent" || !data.value || typeof data.value !== "object") return;
             const event = data.value as { type?: string; data?: Record<string, unknown> };
-            if (event.type === "meta" && typeof event.data?.conversationId === "string") setConversationId(event.data.conversationId);
+            if (event.type === "meta" && typeof event.data?.conversationId === "string") {
+              rememberConversationId(event.data.conversationId);
+              setChatHistoryError("");
+            }
             if (event.type === "delta") {
               const text = typeof event.data?.text === "string" ? event.data.text : "";
               setChatMessages((items) =>
@@ -3467,11 +3668,32 @@ export default function EditorPage() {
                 ),
               );
             }
-            if (event.type === "skill") handleCreativeChatSkillEvent(event.data as unknown as CreativeChatSkillEvent, assistantId);
+            if (event.type === "skill") {
+              const skillEvent = event.data as unknown as CreativeChatSkillEvent;
+              if (skillEvent.type === "job_started" && skillEvent.job) chatJobIdRef.current = skillEvent.job.id;
+              const task = handleCreativeChatSkillEvent(skillEvent, assistantId);
+              if (task) skillTasks.push(task);
+            }
           },
-          onDone: (_job, rawResult) => {
-            const event = rawResult as { conversationId?: string; messageId?: string };
-            if (event.conversationId) setConversationId(event.conversationId);
+          onDone: async (parentJob, rawResult) => {
+            const event = rawResult as { conversationId?: string; messageId?: string; content?: string };
+            if (event.conversationId) rememberConversationId(event.conversationId);
+            if (!skillTasks.length && !event.content?.trim() && event.conversationId) {
+              const relatedJobs = await recoverAiJobs({ conversationId: event.conversationId, limit: 20 }).catch(() => []);
+              const childJob = relatedJobs.find((item) => item.type === AiJobType.CreativeDirectGenerate && item.assistantMessageId === parentJob.assistantMessageId);
+              if (childJob) {
+                chatJobIdRef.current = childJob.id;
+                skillTasks.push(runConversationDraftJob({ type: "job_started", skillKey: "content-production-line", job: childJob }, assistantId));
+              }
+            }
+            if (skillTasks.length) {
+              return;
+            }
+            if (!event.content?.trim()) {
+              setAssistantFinalReply(assistantId, "本次 AI 任务没有返回回复，请刷新页面查看任务状态后重试。");
+              chatJobIdRef.current = null;
+              return;
+            }
             let hasInsertableMessage = false;
             setChatMessages((items) =>
               items.map((item) =>
@@ -3481,7 +3703,7 @@ export default function EditorPage() {
                       hasInsertableMessage = hasInsertableMessage || insertable;
                       return item.kind === "skill_status" || item.kind === "skill_result"
                         ? { ...item, insertable: false }
-                        : { ...item, id: event.messageId ?? item.id, insertable };
+                        : { ...item, id: event.messageId ?? item.id, content: item.content.trim() || "AI 未返回回复，请重试。", insertable };
                     })()
                   : item,
               ),
@@ -3498,6 +3720,7 @@ export default function EditorPage() {
           },
         },
       );
+      await Promise.allSettled(skillTasks);
     } catch (error) {
       const failure = error instanceof Error ? `AI 对话失败：${error.message}` : "AI 对话失败";
       setStatusMessage(failure);
@@ -3506,6 +3729,7 @@ export default function EditorPage() {
         : item));
       chatJobIdRef.current = null;
     } finally {
+      chatJobIdRef.current = null;
       streamLockRef.current = false;
       setIsChatStreaming(false);
     }
@@ -4332,6 +4556,12 @@ export default function EditorPage() {
                 >
                   {isCloudSaving ? "保存中…" : "保存"}
                 </button>
+                {pendingCreativeCommitJobId && (
+                  <div className="flex items-center gap-1.5">
+                    <button type="button" onClick={() => void continuePendingCreativeCommit()} disabled={busyOperation !== null || isAiJobRunning || isChatStreaming} className="rounded-full bg-amber-100 px-3 py-1.5 text-xs font-semibold text-amber-900 disabled:opacity-50">继续保存图文</button>
+                    <button type="button" onClick={() => void discardPendingCreativeCommit()} disabled={busyOperation !== null || isAiJobRunning || isChatStreaming} className="rounded-full px-2 py-1.5 text-xs text-slate-500 hover:bg-slate-100 disabled:opacity-50">放弃</button>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -5211,7 +5441,13 @@ export default function EditorPage() {
               <h2 className="font-bold">AI 交互中心</h2>
             </div>
             <div>
-              {!chatMessages.length ? (
+              {chatHistoryError ? (
+                <div className="mb-3 flex items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="status">
+                  <span>{chatHistoryError}</span>
+                  <button type="button" onClick={() => void refreshChatHistory()} className="shrink-0 font-semibold text-[#ff2442]">重试加载</button>
+                </div>
+              ) : null}
+              {!chatMessages.length && !chatHistoryError ? (
                 <div className="space-y-2">
                   {defaultIdeas.map((idea) => (
                     <button

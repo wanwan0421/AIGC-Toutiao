@@ -106,6 +106,11 @@ export class ContentWorkflowEngine {
     return this.conversations.listByContent({ userId: resolvedUserId, contentId });
   }
 
+  async creativeConversation(conversationId: string, userId?: string) {
+    const resolvedUserId = await this.contextBuilder.resolveUserId(userId);
+    return this.conversations.getById({ userId: resolvedUserId, conversationId });
+  }
+
   async attachCreativeConversation(conversationId: string, body: { contentId: string; userId?: string }) {
     const resolvedUserId = await this.contextBuilder.resolveUserId(body.userId);
     const conversation = await this.conversations.attachToContent({

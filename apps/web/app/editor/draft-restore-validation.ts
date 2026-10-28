@@ -85,9 +85,10 @@ export function reconcileRestoredSelections(
   const invalidWritingStyle = !validStyle ? "保存时的写作风格已失效，请重新选择" : null;
 
   const requestedConversationId = saved.conversationId;
+  const eligibleConversations = conversations.filter((item) => !saved.contentId || !item.contentId || item.contentId === saved.contentId);
   const conversation = requestedConversationId
-    ? conversations.find((item) => item.id === requestedConversationId && item.contentId === saved.contentId)
-    : conversations[0];
+    ? eligibleConversations.find((item) => item.id === requestedConversationId) ?? eligibleConversations[0]
+    : eligibleConversations[0];
   const invalidConversation = requestedConversationId && !conversation ? "聊天记录已失效" : null;
 
   return {

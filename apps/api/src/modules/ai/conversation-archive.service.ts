@@ -208,6 +208,15 @@ export class ConversationArchiveService {
     return conversations.map((conversation) => this.toConversationSummary(conversation));
   }
 
+  async getById(input: { userId: string; conversationId: string }) {
+    const conversation = await this.store.aiConversation.findFirst({
+      where: { id: input.conversationId, userId: input.userId },
+      include: { messages: { orderBy: [{ createdAt: "asc" }, { id: "asc" }] } },
+    });
+    if (!conversation) throw new NotFoundException("conversation not found");
+    return this.toConversationSummary(conversation);
+  }
+
   async attachToContent(input: { conversationId: string; userId: string; contentId: string }) {
     await this.assertOwnedContent(input.contentId, input.userId);
     const source = await this.store.aiConversation.findFirst({

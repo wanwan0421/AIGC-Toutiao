@@ -46,6 +46,7 @@ type UseDraftAutosaveOptions = {
   draftStorageKey: (contentId: string | null) => string;
   ensureContentForDraft: (data: EditorDraftCache) => Promise<string>;
   isMeaningful: (data: EditorDraftCache) => boolean;
+  shouldDeferCloudSave?: () => boolean;
   cloudSyncBlockReason?: (data: EditorDraftCache) => string | null;
   onStatus: (message: string) => void;
   onCloudSaved?: () => void | Promise<void>;
@@ -145,6 +146,7 @@ export function useDraftAutosave(options: UseDraftAutosaveOptions) {
 
     // 不论有无网络都先保存到本地；localStorage 失败时也继续尝试云端。
     saveLocalDraftNow(data);
+    if (current.shouldDeferCloudSave?.()) return;
     if (force) current.onStatus("正在保存到云端…");
     const blockReason = current.cloudSyncBlockReason?.(data);
     if (blockReason) {

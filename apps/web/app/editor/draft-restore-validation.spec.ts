@@ -40,6 +40,21 @@ describe("draft selection recovery", () => {
     expect(result.conversation?.id).toBe("conversation-1");
   });
 
+  it("uses the current conversation when a saved conversation id was merged", () => {
+    const current = { id: "current", contentId: "draft-1", messages: [], createdAt: "2026-01-01", updatedAt: "2026-01-02" } as CreativeConversationSummary;
+    const result = reconcileRestoredSelections({ contentId: "draft-1", conversationId: "merged", coverMode: "none" },
+      [], [], null, [current]);
+    expect(result.conversation?.id).toBe("current");
+    expect(result.invalidConversation).toBeNull();
+  });
+
+  it("restores a chat that has not yet been linked to a saved work", () => {
+    const chat = { id: "chat-1", messages: [], createdAt: "2026-01-01", updatedAt: "2026-01-01" } as CreativeConversationSummary;
+    const result = reconcileRestoredSelections({ contentId: null, conversationId: "chat-1", coverMode: "none" },
+      [], [], null, [chat]);
+    expect(result.conversation?.id).toBe("chat-1");
+  });
+
   it("drops deleted or rejected assets, changed style versions, missing references and foreign conversations", () => {
     const result = reconcileRestoredSelections({
       contentId: "draft-1", assetIds: ["rejected"], coverAssetId: "rejected", coverMode: "single",

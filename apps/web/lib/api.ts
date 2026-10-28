@@ -861,7 +861,16 @@ export async function getCreativeConversations(contentId: string) {
   return apiRequest<CreativeConversationSummary[]>(
     `/ai/creative/conversations?contentId=${encodeURIComponent(contentId)}`,
     {},
-    true
+    true,
+    true,
+    "no-store"
+  );
+}
+
+export async function getCreativeConversation(conversationId: string) {
+  return apiRequest<CreativeConversationSummary>(
+    `/ai/creative/conversations/${encodeURIComponent(conversationId)}`,
+    {}, true, true, "no-store"
   );
 }
 

@@ -2,6 +2,21 @@ import { describe, expect, it, vi } from "vitest";
 import { ConversationArchiveService } from "./conversation-archive.service";
 
 describe("ConversationArchiveService cache-aside history", () => {
+  it("loads an unlinked conversation by id only for its owner", async () => {
+    const conversation = {
+      id: "conversation-1", userId: "user-1", contentId: null, title: null,
+      createdAt: new Date("2026-10-24T00:00:00.000Z"), updatedAt: new Date("2026-10-24T00:00:00.000Z"),
+      messages: [{ id: "m1", role: "user", content: "hello", createdAt: new Date("2026-10-24T00:00:00.000Z") }],
+    };
+    const findFirst = vi.fn(async ({ where }: { where: { userId: string } }) => where.userId === "user-1" ? conversation : null);
+    const service = new ConversationArchiveService({ aiConversation: { findFirst } } as never, {} as never);
+    await expect(service.getById({ userId: "user-1", conversationId: "conversation-1" }))
+      .resolves.toMatchObject({ id: "conversation-1", messages: [{ id: "m1", content: "hello" }] });
+    await expect(service.getById({ userId: "other-user", conversationId: "conversation-1" })).rejects.toThrow("conversation not found");
+    expect(findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "conversation-1", userId: "user-1" },
+    }));
+  });
   it("returns a complete Redis snapshot without querying PostgreSQL", async () => {
     const messages = [{ id: "m1", role: "user" as const, content: "hello", createdAt: "2026-08-21T00:00:00.000Z" }];
     const prisma = {
